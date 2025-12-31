@@ -28,10 +28,11 @@ from weakref import WeakKeyDictionary
 # FastMCP server and request Context (ctx) for per-connection state
 try:
     from mcp.server.fastmcp import FastMCP, Context  # type: ignore
+    from mcp.server.transport_security import TransportSecuritySettings  # type: ignore
 except Exception:
-    # Fallback: keep FastMCP import; treat Context as Any for type hints
     from mcp.server.fastmcp import FastMCP  # type: ignore
     Context = Any  # type: ignore
+    TransportSecuritySettings = None  # type: ignore
 
 from scripts.mcp_auth import (
     require_auth_session as _require_auth_session,
@@ -122,34 +123,13 @@ def _ensure_once(name: str) -> bool:
     except Exception:
         return False
 
-# Configure transport security to allow Docker internal hostnames
-# This prevents "Invalid Host header: mcp:8000" errors from inter-container calls
-try:
-    from mcp.server.transport_security import TransportSecuritySettings
-    _transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            "localhost:*",
-            "127.0.0.1:*",
-            "0.0.0.0:*",
-            "mcp:*",           # Docker service name
-            "mcp_http:*",      # Docker service name (HTTP variant)
-            "memory:*",        # Docker service name
-            "mcp-search:*",    # Docker container name pattern
-            "mcp-search-dev-remote:*",
-            "mcp-search-http-dev-remote:*",
-        ],
-        allowed_origins=[
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-            "http://mcp:*",
-            "http://mcp_http:*",
-        ],
-    )
-except ImportError:
-    _transport_security = None
-
-mcp = FastMCP(name="memory-server", transport_security=_transport_security)
+# Disable DNS rebinding protection - breaks Docker internal networking (Host: mcp:8000)
+_security_settings = (
+    TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    if TransportSecuritySettings
+    else None
+)
+mcp = FastMCP(name="memory-server", transport_security=_security_settings)
 
 # Capture tool registry automatically by wrapping the decorator once
 _TOOLS_REGISTRY: list[dict] = []

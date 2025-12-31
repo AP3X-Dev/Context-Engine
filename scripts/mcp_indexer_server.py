@@ -213,11 +213,15 @@ except Exception:
 
 
 try:
-    # Official MCP Python SDK (FastMCP convenience server)
     from mcp.server.fastmcp import FastMCP, Context  # type: ignore
 except Exception as e:  # pragma: no cover
-    # Keep FastMCP import error loud; Context is for type hints only
     raise SystemExit("mcp package is required inside the container: pip install mcp")
+
+# TransportSecuritySettings only exists in mcp >= 1.x with transport_security module
+try:
+    from mcp.server.transport_security import TransportSecuritySettings  # type: ignore
+except ImportError:
+    TransportSecuritySettings = None  # type: ignore
 
 APP_NAME = os.environ.get("FASTMCP_SERVER_NAME", "qdrant-indexer-mcp")
 HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
@@ -287,34 +291,13 @@ from scripts.mcp_workspace import (
     _work_script,
 )
 
-# Configure transport security to allow Docker internal hostnames
-# This prevents "Invalid Host header: mcp:8000" errors from inter-container calls
-try:
-    from mcp.server.transport_security import TransportSecuritySettings
-    _transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            "localhost:*",
-            "127.0.0.1:*",
-            "0.0.0.0:*",
-            "mcp:*",           # Docker service name
-            "mcp_http:*",      # Docker service name (HTTP variant)
-            "indexer:*",       # Docker service name
-            "mcp-search:*",    # Docker container name pattern
-            "mcp-search-dev-remote:*",
-            "mcp-search-http-dev-remote:*",
-        ],
-        allowed_origins=[
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-            "http://mcp:*",
-            "http://mcp_http:*",
-        ],
-    )
-except ImportError:
-    _transport_security = None
-
-mcp = FastMCP(APP_NAME, transport_security=_transport_security)
+# Disable DNS rebinding protection - breaks Docker internal networking (Host: mcp:8000)
+_security_settings = (
+    TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    if TransportSecuritySettings
+    else None
+)
+mcp = FastMCP(APP_NAME, transport_security=_security_settings)
 
 
 # Capture tool registry automatically by wrapping the decorator once
