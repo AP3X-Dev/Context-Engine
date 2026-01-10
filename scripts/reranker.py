@@ -1,3 +1,6 @@
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
 """Centralized reranker factory with FastEmbed cross-encoder support.
 
 This module provides a unified interface for reranker model initialization,
