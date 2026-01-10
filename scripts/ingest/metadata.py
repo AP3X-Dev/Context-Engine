@@ -222,6 +222,10 @@ def _extract_calls(language: str, text: str) -> List[str]:
     return out[:200]
 
 
+# Languages that have tree-sitter call extraction support
+# Derived set of languages that support tree-sitter call extraction
+_TS_CALL_LANGUAGES = set(_TS_LANG_CONFIG.keys())
+
 # Tree-sitter node type mappings per language
 # Maps language -> {calls, constructors, member}
 # - calls: list of call node types
