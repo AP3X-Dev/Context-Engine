@@ -1,4 +1,4 @@
-"""Background pseudo backfill worker for the watcher."""
+"""Background pseudo and graph backfill worker for the watcher."""
 
 from __future__ import annotations
 
@@ -20,6 +20,12 @@ from scripts.workspace_state import (
 from .config import ROOT
 
 logger = logging.getLogger(__name__)
+
+
+def _graph_backfill_enabled() -> bool:
+    """Check if graph backfill is enabled."""
+    val = os.environ.get("GRAPH_BACKFILL_ENABLED", "1").strip().lower()
+    return val in {"1", "true", "yes", "on"}
 
 
 def _start_pseudo_backfill_worker(
@@ -96,6 +102,27 @@ def _start_pseudo_backfill_worker(
                             repo_name or "default", coll, exc,
                             exc_info=True,
                         )
+
+                    # Graph backfill: populate graph edges from existing points
+                    if _graph_backfill_enabled():
+                        try:
+                            graph_processed = idx.graph_backfill_tick(
+                                client,
+                                coll,
+                                repo_name=repo_name,
+                                max_points=max_points,
+                            )
+                            if graph_processed:
+                                logger.info(
+                                    "[graph_backfill] repo=%s collection=%s processed=%d",
+                                    repo_name or "default", coll, graph_processed,
+                                )
+                        except Exception as exc:
+                            logger.error(
+                                "[graph_backfill] error repo=%s collection=%s: %s",
+                                repo_name or "default", coll, exc,
+                                exc_info=True,
+                            )
             except Exception:
                 logger.error(
                     "[pseudo_backfill] unexpected error in worker loop",

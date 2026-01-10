@@ -254,6 +254,16 @@ def _process_paths(
                     safe_print(f"[deleted] {p} -> {collection}")
                 except Exception:
                     pass
+                # Also delete graph edges for this file
+                try:
+                    from scripts.ingest.graph_edges import (
+                        delete_edges_by_path,
+                        get_graph_collection_name,
+                    )
+                    graph_coll = get_graph_collection_name(collection)
+                    delete_edges_by_path(client, graph_coll, str(p), repo=repo_name)
+                except Exception:
+                    pass  # Graph collection may not exist yet
             try:
                 if repo_name:
                     remove_cached_file(str(p), repo_name)

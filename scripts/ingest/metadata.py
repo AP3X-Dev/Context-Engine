@@ -222,16 +222,11 @@ def _extract_calls(language: str, text: str) -> List[str]:
     return out[:200]
 
 
-# Languages that have tree-sitter call extraction support
-_TS_CALL_LANGUAGES = {
-    "python", "javascript", "typescript", "tsx", "jsx",
-    "go", "rust", "java", "c", "cpp", "ruby",
-    "c_sharp", "csharp", "bash", "shell", "sh",
-}
-
 # Tree-sitter node type mappings per language
-# Maps language -> (call_types, member_field_map)
-# member_field_map: node_type -> (object_field, property_field)
+# Maps language -> {calls, constructors, member}
+# - calls: list of call node types
+# - constructors: list of new/object creation node types
+# - member: node_type -> (object_field, property_field) for qualified names
 _TS_LANG_CONFIG = {
     "python": {
         "calls": ["call"],
@@ -317,6 +312,9 @@ _TS_LANG_CONFIG = {
         "member": {},
     },
 }
+
+# Derived set of languages that support tree-sitter call extraction
+_TS_CALL_LANGUAGES = set(_TS_LANG_CONFIG.keys())
 
 # Default config for unknown languages
 _TS_DEFAULT_CONFIG = {
