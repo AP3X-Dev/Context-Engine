@@ -74,6 +74,14 @@ from scripts.ingest.qdrant import (
     embed_batch,
     PATTERN_VECTOR_NAME,
 )
+from scripts.ingest.graph_edges import (
+    ensure_graph_collection,
+    extract_call_edges,
+    extract_import_edges,
+    upsert_edges,
+    delete_edges_by_path,
+    get_graph_collection_name,
+)
 
 # Import utility functions
 from scripts.utils import sanitize_vector_name as _sanitize_vector_name
@@ -652,6 +660,72 @@ def _index_single_file_inner(
             for i, v, lx, m, lt, ct in zip(batch_ids, vectors, batch_lex, batch_meta, batch_lex_text, batch_code)
         ]
         upsert_points(client, collection, points)
+
+        # Emit graph edges for symbol relationships
+        try:
+            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+                graph_coll = ensure_graph_collection(client, collection)
+                # Delete old edges for this file before upserting new ones
+                delete_edges_by_path(client, graph_coll, str(file_path), repo=repo_tag)
+
+                mode = os.environ.get("INDEX_GRAPH_EDGES_MODE", "file").strip().lower()
+                all_edges = []
+                if mode in {"file", "file_level", "path"}:
+                    # NOTE: `imports`/`calls` are extracted at the file-level today and are
+                    # attached to every chunk's metadata. Emitting per-chunk edges would
+                    # explode edge counts and imply per-symbol precision we don't have.
+                    if calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=str(file_path),
+                            calls=calls,
+                            path=str(file_path),
+                            repo=repo_tag,
+                        ))
+                    if imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=str(file_path),
+                            imports=imports,
+                            path=str(file_path),
+                            repo=repo_tag,
+                        ))
+                else:
+                    # Experimental: per-chunk edges (can be very large with file-level calls/imports).
+                    for meta in batch_meta:
+                        sym_path = meta.get("metadata", {}).get("symbol_path", "")
+                        meta_calls = meta.get("metadata", {}).get("calls", [])
+                        meta_imports = meta.get("metadata", {}).get("imports", [])
+                        meta_path = meta.get("metadata", {}).get("path", str(file_path))
+                        meta_repo = meta.get("metadata", {}).get("repo", repo_tag)
+                        start_line = meta.get("metadata", {}).get("start_line")
+                        language = meta.get("metadata", {}).get("language")
+
+                        if sym_path and meta_calls:
+                            all_edges.extend(extract_call_edges(
+                                symbol_path=sym_path,
+                                calls=meta_calls,
+                                path=meta_path,
+                                repo=meta_repo,
+                                start_line=start_line,
+                                language=language,
+                            ))
+                        if meta_imports:
+                            all_edges.extend(extract_import_edges(
+                                symbol_path=sym_path or meta_path,
+                                imports=meta_imports,
+                                path=meta_path,
+                                repo=meta_repo,
+                                language=language,
+                            ))
+
+                if all_edges:
+                    upsert_edges(client, graph_coll, all_edges)
+        except Exception as e:
+            # Don't fail indexing if graph edges fail
+            try:
+                print(f"[graph_edges] Warning: Failed to emit edges for {file_path}: {e}")
+            except Exception:
+                pass
+
         try:
             ws = os.environ.get("WATCH_ROOT") or os.environ.get("WORKSPACE_PATH") or "/work"
             if set_cached_file_hash:
@@ -1367,6 +1441,74 @@ def process_file_with_smart_reindexing(
     if all_points:
         _upsert_points_fn(client, current_collection, all_points)
 
+        # Emit graph edges for symbol relationships
+        try:
+            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+                graph_coll = ensure_graph_collection(client, current_collection)
+                delete_edges_by_path(client, graph_coll, fp, repo=per_file_repo)
+
+                mode = os.environ.get("INDEX_GRAPH_EDGES_MODE", "file").strip().lower()
+                all_edges = []
+                if mode in {"file", "file_level", "path"}:
+                    meta0 = {}
+                    try:
+                        if all_points and hasattr(all_points[0], "payload"):
+                            meta0 = all_points[0].payload.get("metadata", {}) or {}
+                    except Exception:
+                        meta0 = {}
+                    file_calls = meta0.get("calls", []) or []
+                    file_imports = meta0.get("imports", []) or []
+                    if file_calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=fp,
+                            calls=file_calls,
+                            path=fp,
+                            repo=per_file_repo,
+                        ))
+                    if file_imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=fp,
+                            imports=file_imports,
+                            path=fp,
+                            repo=per_file_repo,
+                        ))
+                else:
+                    for pt in all_points:
+                        meta = pt.payload.get("metadata", {}) if hasattr(pt, "payload") else {}
+                        sym_path = meta.get("symbol_path", "")
+                        meta_calls = meta.get("calls", [])
+                        meta_imports = meta.get("imports", [])
+                        meta_path = meta.get("path", fp)
+                        meta_repo = meta.get("repo", per_file_repo)
+                        start_line = meta.get("start_line")
+                        language = meta.get("language")
+
+                        if sym_path and meta_calls:
+                            all_edges.extend(extract_call_edges(
+                                symbol_path=sym_path,
+                                calls=meta_calls,
+                                path=meta_path,
+                                repo=meta_repo,
+                                start_line=start_line,
+                                language=language,
+                            ))
+                        if meta_imports:
+                            all_edges.extend(extract_import_edges(
+                                symbol_path=sym_path or meta_path,
+                                imports=meta_imports,
+                                path=meta_path,
+                                repo=meta_repo,
+                                language=language,
+                            ))
+
+                if all_edges:
+                    upsert_edges(client, graph_coll, all_edges)
+        except Exception as e:
+            try:
+                print(f"[graph_edges] Warning: Failed to emit edges for {fp}: {e}")
+            except Exception:
+                pass
+
     try:
         if set_cached_symbols:
             set_cached_symbols(fp, symbol_meta, file_hash)
@@ -1572,5 +1714,179 @@ def pseudo_backfill_tick(
 
         if next_offset is None:
             break
+
+    return processed
+
+
+def graph_backfill_tick(
+    client: QdrantClient,
+    collection: str,
+    repo_name: str | None = None,
+    *,
+    max_points: int = 256,
+) -> int:
+    """Backfill graph edges from existing indexed points that have calls/imports metadata.
+
+    This enables seamless graph collection population for legacy collections that were
+    indexed before graph edges were introduced. Runs incrementally, processing points
+    that have calls/imports but haven't been added to the graph collection yet.
+
+    Args:
+        client: Qdrant client
+        collection: Main collection name (graph collection is derived)
+        repo_name: Optional repo filter
+        max_points: Maximum points to process per tick
+
+    Returns:
+        Number of points processed
+    """
+    from qdrant_client import models as _models
+    # Use module-level imports for graph_edges functions (already imported at top)
+
+    if not collection or max_points <= 0:
+        return 0
+
+    # Ensure graph collection exists
+    graph_coll = ensure_graph_collection(client, collection)
+    if not graph_coll:
+        return 0
+
+    # Track which paths we've already backfilled in this session
+    # to avoid re-processing on subsequent ticks
+    backfill_marker_key = "metadata._graph_backfilled"
+
+    # Build filter: points with calls OR imports that haven't been backfilled
+    must_conditions: list[Any] = []
+    if repo_name:
+        must_conditions.append(
+            _models.FieldCondition(
+                key="metadata.repo",
+                match=_models.MatchValue(value=repo_name),
+            )
+        )
+
+    # Note: Qdrant doesn't have a simple "array not empty" filter, so we scroll
+    # all points and check calls/imports presence in code.
+
+    # Check if we should skip already-backfilled points
+    null_cond = getattr(_models, "IsNullCondition", None)
+    if null_cond:
+        try:
+            must_conditions.append(null_cond(is_null=backfill_marker_key))
+        except Exception:
+            pass
+
+    flt = _models.Filter(must=must_conditions or None) if must_conditions else None
+
+    processed = 0
+    next_offset = None
+    edges_created = 0
+    paths_processed: set[str] = set()
+
+    while processed < max_points:
+        batch_limit = min(64, max_points - processed)
+        try:
+            points, next_offset = client.scroll(
+                collection_name=collection,
+                scroll_filter=flt,
+                limit=batch_limit,
+                with_payload=True,
+                with_vectors=False,
+                offset=next_offset,
+            )
+        except Exception as e:
+            print(f"[graph_backfill] Scroll error: {e}")
+            break
+
+        if not points:
+            break
+
+        all_edges: list[dict] = []
+        points_to_mark: list[Any] = []
+
+        for pt in points:
+            try:
+                payload = pt.payload or {}
+                md = payload.get("metadata", {})
+
+                path = md.get("path") or md.get("file_path") or ""
+                if not path:
+                    continue
+
+                # Skip if we've already processed this path in this tick
+                if path in paths_processed:
+                    continue
+
+                calls = md.get("calls") or []
+                imports = md.get("imports") or []
+
+                # Skip if no relationship data
+                if not calls and not imports:
+                    continue
+
+                repo = md.get("repo") or repo_name or ""
+                language = md.get("language")
+                symbol_path = md.get("symbol_path") or path
+
+                # Delete old edges for this path before adding new ones
+                # This ensures we don't have stale edges from removed calls/imports
+                try:
+                    delete_edges_by_path(client, graph_coll, path, repo=repo)
+                except Exception:
+                    pass  # Non-fatal: proceed with upsert
+
+                # Extract edges
+                if calls:
+                    all_edges.extend(extract_call_edges(
+                        symbol_path=symbol_path,
+                        calls=calls,
+                        path=path,
+                        repo=repo,
+                        language=language,
+                    ))
+
+                if imports:
+                    all_edges.extend(extract_import_edges(
+                        symbol_path=symbol_path,
+                        imports=imports,
+                        path=path,
+                        repo=repo,
+                        language=language,
+                    ))
+
+                paths_processed.add(path)
+                points_to_mark.append(pt)
+                processed += 1
+
+            except Exception as e:
+                print(f"[graph_backfill] Point processing error: {e}")
+                continue
+
+        # Upsert edges in batch
+        if all_edges:
+            try:
+                count = upsert_edges(client, graph_coll, all_edges)
+                edges_created += count
+            except Exception as e:
+                print(f"[graph_backfill] Edge upsert error: {e}")
+
+        # Mark points as backfilled (optional - adds a marker to prevent re-processing)
+        # This is a lightweight update that just sets a flag
+        if points_to_mark and os.environ.get("GRAPH_BACKFILL_MARK", "0").lower() in {"1", "true"}:
+            for pt in points_to_mark:
+                try:
+                    client.set_payload(
+                        collection_name=collection,
+                        payload={"metadata": {"_graph_backfilled": True}},
+                        points=[pt.id],
+                    )
+                except Exception:
+                    pass
+
+        if next_offset is None:
+            break
+
+    if processed > 0:
+        print(f"[graph_backfill] Processed {processed} points, created {edges_created} edges for {len(paths_processed)} paths")
 
     return processed

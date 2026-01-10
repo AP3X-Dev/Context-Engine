@@ -206,6 +206,7 @@ from scripts.ingest.pipeline import (
     detect_language,
     build_information,
     pseudo_backfill_tick,
+    graph_backfill_tick,
     # Main orchestration functions - pipeline.py is the single source of truth
     index_single_file,
     _index_single_file_inner,
@@ -338,6 +339,7 @@ __all__ = [
     "index_repo",
     "process_file_with_smart_reindexing",
     "pseudo_backfill_tick",
+    "graph_backfill_tick",
     # CLI
     "main",
     # Backward compat
