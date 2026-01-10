@@ -58,6 +58,8 @@ async def _repo_search_impl(
     query: Any = None,
     queries: Any = None,  # Alias for query (many clients use this)
     limit: Any = None,
+    # DEBUG: remove after timing investigation
+    _debug_entry: bool = True,
     per_path: Any = None,
     include_snippet: Any = None,
     context_lines: Any = None,
@@ -298,14 +300,15 @@ async def _repo_search_impl(
         os.environ.get("RERANKER_ENABLED", "1")
     ).strip().lower() in {"1", "true", "yes", "on"}
     rerank_enabled = _to_bool(rerank_enabled, rerank_env_default)
+    # Default rerank_top_n=20 balances quality vs latency; increase for benchmarks
     rerank_top_n = _to_int(
-        rerank_top_n, int(os.environ.get("RERANKER_TOPN", "50") or 50)
+        rerank_top_n, int(os.environ.get("RERANKER_TOPN", "20") or 20)
     )
     rerank_return_m = _to_int(
-        rerank_return_m, int(os.environ.get("RERANKER_RETURN_M", "12") or 12)
+        rerank_return_m, int(os.environ.get("RERANKER_RETURN_M", "20") or 20)
     )
     rerank_timeout_ms = _to_int(
-        rerank_timeout_ms, int(os.environ.get("RERANKER_TIMEOUT_MS", "120") or 120)
+        rerank_timeout_ms, int(os.environ.get("RERANKER_TIMEOUT_MS", "3000") or 3000)
     )
     highlight_snippet = _to_bool(highlight_snippet, True)
 
@@ -378,6 +381,7 @@ async def _repo_search_impl(
     if not mode:
         mode = mode_hint
     mode_str = _to_str(mode, "").strip().lower()
+    dense_mode = mode_str == "dense"
 
     # Apply defaults for language / under when explicit args are empty
     if not language:
@@ -490,7 +494,7 @@ async def _repo_search_impl(
     env["COLLECTION_NAME"] = collection
 
     # Apply dynamic boosts based on code signal strength
-    if code_signals.get("has_code_signals"):
+    if (not dense_mode) and code_signals.get("has_code_signals"):
         boosts = code_signals.get("suggested_boosts", {})
         # Boost symbol matching weight dynamically
         if "symbol_boost_multiplier" in boosts:
@@ -506,85 +510,24 @@ async def _repo_search_impl(
             env["HYBRID_IMPLEMENTATION_BOOST"] = str(round(base_impl_boost * mult, 3))
 
     # Pass extracted symbols as additional search hints (augments existing queries)
-    if auto_symbol_hints:
+    if (not dense_mode) and auto_symbol_hints:
         env["CODE_SIGNAL_SYMBOLS"] = ",".join(auto_symbol_hints[:5])
 
     results = []
     json_lines = []
 
-    # In-process hybrid search (optional)
-
     # Default subprocess result placeholder (for consistent response shape)
     res = {"ok": True, "code": 0, "stdout": "", "stderr": ""}
 
-    use_hybrid_inproc = str(
-        os.environ.get("HYBRID_IN_PROCESS", "")
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    if use_hybrid_inproc:
+    if dense_mode:
+        # Use run_pure_dense_search for improved recall via candidate expansion
+        # while preserving base-query dense ranking (no fusion/boosts).
         try:
-            from scripts.hybrid_search import run_hybrid_search  # type: ignore
-
-            model_name = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-            model = get_embedding_model_fn(model_name) if get_embedding_model_fn else None
-            # Ensure hybrid_search uses the intended collection when running in-process
-            prev_coll = os.environ.get("COLLECTION_NAME")
-            # Determine effective hybrid candidate limit: if rerank is enabled, search up to rerank_top_n
-            try:
-                base_limit = int(limit)
-            except Exception:
-                base_limit = 10
-            eff_limit = base_limit
-            if rerank_enabled:
-                try:
-                    rt = int(rerank_top_n)
-                except Exception:
-                    rt = 0
-                if rt > eff_limit:
-                    eff_limit = rt
-            try:
-                os.environ["COLLECTION_NAME"] = collection
-                # In-process path_glob/not_glob accept a single string; reduce list inputs safely
-                items = run_hybrid_search(
-                    queries=queries,
-                    limit=eff_limit,
-                    per_path=(
-                        int(per_path)
-                        if (per_path is not None and str(per_path).strip() != "")
-                        else 1
-                    ),
-                    language=language or None,
-                    under=under or None,
-                    kind=kind or None,
-                    symbol=symbol or None,
-                    ext=ext or None,
-                    not_filter=not_ or None,
-                    case=case or None,
-                    path_regex=path_regex or None,
-                    path_glob=(path_globs or None),
-                    not_glob=(not_globs or None),
-                    expand=str(os.environ.get("HYBRID_EXPAND", "1")).strip().lower()
-                    in {"1", "true", "yes", "on"},
-                    model=model,
-                    mode=mode_str or None,
-                    repo=repo_filter,  # Cross-codebase isolation
-                )
-            finally:
-                if prev_coll is None:
-                    try:
-                        del os.environ["COLLECTION_NAME"]
-                    except Exception:
-                        pass
-                else:
-                    os.environ["COLLECTION_NAME"] = prev_coll
-            # items are already in structured dict form
-            json_lines = items  # reuse downstream shaping
+            from scripts.hybrid_search import run_pure_dense_search
         except Exception as e:
-            # Fallback to subprocess path if in-process fails
-            logger.debug(f"In-process hybrid search failed, falling back to subprocess: {type(e).__name__}: {e}")
-            use_hybrid_inproc = False
+            return {"error": f"dense mode unavailable: {e}"}
 
-    if not use_hybrid_inproc:
-        # Try hybrid search via subprocess (JSONL output)
+        # Determine effective candidate pool (respect rerank_top_n if rerank is enabled)
         try:
             base_limit = int(limit)
         except Exception:
@@ -597,84 +540,241 @@ async def _repo_search_impl(
                 rt = 0
             if rt > eff_limit:
                 eff_limit = rt
-        cmd = [
-            "python",
-            _work_script("hybrid_search.py"),
-            "--limit",
-            str(eff_limit),
-            "--json",
-        ]
-        if per_path is not None and str(per_path).strip() != "":
-            cmd += ["--per-path", str(int(per_path))]
-        if language:
-            cmd += ["--language", language]
-        if under:
-            cmd += ["--under", under]
-        if kind:
-            cmd += ["--kind", kind]
-        if symbol:
-            cmd += ["--symbol", symbol]
-        if ext:
-            cmd += ["--ext", ext]
-        if not_:
-            cmd += ["--not", not_]
-        if case:
-            cmd += ["--case", case]
-        if path_regex:
-            cmd += ["--path-regex", path_regex]
-        for g in path_globs:
-            cmd += ["--path-glob", g]
-        for g in not_globs:
-            cmd += ["--not-glob", g]
-        for q in queries:
-            cmd += ["--query", q]
-        if collection:
-            cmd += ["--collection", str(collection)]
 
-        res = await _run_async_fn(cmd, env=env)
-        for line in (res.get("stdout") or "").splitlines():
-            line = line.strip()
-            if not line:
+        query_text = " ".join(queries)
+        
+        # run_pure_dense_search handles embedding + candidate expansion
+        items = await asyncio.to_thread(
+            lambda: run_pure_dense_search(
+                query=query_text,
+                limit=eff_limit,
+                collection=collection,
+                language=language or None,
+                under=under or None,
+                repo=repo_filter,
+            )
+        )
+        
+        # Apply post-filters (path_regex, path_glob, not_glob, not_) that aren't
+        # supported by run_pure_dense_search's server-side filters
+        case_sensitive = str(case or "").strip().lower() in {"sensitive", "true", "1", "yes", "on"}
+        import fnmatch as _fnm
+        import re as _re
+
+        def _norm_path(p: str) -> str:
+            return p if case_sensitive else p.lower()
+
+        path_globs_norm = [g if case_sensitive else g.lower() for g in path_globs]
+        not_globs_norm = [g if case_sensitive else g.lower() for g in not_globs]
+        path_regex_norm = path_regex or ""
+
+        def _match_glob(glob_pat: str, path_val: str) -> bool:
+            if not glob_pat:
+                return False
+            return _fnm.fnmatchcase(_norm_path(path_val), glob_pat)
+
+        for item in items:
+            path = item.get("path") or ""
+            
+            # Apply path_regex filter
+            if path_regex_norm:
+                flags = 0 if case_sensitive else _re.IGNORECASE
+                try:
+                    if not _re.search(path_regex_norm, path, flags=flags):
+                        continue
+                except Exception:
+                    pass
+            
+            # Apply path_glob filter
+            if path_globs_norm and not any(_match_glob(g, path) for g in path_globs_norm):
                 continue
-            try:
-                obj = json.loads(line)
-                json_lines.append(obj)
-            except json.JSONDecodeError:
+            
+            # Apply not_glob filter
+            if not_globs_norm and any(_match_glob(g, path) for g in not_globs_norm):
                 continue
-        # Fallback: if subprocess yielded nothing (e.g., local dev without /work), try in-process once
-        if not json_lines:
+            
+            # Apply not_ text filter
+            if not_ and not_.lower() in _norm_path(path):
+                continue
+
+            payload = item.get("payload") or {}
+            if rerank_enabled and isinstance(payload, dict):
+                payload_out = payload
+            else:
+                payload_out = {
+                    k: payload[k]
+                    for k in ("_id", "code_id", "id")
+                    if k in payload
+                }
+            json_lines.append(
+                {
+                    "score": float(item.get("score", 0.0)),
+                    "path": path,
+                    "symbol": item.get("symbol") or "",
+                    "start_line": int(item.get("start_line") or 0),
+                    "end_line": int(item.get("end_line") or 0),
+                    "payload": payload_out,
+                }
+            )
+    else:
+        # In-process hybrid search (optional)
+        use_hybrid_inproc = str(
+            os.environ.get("HYBRID_IN_PROCESS", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if use_hybrid_inproc:
             try:
                 from scripts.hybrid_search import run_hybrid_search  # type: ignore
 
                 model_name = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
                 model = get_embedding_model_fn(model_name) if get_embedding_model_fn else None
-                items = run_hybrid_search(
-                    queries=queries,
-                    limit=int(limit),
-                    per_path=(
-                        int(per_path)
-                        if (per_path is not None and str(per_path).strip() != "")
-                        else 1
-                    ),
-                    language=language or None,
-                    under=under or None,
-                    kind=kind or None,
-                    symbol=symbol or None,
-                    ext=ext or None,
-                    not_filter=not_ or None,
-                    case=case or None,
-                    path_regex=path_regex or None,
-                    path_glob=(path_globs or None),
-                    not_glob=(not_globs or None),
-                    expand=str(os.environ.get("HYBRID_EXPAND", "0")).strip().lower()
-                    in {"1", "true", "yes", "on"},
-                    model=model,
-                    mode=mode_str or None,
-                    repo=repo_filter,  # Cross-codebase isolation
+                # Determine effective hybrid candidate limit: if rerank is enabled, search up to rerank_top_n
+                try:
+                    base_limit = int(limit)
+                except Exception:
+                    base_limit = 10
+                eff_limit = base_limit
+                if rerank_enabled:
+                    try:
+                        rt = int(rerank_top_n)
+                    except Exception:
+                        rt = 0
+                    if rt > eff_limit:
+                        eff_limit = rt
+                # In-process path_glob/not_glob accept a single string; reduce list inputs safely
+                print(f"[debug] DEBUG_SEARCH_TIMING={os.environ.get('DEBUG_SEARCH_TIMING', 'not set')}", flush=True)
+                items = await asyncio.to_thread(
+                    lambda: run_hybrid_search(
+                        queries=queries,
+                        limit=eff_limit,
+                        per_path=(
+                            int(per_path)
+                            if (per_path is not None and str(per_path).strip() != "")
+                            else 1
+                        ),
+                        language=language or None,
+                        under=under or None,
+                        kind=kind or None,
+                        symbol=symbol or None,
+                        ext=ext or None,
+                        not_filter=not_ or None,
+                        case=case or None,
+                        path_regex=path_regex or None,
+                        path_glob=(path_globs or None),
+                        not_glob=(not_globs or None),
+                        expand=str(os.environ.get("HYBRID_EXPAND", "1")).strip().lower()
+                        in {"1", "true", "yes", "on"},
+                        model=model,
+                        collection=collection,
+                        mode=mode_str or None,
+                        repo=repo_filter,  # Cross-codebase isolation
+                    )
                 )
-                json_lines = items
+                # items are already in structured dict form
+                json_lines = items  # reuse downstream shaping
+            except Exception as e:
+                # Fallback to subprocess path if in-process fails
+                logger.debug(f"In-process hybrid search failed, falling back to subprocess: {type(e).__name__}: {e}")
+                # VISIBLE ERROR for debugging silent failures during benchmark runs
+                print(f"[ERROR] In-process hybrid failed: {type(e).__name__}: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                use_hybrid_inproc = False
+
+        if not use_hybrid_inproc:
+            # Try hybrid search via subprocess (JSONL output)
+            try:
+                base_limit = int(limit)
             except Exception:
-                pass
+                base_limit = 10
+            eff_limit = base_limit
+            if rerank_enabled:
+                try:
+                    rt = int(rerank_top_n)
+                except Exception:
+                    rt = 0
+                if rt > eff_limit:
+                    eff_limit = rt
+            cmd = [
+                "python",
+                _work_script("hybrid_search.py"),
+                "--limit",
+                str(eff_limit),
+                "--json",
+            ]
+            if per_path is not None and str(per_path).strip() != "":
+                cmd += ["--per-path", str(int(per_path))]
+            if language:
+                cmd += ["--language", language]
+            if under:
+                cmd += ["--under", under]
+            if kind:
+                cmd += ["--kind", kind]
+            if symbol:
+                cmd += ["--symbol", symbol]
+            if ext:
+                cmd += ["--ext", ext]
+            if not_:
+                cmd += ["--not", not_]
+            if case:
+                cmd += ["--case", case]
+            if path_regex:
+                cmd += ["--path-regex", path_regex]
+            for g in path_globs:
+                cmd += ["--path-glob", g]
+            for g in not_globs:
+                cmd += ["--not-glob", g]
+            for q in queries:
+                cmd += ["--query", q]
+            if collection:
+                cmd += ["--collection", str(collection)]
+
+            res = await _run_async_fn(cmd, env=env)
+            for line in (res.get("stdout") or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    json_lines.append(obj)
+                except json.JSONDecodeError:
+                    continue
+            # Fallback: if subprocess yielded nothing (e.g., local dev without /work), try in-process once
+            if not json_lines:
+                try:
+                    from scripts.hybrid_search import run_hybrid_search  # type: ignore
+
+                    model_name = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+                    model = get_embedding_model_fn(model_name) if get_embedding_model_fn else None
+                    items = await asyncio.to_thread(
+                        lambda: run_hybrid_search(
+                            queries=queries,
+                            limit=int(limit),
+                            per_path=(
+                                int(per_path)
+                                if (per_path is not None and str(per_path).strip() != "")
+                                else 1
+                            ),
+                            language=language or None,
+                            under=under or None,
+                            kind=kind or None,
+                            symbol=symbol or None,
+                            ext=ext or None,
+                            not_filter=not_ or None,
+                            case=case or None,
+                            path_regex=path_regex or None,
+                            path_glob=(path_globs or None),
+                            not_glob=(not_globs or None),
+                            expand=str(os.environ.get("HYBRID_EXPAND", "0")).strip().lower()
+                            in {"1", "true", "yes", "on"},
+                            model=model,
+                            collection=collection,
+                            mode=mode_str or None,
+                            repo=repo_filter,  # Cross-codebase isolation
+                        )
+                    )
+                    json_lines = items
+                except Exception:
+                    pass
 
     # Optional rerank fallback path: if enabled, attempt; on timeout or error, keep hybrid
     used_rerank = False
@@ -714,7 +814,7 @@ async def _repo_search_impl(
                     for obj in reranked:
                         # Copy the list to avoid mutating the original object
                         why_parts = list(obj.get("why", []))
-                        why_parts.append(f"learning:{obj.get('recursive_iterations', 0)}")
+                        why_parts.append(f"refine:{obj.get('recursive_iterations', 0)}")
                         why_parts.append(f"score:{float(obj.get('score', 0)):.3f}")
 
                         # Build components with optional fname_boost
@@ -726,6 +826,13 @@ async def _repo_search_impl(
                             components["fname_boost"] = float(obj.get("fname_boost", 0))
                             why_parts.append(f"fname:{float(obj.get('fname_boost', 0)):.2f}")
 
+                        # Extract benchmark IDs from payload for CoIR/CoSQA
+                        _payload = obj.get("payload") if isinstance(obj, dict) else None
+                        if not isinstance(_payload, dict):
+                            _payload = {}
+                        _doc_id = _payload.get("_id") or _payload.get("code_id") or _payload.get("id")
+                        _code_id = _payload.get("code_id")
+
                         item = {
                             "score": float(obj.get("score", 0)),
                             "path": obj.get("path", ""),
@@ -734,6 +841,9 @@ async def _repo_search_impl(
                             "end_line": int(obj.get("end_line") or 0),
                             "why": why_parts,
                             "components": components,
+                            # Benchmark IDs (preserved through rerank)
+                            "doc_id": str(_doc_id) if _doc_id is not None else None,
+                            "code_id": str(_code_id) if _code_id is not None else None,
                         }
                         # Preserve dual-path metadata
                         if obj.get("host_path"):
@@ -806,16 +916,34 @@ async def _repo_search_impl(
                             # If any of the above fails, we just keep header-only
                             pass
 
+                        # Priority 1: Check for inline content (CoSQA/CoIR benchmarks store text in payload)
+                        inline_text = (
+                            obj.get("text") or obj.get("code") or obj.get("snippet") or
+                            (obj.get("payload") or {}).get("text") or
+                            (obj.get("payload") or {}).get("code")
+                        )
+                        if inline_text:
+                            # Use inline content directly (truncate for reranker input limit)
+                            inline_text = str(inline_text).strip()[:2000]
+                            if inline_text:
+                                meta = "\n".join(meta_lines) if meta_lines else header
+                                return (meta + "\n\n" + inline_text).strip()
+
+                        # Priority 2: Read from disk (for file-based corpora like SWE-bench)
                         sl = int(obj.get("start_line") or 0)
                         el = int(obj.get("end_line") or 0)
                         if not path or not sl:
                             return "\n".join(meta_lines) if meta_lines else header
                         try:
                             p = path
+                            # Use rerank_base_path from env or workspace_path, fallback to /work
+                            base_path = os.environ.get("RERANK_BASE_PATH") or workspace_path or "/work"
                             if not os.path.isabs(p):
-                                p = os.path.join("/work", p)
+                                p = os.path.join(base_path, p)
                             realp = os.path.realpath(p)
-                            if not (realp == "/work" or realp.startswith("/work/")):
+                            # Allow any path under the base_path
+                            base_real = os.path.realpath(base_path)
+                            if not (realp == base_real or realp.startswith(base_real + os.sep)):
                                 return "\n".join(meta_lines) if meta_lines else header
                             with open(
                                 realp, "r", encoding="utf-8", errors="ignore"
@@ -840,6 +968,17 @@ async def _repo_search_impl(
                     max_workers = min(16, (os.cpu_count() or 4) * 4)
                     with _fut.ThreadPoolExecutor(max_workers=max_workers) as ex:
                         docs = list(ex.map(_doc_for, cand_objs))
+
+                    # Debug: log what text reranker is seeing
+                    if os.environ.get("DEBUG_RERANK_TEXT"):
+                        logger.info(f"[rerank] Query: {rq[:100]}...")
+                        for i, doc in enumerate(docs[:3]):
+                            preview = doc[:300].replace('\n', '\\n')
+                            logger.info(f"[rerank] Doc[{i}] ({len(doc)} chars): {preview}...")
+
+                    # Capture before-rerank order for comparison
+                    _before_paths = [(o.get("path", "?").split("/")[-1], o.get("score", 0)) for o in cand_objs[:10]]
+
                     pairs = [(rq, d) for d in docs]
                     scores = _rr_local(pairs)
                     # Blend rerank with fusion score to preserve pre-rerank boosts
@@ -850,13 +989,21 @@ async def _repo_search_impl(
                     # This ensures exact symbol matches rank higher even when reranker disagrees
                     _post_symbol_boost = float(os.environ.get("POST_RERANK_SYMBOL_BOOST", "1.0") or 1.0)
                     blended = []
+                    # Detect reranker score range for proper normalization
+                    # FastEmbed rerankers return 0-1, raw ONNX can return -12 to +12
+                    rr_min, rr_max = min(scores), max(scores)
+                    rr_range = rr_max - rr_min if rr_max > rr_min else 1.0
+                    # Fusion scores are typically 0-3
+                    fus_scores = [float(o.get("score", 0.0) or 0.0) for o in cand_objs]
+                    fus_max = max(fus_scores) if fus_scores else 3.0
+                    fus_max = max(fus_max, 1.0)  # Avoid div by zero
+
                     for rr_score, obj in zip(scores, cand_objs):
                         fusion_score = float(obj.get("score", 0.0) or 0.0)
-                        # Normalize fusion_score to similar scale as rerank (rough heuristic)
-                        # Fusion scores are typically 0-3, rerank scores are -12 to 0
-                        # Shift fusion to negative range: fusion=2 -> -1, fusion=0 -> -3
-                        norm_fusion = fusion_score - 3.0
-                        blended_score = _rerank_blend * rr_score + (1.0 - _rerank_blend) * norm_fusion
+                        # Normalize both to 0-1 range for fair blending
+                        norm_rerank = (rr_score - rr_min) / rr_range if rr_range > 0 else 0.5
+                        norm_fusion = fusion_score / fus_max
+                        blended_score = _rerank_blend * norm_rerank + (1.0 - _rerank_blend) * norm_fusion
                         # Apply post-rerank symbol boost: extract symbol boosts from components
                         # and add them directly to blended score (not diluted by blend weight)
                         comps = obj.get("components") or {}
@@ -871,6 +1018,12 @@ async def _repo_search_impl(
                         why_parts = obj.get("why", []) + [f"rerank_onnx:{float(rr_s):.3f}", f"blend:{float(blended_s):.3f}"]
                         if post_b > 0:
                             why_parts.append(f"post_sym:{float(post_b):.3f}")
+                        # Extract benchmark IDs from payload for CoIR/CoSQA
+                        _payload = obj.get("payload") if isinstance(obj, dict) else None
+                        if not isinstance(_payload, dict):
+                            _payload = {}
+                        _doc_id = _payload.get("_id") or _payload.get("code_id") or _payload.get("id")
+                        _code_id = _payload.get("code_id")
                         item = {
                             "score": float(blended_s),
                             "path": obj.get("path", ""),
@@ -880,6 +1033,9 @@ async def _repo_search_impl(
                             "why": why_parts,
                             "components": (obj.get("components") or {})
                             | {"rerank_onnx": float(rr_s), "blended": float(blended_s), "post_symbol_boost": float(post_b)},
+                            # Benchmark IDs (preserved through rerank)
+                            "doc_id": str(_doc_id) if _doc_id is not None else None,
+                            "code_id": str(_code_id) if _code_id is not None else None,
                         }
                         # Preserve dual-path metadata when available so clients can prefer host paths
                         _hostp = obj.get("host_path")
@@ -893,6 +1049,16 @@ async def _repo_search_impl(
                         results = tmp
                         used_rerank = True
                         rerank_counters["inproc_hybrid"] += 1
+
+                        # Debug: log before/after comparison
+                        if os.environ.get("DEBUG_RERANK_AB"):
+                            _after_paths = [(t.get("path", "?").split("/")[-1], t.get("score", 0)) for t in tmp[:10]]
+                            logger.info(f"[rerank A/B] BEFORE (fusion): {_before_paths}")
+                            logger.info(f"[rerank A/B] AFTER (reranked): {_after_paths}")
+                            # Show rerank scores
+                            _rr_scores = [(t.get("path", "?").split("/")[-1], t.get("why", [])) for t in tmp[:5]]
+                            for p, w in _rr_scores:
+                                logger.info(f"[rerank A/B] {p}: {w}")
             except Exception:
                 used_rerank = False
         # Fallback paths (in-process reranker dense candidates, then subprocess)
@@ -1005,6 +1171,15 @@ async def _repo_search_impl(
     if not used_rerank:
         # Build results from hybrid JSON lines
         for obj in json_lines:
+            # NOTE: hybrid_search.py emits a "payload" field intended for benchmarks.
+            # We do NOT pass through the full payload here (it can include large code/text),
+            # but we *do* extract stable document identifiers for standard corpora (CoSQA/CoIR).
+            _payload = obj.get("payload") if isinstance(obj, dict) else None
+            if not isinstance(_payload, dict):
+                _payload = {}
+            # Prefer CoIR's "_id", else CoSQA's "code_id", else any generic "id".
+            _doc_id = _payload.get("_id") or _payload.get("code_id") or _payload.get("id")
+            _code_id = _payload.get("code_id")
             item = {
                 "score": float(obj.get("score", 0.0)),
                 "path": obj.get("path", ""),
@@ -1013,6 +1188,9 @@ async def _repo_search_impl(
                 "end_line": int(obj.get("end_line") or 0),
                 "why": obj.get("why", []),
                 "components": obj.get("components", {}),
+                # Benchmark IDs (small, safe to include in normal responses)
+                "doc_id": str(_doc_id) if _doc_id is not None else None,
+                "code_id": str(_code_id) if _code_id is not None else None,
             }
             # Preserve dual-path metadata when available so clients can prefer host paths
             _hostp = obj.get("host_path")
@@ -1263,45 +1441,46 @@ async def _repo_search_impl(
     #   - Reranking disabled
     #   - Reranking timed out / failed
     #   - Subprocess hybrid search without reranking
-    _fname_boost_factor = float(os.environ.get("FNAME_BOOST", "0.15") or 0.15)
-    if _fname_boost_factor > 0 and results:
-        _q_str = " ".join(queries).lower()
-        _q_toks = {t for t in re.findall(r"[a-z0-9_]{3,}", _q_str) if len(t) >= 3}
-        if _q_toks:
-            for r in results:
-                # Skip if fname_boost already applied by reranker
-                if r.get("fname_boost") or (r.get("components") or {}).get("fname_boost"):
-                    continue
+    if not dense_mode:
+        _fname_boost_factor = float(os.environ.get("FNAME_BOOST", "0.15") or 0.15)
+        if _fname_boost_factor > 0 and results:
+            _q_str = " ".join(queries).lower()
+            _q_toks = {t for t in re.findall(r"[a-z0-9_]{3,}", _q_str) if len(t) >= 3}
+            if _q_toks:
+                for r in results:
+                    # Skip if fname_boost already applied by reranker
+                    if r.get("fname_boost") or (r.get("components") or {}).get("fname_boost"):
+                        continue
 
-                # Extract path from various possible keys
-                _path = ""
-                for _pk in ("path", "rel_path", "host_path", "container_path", "client_path"):
-                    _pv = r.get(_pk) or (r.get("metadata") or {}).get(_pk)
-                    if isinstance(_pv, str) and _pv.strip():
-                        _path = _pv.lower()
-                        break
-                if not _path:
-                    continue
+                    # Extract path from various possible keys
+                    _path = ""
+                    for _pk in ("path", "rel_path", "host_path", "container_path", "client_path"):
+                        _pv = r.get(_pk) or (r.get("metadata") or {}).get(_pk)
+                        if isinstance(_pv, str) and _pv.strip():
+                            _path = _pv.lower()
+                            break
+                    if not _path:
+                        continue
 
-                # Extract filename base (strip extension)
-                _fname = _path.rsplit("/", 1)[-1] if "/" in _path else _path
-                _fname_base = re.sub(r"\.[^.]+$", "", _fname)
-                _fname_toks = {t for t in re.split(r"[_\-.]", _fname_base) if t and len(t) >= 3}
+                    # Extract filename base (strip extension)
+                    _fname = _path.rsplit("/", 1)[-1] if "/" in _path else _path
+                    _fname_base = re.sub(r"\.[^.]+$", "", _fname)
+                    _fname_toks = {t for t in re.split(r"[_\-.]", _fname_base) if t and len(t) >= 3}
 
-                # Require 2+ matching tokens for boost
-                _match_count = len(_q_toks & _fname_toks)
-                if _match_count >= 2:
-                    _boost = float(_fname_boost_factor) * _match_count
-                    r["score"] = float(r.get("score", 0)) + _boost
-                    r["fname_boost"] = _boost
-                    # Update components dict if present
-                    if "components" in r and isinstance(r["components"], dict):
-                        r["components"]["fname_boost"] = _boost
-                    # Update why array if present
-                    if "why" in r and isinstance(r["why"], list):
-                        r["why"].append(f"fname:{_boost:.2f}")
-        # Re-sort results by updated score so fname_boost affects ranking
-        results = sorted(results, key=lambda x: float(x.get("score", 0)), reverse=True)
+                    # Require 2+ matching tokens for boost
+                    _match_count = len(_q_toks & _fname_toks)
+                    if _match_count >= 2:
+                        _boost = float(_fname_boost_factor) * _match_count
+                        r["score"] = float(r.get("score", 0)) + _boost
+                        r["fname_boost"] = _boost
+                        # Update components dict if present
+                        if "components" in r and isinstance(r["components"], dict):
+                            r["components"]["fname_boost"] = _boost
+                        # Update why array if present
+                        if "why" in r and isinstance(r["why"], list):
+                            r["why"].append(f"fname:{_boost:.2f}")
+            # Re-sort results by updated score so fname_boost affects ranking
+            results = sorted(results, key=lambda x: float(x.get("score", 0)), reverse=True)
 
     if compact:
         results = [
@@ -1351,4 +1530,3 @@ async def _repo_search_impl(
     if _should_use_toon(output_format):
         return _format_results_as_toon(response, compact=bool(compact))
     return response
-

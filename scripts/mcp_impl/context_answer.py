@@ -2126,18 +2126,13 @@ def _ca_decode(
     stops: list[str],
     timeout: float | None = None,
 ) -> str:
-    # Select decoder runtime: explicit REFRAG_RUNTIME takes priority,
-    # otherwise auto-detect based on which API keys are configured
-    runtime_kind = str(os.environ.get("REFRAG_RUNTIME", "")).strip().lower()
-    if not runtime_kind:
-        # Auto-detect based on available API keys
-        if os.environ.get("MINIMAX_API_KEY", "").strip():
-            runtime_kind = "minimax"
-        elif os.environ.get("GLM_API_KEY", "").strip():
-            runtime_kind = "glm"
-        else:
-            runtime_kind = "llamacpp"
-    if runtime_kind == "glm":
+    # Select decoder runtime: explicit REFRAG_RUNTIME required, defaults to llamacpp
+    runtime_kind = str(os.environ.get("REFRAG_RUNTIME", "")).strip().lower() or "llamacpp"
+    if runtime_kind == "openai":
+        from scripts.refrag_openai import OpenAIRefragClient  # type: ignore
+
+        client = OpenAIRefragClient()
+    elif runtime_kind == "glm":
         from scripts.refrag_glm import GLMRefragClient  # type: ignore
 
         client = GLMRefragClient()
@@ -2700,25 +2695,27 @@ async def _context_answer_impl(
 
         try:
             # Refactored retrieval pipeline (filters + hybrid search)
-            _retr = _retrieve_fn(
-                queries=queries,
-                lim=lim,
-                ppath=ppath,
-                filters=_cfg["filters"],
-                model=model,
-                did_local_expand=did_local_expand,
-                kwargs={
-                    "language": _cfg["filters"].get("language"),
-                    "under": _cfg["filters"].get("under"),
-                    "path_glob": _cfg["filters"].get("path_glob"),
-                    "not_glob": _cfg["filters"].get("not_glob"),
-                    "path_regex": _cfg["filters"].get("path_regex"),
-                    "ext": _cfg["filters"].get("ext"),
-                    "kind": _cfg["filters"].get("kind"),
-                    "case": _cfg["filters"].get("case"),
-                    "symbol": _cfg["filters"].get("symbol"),
-                },
-                repo=repo,
+            _retr = await asyncio.to_thread(
+                lambda: _retrieve_fn(
+                    queries=queries,
+                    lim=lim,
+                    ppath=ppath,
+                    filters=_cfg["filters"],
+                    model=model,
+                    did_local_expand=did_local_expand,
+                    kwargs={
+                        "language": _cfg["filters"].get("language"),
+                        "under": _cfg["filters"].get("under"),
+                        "path_glob": _cfg["filters"].get("path_glob"),
+                        "not_glob": _cfg["filters"].get("not_glob"),
+                        "path_regex": _cfg["filters"].get("path_regex"),
+                        "ext": _cfg["filters"].get("ext"),
+                        "kind": _cfg["filters"].get("kind"),
+                        "case": _cfg["filters"].get("case"),
+                        "symbol": _cfg["filters"].get("symbol"),
+                    },
+                    repo=repo,
+                )
             )
             items = _retr["items"]
             eff_language = _retr["eff_language"]
@@ -2737,28 +2734,30 @@ async def _context_answer_impl(
             for key in ("path_glob", "language", "under"):
                 fallback_kwargs.pop(key, None)
 
-            spans = _ca_fallback_and_budget(
-                items=items,
-                queries=queries,
-                lim=lim,
-                ppath=ppath,
-                eff_language=eff_language,
-                eff_path_glob=eff_path_glob,
-                eff_not_glob=eff_not_glob,
-                path_regex=path_regex,
-                sym_arg=sym_arg,
-                ext=ext,
-                kind=kind,
-                override_under=override_under,
-                did_local_expand=did_local_expand,
-                model=model,
-                req_language=req_language,
-                not_=not_,
-                case=case,
-                cwd_root=cwd_root,
-                include_snippet=bool(include_snippet),
-                kwargs=fallback_kwargs,
-                repo=repo,
+            spans = await asyncio.to_thread(
+                lambda: _ca_fallback_and_budget(
+                    items=items,
+                    queries=queries,
+                    lim=lim,
+                    ppath=ppath,
+                    eff_language=eff_language,
+                    eff_path_glob=eff_path_glob,
+                    eff_not_glob=eff_not_glob,
+                    path_regex=path_regex,
+                    sym_arg=sym_arg,
+                    ext=ext,
+                    kind=kind,
+                    override_under=override_under,
+                    did_local_expand=did_local_expand,
+                    model=model,
+                    req_language=req_language,
+                    not_=not_,
+                    case=case,
+                    cwd_root=cwd_root,
+                    include_snippet=bool(include_snippet),
+                    kwargs=fallback_kwargs,
+                    repo=repo,
+                )
             )
         except Exception as e:
             err = str(e)
@@ -2788,10 +2787,12 @@ async def _context_answer_impl(
     # Ensure final retrieval call reflects Tier-2 relaxed filters
     try:
         from scripts.hybrid_search import run_hybrid_search as _rh
-        _ = _rh(
-            queries=queries,
-            limit=int(max(lim, 1)),
-            per_path=int(max(ppath, 1)),
+        await asyncio.to_thread(
+            lambda: _rh(
+                queries=queries,
+                limit=int(max(lim, 1)),
+                per_path=int(max(ppath, 1)),
+            )
         )
     except Exception:
         pass
@@ -2934,29 +2935,41 @@ async def _context_answer_impl(
         default=6.0, logger=logger, context="CTX_DEADLINE_MARGIN_SEC",
     )
 
-    # Call llama.cpp decoder (requires REFRAG_DECODER=1)
+    # Check decoder availability based on REFRAG_RUNTIME
+    # For external runtimes (openai, glm, minimax), decoder is always "enabled" if API key present
+    # For llamacpp, check REFRAG_DECODER=1 and server availability
+    # NOTE: Explicit REFRAG_RUNTIME required; defaults to llamacpp if unset
+    _runtime_kind = str(os.environ.get("REFRAG_RUNTIME", "")).strip().lower() or "llamacpp"
+    logger.debug(f"Using decoder runtime: {_runtime_kind}")
+
+    _decoder_available = _runtime_kind in ("openai", "glm", "minimax")
+    if not _decoder_available and _runtime_kind == "llamacpp":
+        try:
+            from scripts.refrag_llamacpp import is_decoder_enabled
+            _decoder_available = is_decoder_enabled()
+        except Exception:
+            _decoder_available = False
+
+    if not _decoder_available:
+        logger.info("Decoder disabled; returning extractive fallback with citations")
+        _fallback_txt = _ca_postprocess_answer(
+            "",
+            citations,
+            asked_ident=asked_ident,
+            def_line_exact=_def_line_exact,
+            def_id=_def_id,
+            usage_id=_usage_id,
+            snippets_by_id=snippets_by_id,
+        )
+        return {
+            "error": "decoder disabled: set REFRAG_RUNTIME or REFRAG_DECODER=1",
+            "answer": _fallback_txt.strip(),
+            "citations": citations,
+            "query": original_queries,
+            "used": {"decoder": False, "extractive_fallback": True},
+        }
+
     try:
-        from scripts.refrag_llamacpp import is_decoder_enabled
-
-        if not is_decoder_enabled():
-            logger.info("Decoder disabled; returning extractive fallback with citations")
-            _fallback_txt = _ca_postprocess_answer(
-                "",
-                citations,
-                asked_ident=asked_ident,
-                def_line_exact=_def_line_exact,
-                def_id=_def_id,
-                usage_id=_usage_id,
-                snippets_by_id=snippets_by_id,
-            )
-            return {
-                "error": "decoder disabled: set REFRAG_DECODER=1 and start llamacpp",
-                "answer": _fallback_txt.strip(),
-                "citations": citations,
-                "query": original_queries,
-                "used": {"decoder": False, "extractive_fallback": True},
-            }
-
         # Build prompt and decode (deadline-aware)
         prompt = _ca_build_prompt(context_blocks, citations, original_queries)
         if os.environ.get("DEBUG_CONTEXT_ANSWER"):

@@ -41,6 +41,7 @@ def percentile(values: List[float], p: float) -> float:
 
 def compute_percentiles(values: List[float]) -> Dict[str, float]:
     """Compute standard percentiles (p50, p90, p95, p99)."""
+    stddev = round(statistics.stdev(values), 2) if len(values) > 1 else 0.0
     return {
         "p50": round(percentile(values, 0.50), 2),
         "p90": round(percentile(values, 0.90), 2),
@@ -49,6 +50,7 @@ def compute_percentiles(values: List[float]) -> Dict[str, float]:
         "min": round(min(values), 2) if values else 0.0,
         "max": round(max(values), 2) if values else 0.0,
         "mean": round(statistics.mean(values), 2) if values else 0.0,
+        "stddev": stddev,
     }
 
 
@@ -272,10 +274,12 @@ class BenchmarkReport:
         for key in metric_keys:
             values = [q.metrics.get(key, 0) for q in self.per_query if key in q.metrics]
             if values:
+                stddev = round(statistics.stdev(values), 4) if len(values) > 1 else 0.0
                 self.aggregates[key] = {
                     "mean": round(statistics.mean(values), 4),
                     "min": round(min(values), 4),
                     "max": round(max(values), 4),
+                    "stddev": stddev,
                 }
     
     def to_dict(self) -> Dict[str, Any]:
@@ -338,10 +342,117 @@ class BenchmarkReport:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Sensitive patterns to EXCLUDE from env snapshot
+# Derived from .env.example: API keys, tokens, passwords, auth
+_ENV_SENSITIVE_SUFFIXES = frozenset({
+    "API_KEY", "SECRET", "PASSWORD", "CREDENTIAL", "_TOKEN",
+})
+_ENV_SENSITIVE_PREFIXES = frozenset({
+    "AUTH_",  # catches CTXCE_AUTH_USERNAME, AUTH_ADMIN, etc.
+})
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Check if key contains sensitive patterns (case-insensitive)."""
+    key_upper = key.upper()
+    # Suffix match for API_KEY, SECRET, PASSWORD, CREDENTIAL, _TOKEN
+    if any(key_upper.endswith(p) for p in _ENV_SENSITIVE_SUFFIXES):
+        return True
+    # Prefix match for AUTH_
+    return any(key_upper.startswith(p) for p in _ENV_SENSITIVE_PREFIXES)
+
+
+def get_env_snapshot() -> Dict[str, str]:
+    """Capture current environment config for reproducibility.
+    
+    Dumps ALL env vars EXCEPT those matching sensitive patterns
+    (API_KEY, TOKEN, PASSWORD, SECRET, CREDENTIAL).
+    """
+    import os
+    return {
+        k: v for k, v in os.environ.items()
+        if v and not _is_sensitive_key(k)
+    }
+
+
+def get_git_sha() -> str:
+    """Get current git commit SHA, or empty string if not in a git repo."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip()[:12] if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def get_runtime_info() -> Dict[str, Any]:
+    """Get full runtime info for reproducibility.
+
+    Returns dict with:
+        - timestamp: ISO format
+        - git_sha: short commit hash
+        - env_snapshot: relevant env vars
+        - platform: architecture and OS info
+    """
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "git_sha": get_git_sha(),
+        "env_snapshot": get_env_snapshot(),
+        "platform": get_platform_info(),
+    }
+
+
+def get_platform_info() -> Dict[str, str]:
+    """Get platform info for reproducibility and ARM detection."""
+    import platform
+    return {
+        "machine": platform.machine(),      # arm64, x86_64, etc.
+        "system": platform.system(),        # Darwin, Linux, Windows
+        "python": platform.python_version(),
+        "processor": platform.processor(),  # More detailed CPU info
+    }
+
+
+def save_run_meta(
+    output_dir: str,
+    run_id: str,
+    config: Dict[str, Any],
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Save run metadata to separate JSON file for audit.
+    
+    Args:
+        output_dir: Directory to save the metadata file
+        run_id: Unique identifier for this run
+        config: Benchmark configuration dict
+        extra: Optional additional metadata to include
+    
+    Returns:
+        Path to the saved metadata file
+    """
+    import os
+    meta = {
+        "run_id": run_id,
+        **get_runtime_info(),
+        "config": config,
+    }
+    if extra:
+        meta.update(extra)
+    
+    path = os.path.join(output_dir, f"{run_id}_meta.json")
+    with open(path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    return path
+
+
 def create_report(name: str, config: Optional[Dict] = None) -> BenchmarkReport:
     """Create a new benchmark report with metadata."""
     import os
-    
+
     metadata = BenchmarkMetadata(
         benchmark_name=name,
         config=config or {},

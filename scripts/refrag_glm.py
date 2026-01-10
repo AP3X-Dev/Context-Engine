@@ -477,53 +477,66 @@ def generate_pseudo_tags_batch(
     if not texts:
         return []
 
-    # Build prompts
+    # Build prompts - explicit JSON-only instruction for coding endpoint
+    # (coding endpoint doesn't support response_format, so we rely on prompting)
     prompts = []
     for text in texts:
         prompt = (
-            "You are a JSON-only function that labels code spans for search enrichment.\n"
-            "Respond with a single JSON object and nothing else (no prose, no markdown).\n"
-            "Exact format: {\"pseudo\": string (<=20 tokens), \"tags\": [3-6 short strings]}.\n"
+            "Output ONLY a JSON object, no explanation, no markdown fences.\n"
+            'Format: {"pseudo": "<20 token summary>", "tags": ["tag1", "tag2", ...]}\n'
             "Code:\n" + text[:2000]
         )
         prompts.append(prompt)
 
-    # Run batch
+    # Run batch with thinking disabled for clean JSON output
     client = GLMRefragClient()
 
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    results = loop.run_until_complete(
-        client.generate_batch_async(
+    async def _run_batch() -> list[str]:
+        return await client.generate_batch_async(
             prompts,
             max_tokens=int(os.environ.get("PSEUDO_MAX_TOKENS", "96") or 96),
             concurrency=concurrency,
             temperature=float(os.environ.get("PSEUDO_TEMPERATURE", "0.10") or 0.10),
             top_p=float(os.environ.get("PSEUDO_TOP_P", "0.9") or 0.9),
-            stop=["\n\n"],
-            force_json=True,
+            stop=["\n\n", "```"],
+            disable_thinking=True,  # Skip reasoning for clean JSON
         )
-    )
 
-    # Parse JSON responses
+    # Handle both sync and async contexts safely
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = pool.submit(asyncio.run, _run_batch()).result()
+    except RuntimeError:
+        results = asyncio.run(_run_batch())
+
+
+    # Parse JSON responses - robust extraction for coding endpoint output
     parsed: list[tuple[str, list[str]]] = []
     for out in results:
         pseudo, tags = "", []
         try:
-            obj = _json.loads(_strip_markdown_fences(out))
-            if isinstance(obj, dict):
-                p = obj.get("pseudo")
-                t = obj.get("tags")
-                if isinstance(p, str):
-                    pseudo = p.strip()[:256]
-                if isinstance(t, list):
-                    tags = [str(x).strip() for x in t if str(x).strip()][:6]
+            # First try direct parse after stripping fences
+            cleaned = _strip_markdown_fences(out)
+            obj = _json.loads(cleaned)
         except Exception:
-            pass
+            # Fallback: extract first JSON object from response
+            try:
+                match = re.search(r'\{[^{}]*"pseudo"[^{}]*\}', out, re.DOTALL)
+                if match:
+                    obj = _json.loads(match.group(0))
+                else:
+                    obj = {}
+            except Exception:
+                obj = {}
+        if isinstance(obj, dict):
+            p = obj.get("pseudo")
+            t = obj.get("tags")
+            if isinstance(p, str):
+                pseudo = p.strip()[:256]
+            if isinstance(t, list):
+                tags = [str(x).strip() for x in t if str(x).strip()][:6]
         parsed.append((pseudo, tags))
 
     return parsed

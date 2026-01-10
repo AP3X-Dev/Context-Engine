@@ -67,12 +67,35 @@ def _safe_float(val: Any, default: float) -> float:
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 API_KEY = os.environ.get("QDRANT_API_KEY")
 
-LEX_VECTOR_NAME = os.environ.get("LEX_VECTOR_NAME", "lex")
-LEX_VECTOR_DIM = _safe_int(os.environ.get("LEX_VECTOR_DIM"), 4096)
-LEX_SPARSE_NAME = os.environ.get("LEX_SPARSE_NAME", "lex_sparse")
-LEX_SPARSE_MODE = os.environ.get("LEX_SPARSE_MODE", "0").strip().lower() in ("1", "true", "yes", "on")
+# Lexical vector configuration
+# Imported from ingest config to ensure Single Source of Truth
+from scripts.ingest.config import (
+    LEX_VECTOR_NAME,
+    LEX_VECTOR_DIM,
+    LEX_SPARSE_NAME,
+    LEX_SPARSE_MODE,
+)
 
 EF_SEARCH = _safe_int(os.environ.get("QDRANT_EF_SEARCH", "128"), 128)
+
+# Quantization search params (for faster search with quantized collections)
+QDRANT_QUANTIZATION = os.environ.get("QDRANT_QUANTIZATION", "none").strip().lower()
+QDRANT_QUANTIZATION_RESCORE = os.environ.get("QDRANT_QUANTIZATION_RESCORE", "1").strip().lower() in ("1", "true", "yes", "on")
+QDRANT_QUANTIZATION_OVERSAMPLING = float(os.environ.get("QDRANT_QUANTIZATION_OVERSAMPLING", "2.0") or 2.0)
+
+
+def _get_search_params(ef: int) -> models.SearchParams:
+    """Build SearchParams with optional quantization settings."""
+    if QDRANT_QUANTIZATION in {"scalar", "binary"}:
+        return models.SearchParams(
+            hnsw_ef=ef,
+            quantization=models.QuantizationSearchParams(
+                rescore=QDRANT_QUANTIZATION_RESCORE,
+                oversampling=QDRANT_QUANTIZATION_OVERSAMPLING,
+            )
+        )
+    return models.SearchParams(hnsw_ef=ef)
+
 
 # ---------------------------------------------------------------------------
 # Connection pooling setup
@@ -178,7 +201,8 @@ def _legacy_vector_search(
 # Collection caching
 # ---------------------------------------------------------------------------
 
-_ENSURED_COLLECTIONS: set = set()
+_ENSURED_COLLECTIONS: set[str] = set()
+_COLLECTION_VECTOR_NAMES: Dict[str, set[str]] = {}
 
 
 def _get_client_endpoint(client) -> str:
@@ -193,26 +217,84 @@ def _get_client_endpoint(client) -> str:
         return os.environ.get("QDRANT_URL", "localhost:6333")
 
 
+def _collection_cache_key(client, collection: str) -> str:
+    return f"{_get_client_endpoint(client)}:{collection}"
+
+
+def _cache_collection_vectors(client, collection: str) -> set[str] | None:
+    """Cache available vector names (dense + sparse) for a collection."""
+    cache_key = _collection_cache_key(client, collection)
+    if cache_key in _COLLECTION_VECTOR_NAMES:
+        return _COLLECTION_VECTOR_NAMES[cache_key]
+    try:
+        info = client.get_collection(collection)
+    except Exception:
+        return None
+    try:
+        vnames: set[str] = set()
+        vcfg = info.config.params.vectors
+        if isinstance(vcfg, dict):
+            vnames.update(vcfg.keys())
+        elif hasattr(vcfg, "size"):
+            vnames.add("")  # Default (unnamed) vector
+        scfg = info.config.params.sparse_vectors
+        if isinstance(scfg, dict):
+            vnames.update(scfg.keys())
+        _COLLECTION_VECTOR_NAMES[cache_key] = vnames
+        return vnames
+    except Exception:
+        return None
+
+
+def _vector_available(client, collection: str, vector_name: str | None) -> bool:
+    if not vector_name:
+        return True
+    vnames = _cache_collection_vectors(client, collection)
+    if vnames is None:
+        return True
+    return vector_name in vnames
+
+
 def _ensure_collection(client, collection: str, dim: int, vec_name: str):
-    """Cached wrapper for ensure_collection - only calls once per (endpoint, collection, vec_name) pair."""
+    """Cached wrapper for ensure_collection - only calls once per (endpoint, collection, vec_name) pair.
+
+    IMPORTANT: This is called during SEARCH operations. We must NOT delete/recreate collections
+    that already exist with data. The ensure_collection in ingest_code can trigger recreation
+    when PATTERN_VECTORS=1 or LEX_SPARSE_MODE=1 if the collection lacks those vectors.
+
+    For search, we only need to verify the collection exists - not modify its schema.
+    """
     endpoint = _get_client_endpoint(client)
     cache_key = f"{endpoint}:{collection}:{vec_name}:{dim}"
     if cache_key in _ENSURED_COLLECTIONS:
         return
 
+    # For SEARCH operations, just verify collection exists - don't try to modify schema
+    # Schema modifications can trigger deletion of existing data!
+    vnames = _cache_collection_vectors(client, collection)
+    if vnames is not None:
+        _ENSURED_COLLECTIONS.add(cache_key)
+        return
+
+    # Collection doesn't exist - only then call ensure_collection to create it
     try:
         from scripts.ingest_code import ensure_collection as _ensure_collection_raw
         _ensure_collection_raw(client, collection, dim, vec_name)
     except ImportError:
         pass
 
+    try:
+        _cache_collection_vectors(client, collection)
+    except Exception:
+        pass
     _ENSURED_COLLECTIONS.add(cache_key)
 
 
 def clear_ensured_collections():
     """Clear the collection cache (useful for testing)."""
-    global _ENSURED_COLLECTIONS
+    global _ENSURED_COLLECTIONS, _COLLECTION_VECTOR_NAMES
     _ENSURED_COLLECTIONS = set()
+    _COLLECTION_VECTOR_NAMES = {}
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +465,10 @@ def lex_query(
     ef = max(EF_SEARCH, 32 + 4 * int(per_query))
     flt = _sanitize_filter_obj(flt)
     collection = _collection(collection_name)
+    if not _vector_available(client, collection, LEX_VECTOR_NAME):
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(f"Skipping lex query: {LEX_VECTOR_NAME} not in collection vectors")
+        return []
 
     try:
         qp = client.query_points(
@@ -390,7 +476,7 @@ def lex_query(
             query=v,
             using=LEX_VECTOR_NAME,
             query_filter=flt,
-            search_params=models.SearchParams(hnsw_ef=ef),
+            search_params=_get_search_params(ef),
             limit=per_query,
             with_payload=True,
         )
@@ -403,7 +489,7 @@ def lex_query(
             query=v,
             using=LEX_VECTOR_NAME,
             filter=flt,
-            search_params=models.SearchParams(hnsw_ef=ef),
+            search_params=_get_search_params(ef),
             limit=per_query,
             with_payload=True,
         )
@@ -422,7 +508,7 @@ def lex_query(
                 query=v,
                 using=LEX_VECTOR_NAME,
                 query_filter=None,
-                search_params=models.SearchParams(hnsw_ef=ef),
+                search_params=_get_search_params(ef),
                 limit=per_query,
                 with_payload=True,
             )
@@ -433,7 +519,7 @@ def lex_query(
                 query=v,
                 using=LEX_VECTOR_NAME,
                 filter=None,
-                search_params=models.SearchParams(hnsw_ef=ef),
+                search_params=_get_search_params(ef),
                 limit=per_query,
                 with_payload=True,
             )
@@ -457,6 +543,13 @@ def sparse_lex_query(
     """Query using sparse lexical vector for lossless exact matching."""
     flt = _sanitize_filter_obj(flt)
     collection = _collection(collection_name)
+    
+    # Check if sparse vector exists in collection
+    vnames = _cache_collection_vectors(client, collection)
+    if vnames is not None and LEX_SPARSE_NAME not in vnames:
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(f"Skipping sparse lex query: {LEX_SPARSE_NAME} not in {vnames}")
+        return []
 
     if not sparse_vec.get("indices"):
         return []
@@ -506,24 +599,31 @@ def dense_query(
     query_text: str | None = None
 ) -> List[Any]:
     """Query using dense embedding vector."""
+    # Default EF: scale with per_query for adequate recall
     ef = max(EF_SEARCH, 32 + 4 * int(per_query))
 
     # Apply dynamic EF optimization if query text provided
-    try:
-        from scripts.query_optimizer import optimize_query
-        if query_text and os.environ.get("QUERY_OPTIMIZER_ADAPTIVE", "1") == "1":
+    if query_text:
+        try:
+            from scripts.query_optimizer import optimize_query
             result = optimize_query(query_text)
-            ef = result["recommended_ef"]
+            # Only override EF when adaptive optimization is enabled
+            if result.get("adaptive_enabled", False):
+                ef = result["recommended_ef"]
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"Dynamic EF: {ef} (complexity={result['complexity']}, type={result['query_type']})")
+        except ImportError:
+            pass
+        except Exception as e:
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
-                logger.debug(f"Dynamic EF: {ef} (complexity={result['complexity']}, type={result['query_type']})")
-    except ImportError:
-        pass
-    except Exception as e:
-        if os.environ.get("DEBUG_HYBRID_SEARCH"):
-            logger.debug(f"Query optimizer failed, using default EF: {e}")
+                logger.debug(f"Query optimizer failed, using default EF: {e}")
 
     flt = _sanitize_filter_obj(flt)
     collection = _collection(collection_name)
+    if not _vector_available(client, collection, vec_name):
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(f"Skipping dense query: {vec_name} not in collection vectors")
+        return []
 
     try:
         qp = client.query_points(
@@ -531,7 +631,7 @@ def dense_query(
             query=v,
             using=vec_name,
             query_filter=flt,
-            search_params=models.SearchParams(hnsw_ef=ef),
+            search_params=_get_search_params(ef),
             limit=per_query,
             with_payload=True,
         )
@@ -544,7 +644,7 @@ def dense_query(
             query=v,
             using=vec_name,
             filter=flt,
-            search_params=models.SearchParams(hnsw_ef=ef),
+            search_params=_get_search_params(ef),
             limit=per_query,
             with_payload=True,
         )
@@ -563,7 +663,7 @@ def dense_query(
                 query=v,
                 using=vec_name,
                 query_filter=None,
-                search_params=models.SearchParams(hnsw_ef=ef),
+                search_params=_get_search_params(ef),
                 limit=per_query,
                 with_payload=True,
             )
@@ -575,7 +675,7 @@ def dense_query(
                     query=v,
                     using=vec_name,
                     filter=None,
-                    search_params=models.SearchParams(hnsw_ef=ef),
+                    search_params=_get_search_params(ef),
                     limit=per_query,
                     with_payload=True,
                 )
