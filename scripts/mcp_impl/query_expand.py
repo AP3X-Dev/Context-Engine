@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
 """
 mcp/query_expand.py - Query expansion helpers for MCP indexer server.
 

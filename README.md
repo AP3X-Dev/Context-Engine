@@ -230,5 +230,4 @@ Python, TypeScript/JavaScript, Go, Java, Rust, C#, PHP, Shell, Terraform, YAML, 
 
 ## License
 
-MIT
-
+BUSL-1.1

@@ -1,3 +1,6 @@
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
 """Authentication backend for Context-Engine services.
 
 Provides a minimal, SQLite-backed user and session store with
