@@ -51,6 +51,14 @@ MINI_VEC_DIM = int(os.environ.get("MINI_VEC_DIM", "64") or 64)
 LEX_SPARSE_NAME = os.environ.get("LEX_SPARSE_NAME", "lex_sparse")
 LEX_SPARSE_MODE = os.environ.get("LEX_SPARSE_MODE", "0").strip().lower() in ("1", "true", "yes", "on")
 
+# Enable IDF modifier for sparse vectors (BM25-style term weighting)
+# When enabled, Qdrant computes IDF at query time for better lexical matching
+LEX_SPARSE_IDF = os.environ.get("LEX_SPARSE_IDF", "1").strip().lower() in ("1", "true", "yes", "on")
+
+# Future: SPLADE/BM42 learned sparse embeddings (requires fastembed model)
+# When enabled, uses attention-weighted sparse vectors instead of hash-based
+LEX_SPLADE_MODE = os.environ.get("LEX_SPLADE_MODE", "0").strip().lower() in ("1", "true", "yes", "on")
+
 
 # ---------------------------------------------------------------------------
 # Stop words for lexical tokenization

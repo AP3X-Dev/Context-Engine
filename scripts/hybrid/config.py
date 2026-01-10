@@ -9,6 +9,7 @@ __all__ = [
     "_safe_int", "_safe_float", "_env_truthy", "_get_micro_defaults", "_collection",
     "MODEL_NAME", "QDRANT_URL", "API_KEY",
     "LEX_VECTOR_NAME", "LEX_VECTOR_DIM", "LEX_SPARSE_NAME", "LEX_SPARSE_MODE",
+    "LEX_SPARSE_IDF", "LEX_SPLADE_MODE",
     "MINI_VECTOR_NAME", "MINI_VEC_DIM", "HYBRID_MINI_WEIGHT",
     "RRF_K", "DENSE_WEIGHT", "LEXICAL_WEIGHT", "LEX_VECTOR_WEIGHT", "EF_SEARCH",
     "SYMBOL_BOOST", "SYMBOL_EQUALITY_BOOST", "FNAME_BOOST", "RECENCY_WEIGHT", "CORE_FILE_BOOST",
@@ -71,13 +72,14 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 API_KEY = os.environ.get("QDRANT_API_KEY")
 
 # Lexical vector configuration
-# Lexical vector configuration
 # Imported from ingest config to ensure Single Source of Truth
 from scripts.ingest.config import (
     LEX_VECTOR_NAME,
     LEX_VECTOR_DIM,
     LEX_SPARSE_NAME,
     LEX_SPARSE_MODE,
+    LEX_SPARSE_IDF,
+    LEX_SPLADE_MODE,
     MINI_VECTOR_NAME,
     MINI_VEC_DIM,
 )

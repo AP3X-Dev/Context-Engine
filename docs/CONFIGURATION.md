@@ -402,6 +402,16 @@ True sparse vectors for lossless lexical matching (no hash collisions).
 |------|-------------|---------|
 | LEX_SPARSE_MODE | Enable sparse lexical vectors instead of dense hash vectors | 0 (off) |
 | LEX_SPARSE_NAME | Name of sparse vector index in Qdrant | lex_sparse |
+| LEX_SPARSE_IDF | Apply IDF modifier for BM25-style term weighting | 1 (on) |
+| LEX_SPLADE_MODE | Use SPLADE/BM42 learned sparse embeddings (future) | 0 (off) |
+
+**IDF Modifier (LEX_SPARSE_IDF):**
+
+When enabled (default), Qdrant applies Inverse Document Frequency weighting at query time. This makes rare terms score higher than common terms, similar to BM25 behavior:
+- "the", "function", "return" → low weight (common terms)
+- "AuthenticationProvider", "gRPC" → high weight (rare terms)
+
+This significantly improves precision for technical queries without requiring global corpus statistics.
 
 **Note:** Enabling `LEX_SPARSE_MODE` requires the collection to have a sparse vector index configured. Use `--recreate` flag when switching modes. If sparse query fails or returns empty, the system automatically falls back to dense lexical vectors.
 

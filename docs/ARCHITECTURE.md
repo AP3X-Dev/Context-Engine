@@ -129,6 +129,76 @@ Production-ready MCP (Model Context Protocol) retrieval stack unifying code inde
 - **Auto-Detection**: Identifies retry patterns, resource cleanup, filter loops
 - **Requires**: `PATTERN_VECTORS=1` to enable
 
+#### Symbol Graph & Code Relationships
+
+**Graph Edge Storage** (`scripts/ingest/graph_edges.py`)
+
+Context Engine maintains pre-computed graph edges in dedicated Qdrant collections for fast symbol navigation. During indexing, call and import relationships are extracted and stored separately from code chunks.
+
+- **Separate Collections**: Each base collection `<name>` has a companion `<name>_graph` collection
+- **Payload-Only Storage**: Graph collections store edges as indexed payloads (no vectors)
+- **Edge Types**:
+  - `calls`: Function/method call relationships
+  - `imports`: Module/symbol import relationships
+
+**Edge Schema:**
+```json
+{
+  "caller_symbol": "MyClass.process_data",
+  "callee_symbol": "validate_input",
+  "caller_path": "src/handlers/processor.py",
+  "edge_type": "calls",
+  "repo": "my-project",
+  "start_line": 45,
+  "language": "python"
+}
+```
+
+**Fast Indexed Queries:**
+- `get_callers(symbol)`: Find all functions that call a symbol
+- `get_callees(symbol)`: Find all functions a symbol calls
+- `get_importers(module)`: Find all files importing a module
+
+**AST Analyzer** (`scripts/ast_analyzer.py`)
+
+Tree-sitter-based multi-language AST analysis for semantic code understanding:
+
+- **Symbol Extraction**: Functions, classes, methods with signatures, docstrings, decorators
+- **Call Graph Construction**: Maps caller → callee relationships within files
+- **Dependency Tracking**: Extracts imports and module dependencies
+- **Semantic Chunking**: Splits code at function/class boundaries (not arbitrary line counts)
+
+**Supported Languages:**
+| Language | Package |
+|----------|---------|
+| Python | `tree-sitter-python` |
+| JavaScript | `tree-sitter-javascript` |
+| TypeScript | `tree-sitter-typescript` |
+| Go | `tree-sitter-go` |
+| Rust | `tree-sitter-rust` |
+| Java | `tree-sitter-java` |
+| C/C++ | `tree-sitter-c`, `tree-sitter-cpp` |
+| C# | `tree-sitter-c-sharp` |
+| Ruby | `tree-sitter-ruby` |
+| Bash | `tree-sitter-bash` |
+
+**Symbol Graph MCP Tool** (`scripts/mcp_impl/symbol_graph.py`)
+
+Provides the `symbol_graph()` MCP tool for navigating code relationships:
+
+- **Query Types**: `callers`, `definition`, `importers`
+- **Hydration**: Results include actual code snippets fetched from the main collection
+- **Fallback**: When graph queries return empty, falls back to semantic search
+- **Multi-Strategy Matching**: Exact match → variant match → substring match
+
+**Intent Classification** (`scripts/intent_classifier.py`)
+
+Semantic query routing using embedding similarity to exemplars:
+
+- **Intent Categories**: `GRAPH`, `SEMANTIC`, `IDENTIFIER`, `HYBRID`
+- **Confidence Scoring**: Routes to appropriate search strategy based on query type
+- **Keyword Fallback**: Pattern-based classification when embeddings unavailable
+
 ### 5. Learning Reranker System (Optional)
 
 The Learning Reranker is an **optional** self-improving ranking system that learns from search patterns to provide increasingly relevant results over time. It is enabled by default but can be disabled via `RERANK_LEARNING=0` and `RERANK_EVENTS_ENABLED=0` environment variables. See [Configuration](CONFIGURATION.md#learning-reranker) for all options.
