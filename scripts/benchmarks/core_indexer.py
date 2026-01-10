@@ -227,6 +227,73 @@ def collection_matches_corpus(
         return False
 
 
+def get_indexed_doc_ids(
+    client: QdrantClient,
+    collection: str,
+    batch_size: int = 1000,
+) -> set[str]:
+    """Get all doc_ids already indexed in the collection.
+    
+    Used for resume functionality to skip already-indexed documents.
+    
+    Args:
+        client: Qdrant client
+        collection: Collection name
+        batch_size: Scroll batch size
+        
+    Returns:
+        Set of doc_ids that are already indexed
+    """
+    indexed_ids: set[str] = set()
+    try:
+        offset = None
+        while True:
+            result, next_offset = client.scroll(
+                collection_name=collection,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["doc_id"],
+                with_vectors=False,
+            )
+            for point in result:
+                doc_id = point.payload.get("doc_id") if point.payload else None
+                if doc_id and doc_id != CORPUS_FINGERPRINT_KEY:
+                    indexed_ids.add(doc_id)
+            
+            if next_offset is None:
+                break
+            offset = next_offset
+            
+        return indexed_ids
+    except Exception as e:
+        print(f"Warning: Failed to get indexed doc_ids: {e}")
+        return set()
+
+
+def collection_has_partial_index(
+    client: QdrantClient,
+    collection: str,
+) -> tuple[bool, int]:
+    """Check if collection exists with partial data but no fingerprint.
+    
+    Returns:
+        Tuple of (has_partial_data, points_count)
+    """
+    try:
+        info = client.get_collection(collection)
+        if info.points_count == 0:
+            return False, 0
+        # Check if fingerprint exists
+        stored_fp = get_collection_fingerprint(client, collection)
+        if stored_fp:
+            # Complete index exists
+            return False, info.points_count
+        # Has data but no fingerprint = partial index
+        return True, info.points_count
+    except Exception:
+        return False, 0
+
+
 def warn_config_mismatch(
     client: Optional[QdrantClient],
     collection: str,
@@ -302,10 +369,22 @@ def create_collection(
 
     sparse_cfg = None
     if LEX_SPARSE_MODE:
+        sparse_params_kwargs = {
+            "index": models.SparseIndexParams(full_scan_threshold=5000)
+        }
+        # Apply IDF modifier for BM25-style term weighting (matches production)
+        try:
+            from scripts.ingest.config import LEX_SPARSE_IDF
+            if LEX_SPARSE_IDF:
+                try:
+                    sparse_params_kwargs["modifier"] = models.Modifier.IDF
+                except AttributeError:
+                    # Older qdrant-client versions may not have Modifier.IDF
+                    pass
+        except ImportError:
+            pass
         sparse_cfg = {
-            LEX_SPARSE_NAME: models.SparseVectorParams(
-                index=models.SparseIndexParams(full_scan_threshold=5000)
-            )
+            LEX_SPARSE_NAME: models.SparseVectorParams(**sparse_params_kwargs)
         }
 
     def _extract_dense_vector_sizes(info: Any) -> dict[str, int]:
@@ -438,6 +517,21 @@ def index_benchmark_corpus(
                 "reused": True,
             }
 
+    # Check for partial index (data exists but no fingerprint = interrupted indexing)
+    # This enables resume functionality
+    skipped_count = 0
+    original_doc_count = len(docs)
+    has_partial, partial_count = collection_has_partial_index(client, collection)
+    if has_partial and not recreate:
+        print(f"Collection {collection} has {partial_count} points but no fingerprint (interrupted indexing)")
+        print(f"  Attempting to resume... fetching indexed doc_ids...")
+        indexed_ids = get_indexed_doc_ids(client, collection)
+        if indexed_ids:
+            # Filter out already-indexed documents
+            docs = [d for d in docs if d.doc_id not in indexed_ids]
+            skipped_count = original_doc_count - len(docs)
+            print(f"  Found {len(indexed_ids)} indexed doc_ids, skipping {skipped_count}, {len(docs)} remaining")
+
     # Get model dimension
     try:
         from scripts.embedder import get_model_dimension
@@ -456,7 +550,9 @@ def index_benchmark_corpus(
     # Get vector names
     model_name = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
     vector_name = sanitize_vector_name(model_name)
-    available_vectors = get_collection_vector_names(client, collection)
+    dense_vectors, sparse_vectors = get_collection_vector_names(client, collection)
+    available_dense = dense_vectors or set()
+    available_sparse = sparse_vectors or set()
 
     # Phase 1: Prepare all chunk metadata (CPU-bound, can parallelize)
     print(f"Indexing {len(docs)} documents into {collection}...")
@@ -593,91 +689,92 @@ def index_benchmark_corpus(
 
     print(f"  Prepared {len(chunk_metas)} chunks from {len(docs)} documents")
 
-    # Phase 2: Batch embedding (GPU/CPU intensive, batch for efficiency)
-    print(f"  Phase 2: Batch embedding {len(chunk_metas)} chunks...", flush=True)
+    # Phase 2: Stream embed + upsert in mega-batches (memory efficient)
+    # Instead of embedding ALL chunks then upserting, we process in mega-batches
+    # to keep memory usage low (especially for large corpora like 280K+ docs)
+    mega_batch_size = int(os.environ.get("MEGA_BATCH_SIZE", "1000"))
     embed_batch_size = int(os.environ.get("EMBED_BATCH_SIZE", "64"))
-
-    dense_texts = [cm.dense_text for cm in chunk_metas]
-    all_dense_vecs: List[List[float]] = []
-    total_chunks = len(dense_texts)
-    last_progress = 0
-
-    for i in range(0, total_chunks, embed_batch_size):
-        batch_texts = dense_texts[i:i + embed_batch_size]
-        batch_vecs = list(model.embed(batch_texts))
-        all_dense_vecs.extend([v.tolist() for v in batch_vecs])
-
-        # Progress update every ~10% or 1000 chunks
-        progress = min(i + embed_batch_size, total_chunks)
-        progress_pct = int(progress * 100 / total_chunks)
-        if progress_pct >= last_progress + 10 or progress - (i - embed_batch_size + embed_batch_size) >= 1000:
-            print(f"    Embedded {progress}/{total_chunks} ({progress_pct}%)", flush=True)
-            last_progress = progress_pct
-
-    # Phase 3: Build points and upsert
-    print(f"  Phase 3: Building and upserting points...", flush=True)
-    points = []
+    
+    total_chunks = len(chunk_metas)
     indexed_count = 0
-    total_points = len(chunk_metas)
-    last_upsert_progress = 0
-
-    for idx, cm in enumerate(chunk_metas):
-        dense_vec = all_dense_vecs[idx]
-        lex_vec = create_lexical_vector(cm.chunk_text)
-
-        vectors_dict = {
-            vector_name: dense_vec,
-            LEX_VECTOR_NAME: lex_vec,
-        }
-
-        if MINI_VECTOR_NAME in available_vectors:
-            try:
-                mini_vec = project_mini(dense_vec)
-                vectors_dict[MINI_VECTOR_NAME] = mini_vec
-            except Exception:
-                pass
-
-        if PATTERN_VECTOR_NAME in available_vectors:
-            try:
-                pattern_vec = extract_pattern_vector(cm.chunk_text, cm.language)
-                if pattern_vec:
-                    vectors_dict[PATTERN_VECTOR_NAME] = pattern_vec
-            except Exception:
-                pass
-
-        sparse_dict = None
-        if LEX_SPARSE_MODE and LEX_SPARSE_NAME in (available_vectors.get("sparse") or set()):
-            try:
-                sparse_dict = {LEX_SPARSE_NAME: _lex_sparse_vector_text(cm.chunk_text)}
-            except Exception:
-                pass
-
-        point_id = generate_point_id(f"{cm.doc_id}:{cm.chunk_idx}")
-        point = models.PointStruct(
-            id=point_id,
-            vector=vectors_dict,
-            payload=cm.payload,
-        )
-        if sparse_dict:
-            point.vector.update(sparse_dict)  # type: ignore
-
-        points.append(point)
-
-        if len(points) >= batch_size:
-            _upsert_points_with_retry(client, collection, points)
-            indexed_count += len(points)
-            points = []
-
-            # Progress update every ~10%
-            progress_pct = int(indexed_count * 100 / total_points)
-            if progress_pct >= last_upsert_progress + 10:
-                print(f"    Upserted {indexed_count}/{total_points} ({progress_pct}%)", flush=True)
-                last_upsert_progress = progress_pct
-
-    # Final batch
-    if points:
-        _upsert_points_with_retry(client, collection, points)
-        indexed_count += len(points)
+    last_progress_pct = 0
+    
+    print(f"  Phase 2: Streaming embed + upsert ({total_chunks} chunks, mega-batch={mega_batch_size})...", flush=True)
+    
+    for mega_start in range(0, total_chunks, mega_batch_size):
+        mega_end = min(mega_start + mega_batch_size, total_chunks)
+        mega_batch = chunk_metas[mega_start:mega_end]
+        
+        # Step 1: Embed this mega-batch
+        dense_texts = [cm.dense_text for cm in mega_batch]
+        mega_vecs: List[List[float]] = []
+        
+        for i in range(0, len(dense_texts), embed_batch_size):
+            batch_texts = dense_texts[i:i + embed_batch_size]
+            batch_vecs = list(model.embed(batch_texts))
+            mega_vecs.extend([v.tolist() for v in batch_vecs])
+        
+        # Step 2: Build points for this mega-batch
+        points = []
+        for idx, cm in enumerate(mega_batch):
+            dense_vec = mega_vecs[idx]
+            lex_vec = create_lexical_vector(cm.chunk_text)
+            
+            vectors_dict = {
+                vector_name: dense_vec,
+                LEX_VECTOR_NAME: lex_vec,
+            }
+            
+            if MINI_VECTOR_NAME in available_dense:
+                try:
+                    mini_vec = project_mini(dense_vec)
+                    vectors_dict[MINI_VECTOR_NAME] = mini_vec
+                except Exception:
+                    pass
+            
+            if PATTERN_VECTOR_NAME in available_dense:
+                try:
+                    pattern_vec = extract_pattern_vector(cm.chunk_text, cm.language)
+                    if pattern_vec:
+                        vectors_dict[PATTERN_VECTOR_NAME] = pattern_vec
+                except Exception:
+                    pass
+            
+            sparse_dict = None
+            if LEX_SPARSE_MODE and LEX_SPARSE_NAME in available_sparse:
+                try:
+                    sparse_vec = _lex_sparse_vector_text(cm.chunk_text)
+                    if sparse_vec.get("indices"):
+                        sparse_dict = {LEX_SPARSE_NAME: models.SparseVector(**sparse_vec)}
+                except Exception:
+                    pass
+            
+            point_id = generate_point_id(f"{cm.doc_id}:{cm.chunk_idx}")
+            point = models.PointStruct(
+                id=point_id,
+                vector=vectors_dict,
+                payload=cm.payload,
+            )
+            if sparse_dict:
+                point.vector.update(sparse_dict)  # type: ignore
+            
+            points.append(point)
+        
+        # Step 3: Upsert this mega-batch in smaller batches
+        for i in range(0, len(points), batch_size):
+            upsert_batch = points[i:i + batch_size]
+            _upsert_points_with_retry(client, collection, upsert_batch)
+            indexed_count += len(upsert_batch)
+        
+        # Progress update
+        progress_pct = int(indexed_count * 100 / total_chunks)
+        if progress_pct >= last_progress_pct + 5 or mega_end == total_chunks:
+            print(f"    Processed {indexed_count}/{total_chunks} ({progress_pct}%)", flush=True)
+            last_progress_pct = progress_pct
+        
+        # Clear references to free memory
+        del mega_vecs, points, dense_texts
+        mega_batch = None
 
     # Store fingerprint
     fingerprint = compute_corpus_fingerprint(docs)

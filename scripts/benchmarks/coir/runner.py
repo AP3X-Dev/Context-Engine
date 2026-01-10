@@ -50,6 +50,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Force-disable OpenLit/OTel for benchmarks so they never try to talk to openlit-dashboard
+os.environ["OPENLIT_ENABLED"] = "0"
+os.environ["OTEL_SDK_DISABLED"] = "true"
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -374,7 +379,8 @@ def _evaluate_with_custom_search(
 
         # CRITICAL: Call OUR search() method directly
         # This uses hybrid search + reranking - the full Context-Engine pipeline
-        print(f"[coir] Running Context-Engine search on {len(queries)} queries over {len(corpus)} docs...", flush=True)
+        print(f"[coir] Preparing Context-Engine search: {len(queries)} queries, {len(corpus)} docs (indexing first if needed)...", flush=True)
+        model.task_name = task_name  # Update task for language detection
         task_results = model.search(corpus, queries, top_k=top_k)
 
         # Use coir's evaluation metrics (NDCG, MAP, Recall, Precision)
@@ -413,6 +419,7 @@ def run_coir_benchmark_sync(
     top_k: int = 10,
     query_limit: Optional[int] = None,
     corpus_limit: Optional[int] = None,
+    mode: str = "hybrid",
     **kwargs: Any,
 ) -> CoIRReport:
     """
@@ -456,6 +463,7 @@ def run_coir_benchmark_sync(
         use_hybrid_search=True,
         rerank_enabled=bool(rerank_enabled),
         batch_size=batch_size,
+        mode=mode,
         **kwargs,
     )
 
@@ -483,6 +491,7 @@ async def run_coir_benchmark(
     top_k: int = 10,
     query_limit: Optional[int] = None,
     corpus_limit: Optional[int] = None,
+    mode: str = "hybrid",
     **kwargs: Any,
 ) -> CoIRReport:
     """Async wrapper for environments that already use asyncio."""
@@ -495,6 +504,7 @@ async def run_coir_benchmark(
         top_k=top_k,
         query_limit=query_limit,
         corpus_limit=corpus_limit,
+        mode=mode,
         **kwargs,
     )
 
@@ -513,6 +523,9 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=10, help="Number of results to retrieve per query")
     parser.add_argument("--no-rerank", action="store_true", help="Disable reranking")
     parser.add_argument("--no-expand", action="store_true", help="Disable query expansion")
+    parser.add_argument("--mode", type=str, default="hybrid", choices=["hybrid", "dense", "lexical"],
+                        help="Search mode: 'hybrid' (default), 'dense' (pure semantic), or 'lexical' (pure BM25-style)")
+    parser.add_argument("--enable-llm", action="store_true", help="Enable LLM query expansion (disabled by default)")
     parser.add_argument("--output-folder", type=str, default=None, help="Write coir-eval artifacts here")
     parser.add_argument("--output", type=str, default=None, help="Write JSON report to this file")
     parser.add_argument("--json", dest="json_out", action="store_true", help="Print JSON")
@@ -523,10 +536,17 @@ def main() -> None:
         os.environ.setdefault("HYBRID_EXPAND", "1")
         os.environ.setdefault("SEMANTIC_EXPANSION_ENABLED", "1")
     os.environ.setdefault("HYBRID_IN_PROCESS", "1")
-    
-    
-    # Default: Enable LLM-based pseudo/tags generation
-    os.environ.setdefault("REFRAG_PSEUDO_DESCRIBE", "1")
+
+    # Disable all LLM calls by default for fast benchmarking
+    # Use --enable-llm to enable search-time LLM query expansion
+    if not args.enable_llm:
+        os.environ["LLM_EXPAND_MAX"] = "0"  # Disable LLM query expansion
+        os.environ["REFRAG_DECODER"] = "0"  # Disable decoder entirely
+        os.environ["REFRAG_PSEUDO_DESCRIBE"] = "0"  # Disable pseudo/tags generation
+    else:
+        os.environ.setdefault("LLM_EXPAND_MAX", "3")
+        os.environ.setdefault("REFRAG_PSEUDO_DESCRIBE", "1")
+        print("  [enable-llm] LLM features ENABLED (query expansion, pseudo/tags)")
 
     report = run_coir_benchmark_sync(
         tasks=args.tasks,
@@ -536,6 +556,7 @@ def main() -> None:
         rerank_enabled=not args.no_rerank,
         output_folder=args.output_folder,
         top_k=args.top_k,
+        mode=args.mode,
     )
 
     # Auto-generate output filename if not specified

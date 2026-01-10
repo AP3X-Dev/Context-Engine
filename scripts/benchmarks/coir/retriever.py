@@ -58,6 +58,8 @@ class ContextEngineRetriever:
         use_hybrid_search: bool = True,
         rerank_enabled: bool = True,
         batch_size: int = 32,
+        mode: str = "hybrid",
+        task_name: str = "",
         **kwargs,
     ):
         """
@@ -68,6 +70,8 @@ class ContextEngineRetriever:
             use_hybrid_search: Use our hybrid search instead of pure embedding
             rerank_enabled: Enable reranker when using hybrid search
             batch_size: Batch size for embedding
+            mode: Search mode ('hybrid', 'dense', or 'lexical')
+            task_name: Task name for language detection (e.g., 'codesearchnet-go')
         
         Note: Collection naming is automatic based on corpus fingerprint.
         Each unique corpus+config gets its own named collection for reuse.
@@ -76,6 +80,8 @@ class ContextEngineRetriever:
         self.use_hybrid_search = use_hybrid_search
         self.rerank_enabled = rerank_enabled
         self.batch_size = batch_size
+        self.mode = mode
+        self.task_name = task_name
         self._model = None
         self._corpus_index = {}  # doc_id -> embedding
         self._corpus_doc_ids: set = set()  # Track which doc IDs are in current corpus
@@ -270,7 +276,9 @@ class ContextEngineRetriever:
         self._indexed_collections.add(collection)
         
         # index_coir_corpus checks fingerprint and skips if unchanged
-        index_result = await asyncio.to_thread(index_coir_corpus, corpus_list, collection)
+        index_result = await asyncio.to_thread(
+            index_coir_corpus, corpus_list, collection, task_name=self.task_name
+        )
         if index_result.get("reused"):
             pass  # Collection reused, no indexing needed
 
@@ -305,6 +313,7 @@ class ContextEngineRetriever:
                 rerank_enabled=self.rerank_enabled,
                 rerank_top_n=100 if self.rerank_enabled else None,
                 rerank_return_m=top_k if self.rerank_enabled else None,
+                mode=self.mode,
             )
             # Extract scores
             doc_scores = {}
@@ -366,18 +375,18 @@ class ContextEngineRetrieverDense(ContextEngineRetriever):
     """Dense-only retriever (no hybrid, no rerank) for ablation studies."""
 
     def __init__(self, **kwargs):
-        super().__init__(use_hybrid_search=False, rerank_enabled=False, **kwargs)
+        super().__init__(use_hybrid_search=False, rerank_enabled=False, mode="dense", **kwargs)
 
 
 class ContextEngineRetrieverHybrid(ContextEngineRetriever):
     """Hybrid retriever without reranker for ablation studies."""
 
     def __init__(self, **kwargs):
-        super().__init__(use_hybrid_search=True, rerank_enabled=False, **kwargs)
+        super().__init__(use_hybrid_search=True, rerank_enabled=False, mode="hybrid", **kwargs)
 
 
 class ContextEngineRetrieverFull(ContextEngineRetriever):
     """Full pipeline: hybrid + reranker."""
 
     def __init__(self, **kwargs):
-        super().__init__(use_hybrid_search=True, rerank_enabled=True, **kwargs)
+        super().__init__(use_hybrid_search=True, rerank_enabled=True, mode="hybrid", **kwargs)

@@ -55,6 +55,9 @@ GRAPH_INDEX_FIELDS = (
 _ENSURED_GRAPH_COLLECTIONS: set[str] = set()
 _GRAPH_VECTOR_MODE: dict[str, str] = {}
 
+# Track collections known to not exist (avoid repeated 404s in benchmarks)
+_MISSING_GRAPH_COLLECTIONS: set[str] = set()
+
 # Fallback vector schema for Qdrant deployments that don't support vector-less collections.
 _EDGE_VECTOR_NAME = "_edge"
 _EDGE_VECTOR_VALUE = [0.0]
@@ -426,6 +429,10 @@ def get_callers(
             )
         )
 
+    # Skip if we already know this collection doesn't exist
+    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+        return []
+
     try:
         result, _ = client.scroll(
             collection_name=graph_collection,
@@ -436,6 +443,11 @@ def get_callers(
         )
         return [p.payload for p in result]
     except Exception as e:
+        # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
+        err_str = str(e).lower()
+        if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
+            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            return []
         logger.error(f"Failed to get callers for {symbol}: {e}")
         return []
 
@@ -479,6 +491,10 @@ def get_callees(
             )
         )
 
+    # Skip if we already know this collection doesn't exist
+    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+        return []
+
     try:
         result, _ = client.scroll(
             collection_name=graph_collection,
@@ -489,6 +505,11 @@ def get_callees(
         )
         return [p.payload for p in result]
     except Exception as e:
+        # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
+        err_str = str(e).lower()
+        if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
+            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            return []
         logger.error(f"Failed to get callees for {symbol}: {e}")
         return []
 
@@ -532,6 +553,10 @@ def get_importers(
             )
         )
 
+    # Skip if we already know this collection doesn't exist
+    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+        return []
+
     try:
         result, _ = client.scroll(
             collection_name=graph_collection,
@@ -542,5 +567,10 @@ def get_importers(
         )
         return [p.payload for p in result]
     except Exception as e:
+        # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
+        err_str = str(e).lower()
+        if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
+            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            return []
         logger.error(f"Failed to get importers for {module}: {e}")
         return []
