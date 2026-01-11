@@ -336,8 +336,9 @@ def _detect_query_mode_with_confidence(
                 signals=signals,
                 ast_validated=False,  # Don't trust AST for NL-like text
             )
-        # High NL + permissive lang → description (catches phrases like "caching strategy")
-        if is_permissive and nl_sim >= 0.75:
+        # Permissive lang + moderate NL → description (catches phrases like "caching strategy")
+        # Lowered threshold from 0.75 to 0.65 to match non-permissive threshold
+        if is_permissive and nl_sim >= 0.65:
             return QueryModeResult(
                 mode="description",
                 confidence=0.8,
@@ -528,7 +529,10 @@ async def _pattern_search_impl(
         result["detection"] = {
             "confidence": round(detection_confidence, 3),
             "ast_validated": detection_ast_validated,
-            "signals": {k: round(v, 3) for k, v in detection_signals.items()},
+            "signals": {
+                k: (round(v, 3) if isinstance(v, (int, float)) else v)
+                for k, v in detection_signals.items()
+            },
         }
 
         return result
