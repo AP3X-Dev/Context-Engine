@@ -9,7 +9,7 @@
 
 ## Context-Engine
 
-Open-source, self-improving code search that gets smarter every time you use it.
+Open-core, self-improving code search that gets smarter every time you use it.
 
 <p align="center">
   <img src="useage.png" alt="Context-Engine Usage" width="50%"/>
