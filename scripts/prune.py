@@ -40,7 +40,14 @@ def delete_by_path(client: QdrantClient, path_str: str) -> int:
 
 
 def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
-    """Delete graph edges for a specific file path."""
+    """Delete graph edges for a specific file path.
+
+    Deletes edges where the file appears as either caller_path or callee_path.
+    Returns the actual number of deleted points, or 0 if collection doesn't exist.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
     graph_coll = COLLECTION + GRAPH_COLLECTION_SUFFIX
 
     # Check if graph collection exists
@@ -49,24 +56,45 @@ def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
         coll_names = {c.name for c in collections.collections}
         if graph_coll not in coll_names:
             return 0
-    except Exception:
+    except Exception as e:
+        # Log the error but return 0 (collection truly doesn't exist)
+        logger.debug(f"Failed to check graph collection existence: {e}")
         return 0
 
+    # Filter for edges where path appears as caller OR callee
     flt = models.Filter(
         must=[
             models.FieldCondition(
                 key="caller_path", match=models.MatchValue(value=path_str)
             )
+        ],
+        should=[
+            models.FieldCondition(
+                key="callee_path", match=models.MatchValue(value=path_str)
+            )
         ]
     )
+
     try:
-        client.delete(
+        response = client.delete(
             collection_name=graph_coll,
             points_selector=models.FilterSelector(filter=flt),
         )
-        return 1
-    except Exception:
-        return 0
+        # Extract actual deleted count from response
+        deleted_count = getattr(response, "status", None)
+        if deleted_count is None:
+            # Qdrant client may not return count, return 1 as success indicator
+            return 1
+        return deleted_count
+    except Exception as e:
+        # Check if this is a "collection not found" error
+        error_msg = str(e).lower()
+        if "not found" in error_msg or "collection" in error_msg:
+            logger.debug(f"Graph collection not found: {e}")
+            return 0
+        # For other errors, log and re-raise
+        logger.error(f"Failed to delete graph edges for path {path_str}: {e}")
+        raise
 
 
 def main():

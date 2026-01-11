@@ -265,9 +265,16 @@ def get_indexed_doc_ids(
             offset = next_offset
             
         return indexed_ids
-    except Exception as e:
-        print(f"Warning: Failed to get indexed doc_ids: {e}")
+    except (TimeoutError, ConnectionError) as e:
+        # Transient errors - log with details and return empty to allow retry
+        import logging
+        logging.exception("Transient error getting indexed doc_ids: %s", type(e).__name__)
         return set()
+    except Exception as e:
+        # Critical errors - re-raise after logging (AuthenticationError, PermissionError, etc.)
+        import logging
+        logging.error("Critical error getting indexed doc_ids: %s: %s", type(e).__name__, repr(e))
+        raise
 
 
 def collection_has_partial_index(
@@ -521,6 +528,8 @@ def index_benchmark_corpus(
     # This enables resume functionality
     skipped_count = 0
     original_doc_count = len(docs)
+    # Save original unfiltered docs for fingerprint computation
+    original_docs = docs
     has_partial, partial_count = collection_has_partial_index(client, collection)
     if has_partial and not recreate:
         print(f"Collection {collection} has {partial_count} points but no fingerprint (interrupted indexing)")
@@ -777,7 +786,7 @@ def index_benchmark_corpus(
         mega_batch = None
 
     # Store fingerprint
-    fingerprint = compute_corpus_fingerprint(docs)
+    fingerprint = compute_corpus_fingerprint(original_docs)
     fp_point = models.PointStruct(
         id=generate_point_id(CORPUS_FINGERPRINT_KEY),
         vector={vector_name: [0.0] * dim, LEX_VECTOR_NAME: [0.0] * LEX_VECTOR_DIM},

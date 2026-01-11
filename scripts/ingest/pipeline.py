@@ -674,18 +674,20 @@ def _index_single_file_inner(
                     # NOTE: `imports`/`calls` are extracted at the file-level today and are
                     # attached to every chunk's metadata. Emitting per-chunk edges would
                     # explode edge counts and imply per-symbol precision we don't have.
+                    # In file-level mode, symbol_path represents the source file (file→symbol edges).
+                    source_file_path = str(file_path)
                     if calls:
                         all_edges.extend(extract_call_edges(
-                            symbol_path=str(file_path),
+                            symbol_path=source_file_path,
                             calls=calls,
-                            path=str(file_path),
+                            path=source_file_path,
                             repo=repo_tag,
                         ))
                     if imports:
                         all_edges.extend(extract_import_edges(
-                            symbol_path=str(file_path),
+                            symbol_path=source_file_path,
                             imports=imports,
-                            path=str(file_path),
+                            path=source_file_path,
                             repo=repo_tag,
                         ))
                 else:
@@ -708,9 +710,10 @@ def _index_single_file_inner(
                                 start_line=start_line,
                                 language=language,
                             ))
-                        if meta_imports:
+                        # Only extract import edges if we have a true symbol identifier
+                        if sym_path and meta_imports:
                             all_edges.extend(extract_import_edges(
-                                symbol_path=sym_path or meta_path,
+                                symbol_path=sym_path,
                                 imports=meta_imports,
                                 path=meta_path,
                                 repo=meta_repo,
@@ -1492,9 +1495,10 @@ def process_file_with_smart_reindexing(
                                 start_line=start_line,
                                 language=language,
                             ))
-                        if meta_imports:
+                        # Only extract import edges if we have a true symbol identifier
+                        if sym_path and meta_imports:
                             all_edges.extend(extract_import_edges(
-                                symbol_path=sym_path or meta_path,
+                                symbol_path=sym_path,
                                 imports=meta_imports,
                                 path=meta_path,
                                 repo=meta_repo,
@@ -1826,7 +1830,7 @@ def graph_backfill_tick(
 
                 repo = md.get("repo") or repo_name or ""
                 language = md.get("language")
-                symbol_path = md.get("symbol_path") or path
+                symbol_path = md.get("symbol_path")  # No fallback to path - only use true symbol identifiers
 
                 # Delete old edges for this path before adding new ones
                 # This ensures we don't have stale edges from removed calls/imports
@@ -1835,24 +1839,29 @@ def graph_backfill_tick(
                 except Exception:
                     pass  # Non-fatal: proceed with upsert
 
-                # Extract edges
-                if calls:
-                    all_edges.extend(extract_call_edges(
-                        symbol_path=symbol_path,
-                        calls=calls,
-                        path=path,
-                        repo=repo,
-                        language=language,
-                    ))
+                # Extract edges - only if we have a true symbol identifier
+                if symbol_path:
+                    if calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=symbol_path,
+                            calls=calls,
+                            path=path,
+                            repo=repo,
+                            language=language,
+                        ))
 
-                if imports:
-                    all_edges.extend(extract_import_edges(
-                        symbol_path=symbol_path,
-                        imports=imports,
-                        path=path,
-                        repo=repo,
-                        language=language,
-                    ))
+                    if imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=symbol_path,
+                            imports=imports,
+                            path=path,
+                            repo=repo,
+                            language=language,
+                        ))
+                else:
+                    # Skip symbol-level edge extraction when symbol_path is missing
+                    # (file-level cleanup via delete_edges_by_path still occurred above)
+                    pass
 
                 paths_processed.add(path)
                 points_to_mark.append(pt)

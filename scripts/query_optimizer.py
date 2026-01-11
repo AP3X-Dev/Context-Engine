@@ -50,6 +50,7 @@ class OptimizationStats:
     simple_queries: int = 0
     semantic_queries: int = 0
     complex_queries: int = 0
+    graph_queries: int = 0
     hybrid_queries: int = 0
     avg_ef_used: float = 0.0
     total_latency_ms: float = 0.0
@@ -90,11 +91,12 @@ class QueryOptimizer:
         self.max_ef = max_ef
         self.collection_size = collection_size
         self.enable_adaptive = enable_adaptive
-        
+
         # Statistics tracking
         self.stats = OptimizationStats()
         self._query_cache: Dict[str, QueryProfile] = {}
         self._performance_history: List[Tuple[float, int, float]] = []  # (complexity, ef, latency)
+        self._ef_samples_count: int = 0  # Dedicated counter for EF samples
         
         # Load configuration from environment
         self._load_config()
@@ -189,8 +191,7 @@ class QueryOptimizer:
         elif query_type == QueryType.COMPLEX:
             self.stats.complex_queries += 1
         elif query_type == QueryType.GRAPH:
-            # We don't have a stat for graph yet, use complex as proxy for now
-            self.stats.complex_queries += 1
+            self.stats.graph_queries += 1
         else:
             self.stats.hybrid_queries += 1
         
@@ -279,7 +280,7 @@ class QueryOptimizer:
         # Uses semantic classifier with fallback to keyword matching
         try:
             from scripts.intent_classifier import classify_intent, QueryIntent
-            intent, confidence = classify_intent(query)
+            intent, confidence, _ = classify_intent(query)
             if intent == QueryIntent.GRAPH and confidence >= 0.5:
                 return QueryType.GRAPH
         except ImportError:
@@ -368,11 +369,14 @@ class QueryOptimizer:
         """Record actual performance for adaptive learning."""
         self._performance_history.append((complexity, ef, latency_ms))
         self.stats.total_latency_ms += latency_ms
+
+        # Use dedicated EF samples counter for accurate running average
+        self._ef_samples_count += 1
         self.stats.avg_ef_used = (
-            (self.stats.avg_ef_used * (self.stats.total_queries - 1) + ef) / 
-            self.stats.total_queries if self.stats.total_queries > 0 else ef
+            (self.stats.avg_ef_used * (self._ef_samples_count - 1) + ef) /
+            self._ef_samples_count if self._ef_samples_count > 0 else ef
         )
-        
+
         # In a real implementation, we would adjust ef_factors based on latency targets
         if len(self._performance_history) > 100:
             self._performance_history.pop(0)

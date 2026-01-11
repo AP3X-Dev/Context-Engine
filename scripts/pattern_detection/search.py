@@ -28,41 +28,6 @@ from collections import Counter
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# Collection Config Cache (avoid repeated get_collection calls)
-# =============================================================================
-_COLLECTION_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
-_COLLECTION_CONFIG_TTL = 300  # 5 minutes
-
-
-def _get_collection_config(client, collection: str) -> Dict[str, Any]:
-    """Get collection config with caching to avoid repeated Qdrant calls."""
-    import time
-    cache_key = collection
-    now = time.time()
-
-    if cache_key in _COLLECTION_CONFIG_CACHE:
-        cached = _COLLECTION_CONFIG_CACHE[cache_key]
-        if now - cached.get("_cached_at", 0) < _COLLECTION_CONFIG_TTL:
-            return cached
-
-    try:
-        collection_info = client.get_collection(collection)
-        vectors_config = collection_info.config.params.vectors
-        has_pattern_vector = (
-            isinstance(vectors_config, dict) and "pattern_vector" in vectors_config
-        )
-        config = {
-            "has_pattern_vector": has_pattern_vector,
-            "_cached_at": now,
-        }
-        _COLLECTION_CONFIG_CACHE[cache_key] = config
-        return config
-    except Exception as e:
-        logger.warning(f"Failed to get collection config for {collection}: {e}")
-        return {"has_pattern_vector": False, "_cached_at": now}
-
-
-# =============================================================================
 # Helper Classes
 # =============================================================================
 

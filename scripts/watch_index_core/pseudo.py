@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 
 def _graph_backfill_enabled() -> bool:
     """Check if graph backfill is enabled."""
-    val = os.environ.get("GRAPH_BACKFILL_ENABLED", "1").strip().lower()
-    return val in {"1", "true", "yes", "on"}
+    return get_boolean_env("GRAPH_BACKFILL_ENABLED", default=True)
 
 
 def _start_pseudo_backfill_worker(

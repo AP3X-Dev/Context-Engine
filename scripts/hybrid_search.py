@@ -1195,7 +1195,9 @@ def _run_hybrid_search_impl(
     # MUST be initialized before lexical query to determine _use_dense_only
     from scripts.query_optimizer import get_query_optimizer, QueryType
     # Use singleton optimizer instance for efficiency (avoids per-request instantiation)
-    optimizer = get_query_optimizer(collection_size=10000)
+    # Use actual collection size for proper tuning (fallback to 10000 if unavailable)
+    _coll_size_for_optimizer = _coll_size if _coll_size > 0 else 10000
+    optimizer = get_query_optimizer(collection_size=_coll_size_for_optimizer)
     profile = optimizer.analyze_query(queries[0] if queries else "", language=language)
 
     # Adaptive Search Tuning

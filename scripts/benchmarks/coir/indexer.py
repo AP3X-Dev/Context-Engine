@@ -65,11 +65,14 @@ def get_corpus_collection(corpus: List[Dict[str, Any]]) -> str:
 
 def _infer_language(entry: Dict[str, Any]) -> str:
     """Infer programming language from CoIR entry.
-    
+
     Priority:
-    1. Explicit 'language' field in entry
-    2. Infer from task name pattern (codesearchnet-python → python)
+    1. Check the 'language' field in entry
+    2. Check the 'lang' field in entry
     3. Fallback to 'python'
+
+    The function _infer_language only reads entry fields, specifically
+    checking the 'language' and 'lang' keys.
     """
     # Check explicit language field
     lang = entry.get("language", "")

@@ -191,15 +191,36 @@ def _get_exemplar_embeddings() -> Dict[QueryIntent, List[Tuple[List[float], floa
     if not _EXEMPLAR_EMBEDDINGS:
         with _EXEMPLAR_LOCK:
             if not _EXEMPLAR_EMBEDDINGS:
+                # Build a temporary dict first to avoid partial initialization on failure
+                temp_embeddings: Dict[QueryIntent, List[Tuple[List[float], float]]] = {}
+                failed_intents: List[QueryIntent] = []
+
                 for intent, exemplars in INTENT_EXEMPLARS.items():
-                    embeddings = _embed_texts(exemplars)
-                    if embeddings:
-                        # Store (embedding, pre-computed norm) tuples
-                        _EXEMPLAR_EMBEDDINGS[intent] = [
-                            (emb, _compute_norm(emb)) for emb in embeddings
-                        ]
-                total = sum(len(v) for v in _EXEMPLAR_EMBEDDINGS.values())
-                logger.info(f"Cached {total} intent exemplar embeddings with pre-computed norms")
+                    try:
+                        embeddings = _embed_texts(exemplars)
+                        if embeddings:
+                            # Store (embedding, pre-computed norm) tuples
+                            temp_embeddings[intent] = [
+                                (emb, _compute_norm(emb)) for emb in embeddings
+                            ]
+                        else:
+                            failed_intents.append(intent)
+                            logger.warning(f"Failed to get embeddings for intent {intent.value}")
+                    except Exception as e:
+                        failed_intents.append(intent)
+                        logger.warning(f"Error computing embeddings for intent {intent.value}: {e}")
+
+                # Only assign if we got at least some embeddings
+                if temp_embeddings:
+                    _EXEMPLAR_EMBEDDINGS = temp_embeddings
+                    total = sum(len(v) for v in _EXEMPLAR_EMBEDDINGS.values())
+                    logger.info(f"Cached {total} intent exemplar embeddings with pre-computed norms")
+                    if failed_intents:
+                        failed_names = [i.value for i in failed_intents]
+                        logger.warning(f"Failed to initialize embeddings for intents: {failed_names}")
+                else:
+                    logger.warning("Failed to initialize any exemplar embeddings")
+
     return _EXEMPLAR_EMBEDDINGS
 
 
@@ -227,7 +248,7 @@ def _cosine_similarity_prenorm(query_vec: List[float], query_norm: float,
     return max(0.0, min(1.0, raw))
 
 
-def classify_intent(query: str) -> Tuple[QueryIntent, float]:
+def classify_intent(query: str) -> Tuple[QueryIntent, float, bool]:
     """
     Classify query intent using semantic similarity to exemplars.
 
@@ -235,17 +256,19 @@ def classify_intent(query: str) -> Tuple[QueryIntent, float]:
         query: The user's search query
 
     Returns:
-        Tuple of (QueryIntent, confidence_score)
-        If confidence < threshold, returns (HYBRID, score)
+        Tuple of (QueryIntent, confidence_score, fallback_used)
+        - fallback_used: True if keyword fallback was used (embeddings unavailable)
+        If confidence < threshold, returns (HYBRID, score, False)
     """
     if not query or not query.strip():
-        return QueryIntent.HYBRID, 0.0
+        return QueryIntent.HYBRID, 0.0, False
 
     # Embed the query
     query_embeddings = _embed_texts([query.strip()])
     if not query_embeddings:
         # Fallback to keyword matching if embedding fails
-        return _keyword_fallback(query)
+        intent, score = _keyword_fallback(query)
+        return intent, score, True
 
     query_vec = query_embeddings[0]
     query_norm = _compute_norm(query_vec)  # Compute once for all comparisons
@@ -253,7 +276,8 @@ def classify_intent(query: str) -> Tuple[QueryIntent, float]:
     exemplar_embeddings = _get_exemplar_embeddings()
 
     if not exemplar_embeddings:
-        return _keyword_fallback(query)
+        intent, score = _keyword_fallback(query)
+        return intent, score, True
 
     # Find best matching intent using pre-computed exemplar norms
     best_intent = QueryIntent.HYBRID
@@ -269,9 +293,9 @@ def classify_intent(query: str) -> Tuple[QueryIntent, float]:
 
     # Apply confidence threshold
     if best_score < CONFIDENCE_THRESHOLD:
-        return QueryIntent.HYBRID, best_score
+        return QueryIntent.HYBRID, best_score, False
 
-    return best_intent, best_score
+    return best_intent, best_score, False
 
 
 def _keyword_fallback(query: str) -> Tuple[QueryIntent, float]:
@@ -321,11 +345,11 @@ def is_graph_intent(query: str, threshold: float = CONFIDENCE_THRESHOLD) -> bool
     When using keyword fallback (embedder unavailable), trusts the fallback
     result without applying the semantic threshold.
     """
-    intent, score = classify_intent(query)
+    intent, score, fallback_used = classify_intent(query)
 
-    # If embedder isn't loaded, we're using keyword fallback - trust it directly
+    # If keyword fallback was used, trust it directly
     # Fallback returns 0.5 for GRAPH which is below default 0.65 threshold
-    if _EMBEDDER is None:
+    if fallback_used:
         return intent == QueryIntent.GRAPH
 
     return intent == QueryIntent.GRAPH and score >= threshold

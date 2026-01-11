@@ -27,6 +27,29 @@ __all__ = [
     "_compute_called_by",
 ]
 
+
+def _parse_int_or_default(value: Any, default: int = 0) -> int:
+    """Defensive integer parser that returns default on failure.
+
+    Args:
+        value: Value to parse (can be str, int, or None)
+        default: Default value if parsing fails
+
+    Returns:
+        Parsed integer or default value
+    """
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+    return default
+
+
 # Environment - use same patterns as rest of engine
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 
@@ -207,9 +230,15 @@ async def _hydrate_graph_results(
                 payload, md = match
                 info = payload.get("information", "") or payload.get("content", "")
 
-                # Update with hydrated data
-                r["start_line"] = int(md.get("start_line") or md.get("start") or r.get("start_line", 0))
-                r["end_line"] = int(md.get("end_line") or md.get("end") or r.get("end_line", 0))
+                # Update with hydrated data - use defensive parsing for line numbers
+                r["start_line"] = _parse_int_or_default(
+                    md.get("start_line") or md.get("start") or r.get("start_line"),
+                    default=r.get("start_line", 0)
+                )
+                r["end_line"] = _parse_int_or_default(
+                    md.get("end_line") or md.get("end") or r.get("end_line"),
+                    default=r.get("end_line", 0)
+                )
                 r["language"] = str(md.get("language") or r.get("language", ""))
 
                 # Extract snippet - prefer raw code from metadata
