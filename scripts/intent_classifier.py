@@ -49,6 +49,8 @@ INTENT_EXEMPLARS: Dict[QueryIntent, List[str]] = {
         "what imports this module",
         "find callers",
         "list all call sites",
+        "which functions invoke this method",
+        "what invokes the authenticate method",
     ],
     QueryIntent.SEMANTIC: [
         "how does authentication work",
@@ -96,6 +98,9 @@ _GRAPH_PATTERNS: List[Pattern] = [
     re.compile(r"\bwhere is .+ used\b", re.IGNORECASE),
     re.compile(r"\bwhat imports\b", re.IGNORECASE),
     re.compile(r"\bwhich .+ imports?\b", re.IGNORECASE),
+    re.compile(r"\binvokes?\b", re.IGNORECASE),  # "which functions invoke X"
+    re.compile(r"\binvoked by\b", re.IGNORECASE),
+    re.compile(r"\bwhich .+ (?:calls?|invokes?)\b", re.IGNORECASE),
 ]
 
 _SEMANTIC_PATTERNS: List[Pattern] = [
