@@ -101,10 +101,9 @@ def test_code_vs_nl_detection():
     assert _detect_query_mode("resource cleanup code", None) == "description"
     assert _detect_query_mode("decorator pattern wrapping function", None) == "description"
 
-    # Language hint is advisory only; short ambiguous text may parse in permissive langs
-    # "some text" parses as valid Ruby - algorithm trusts AST over ambiguous NL
-    assert _detect_query_mode("some text", "python") in ("code", "description")
-    assert _detect_query_mode("some text", "go") in ("code", "description")
+    # Ambiguous two-word input is treated as code because permissive ASTs (python/go) parse it
+    assert _detect_query_mode("some text", "python") == "code"
+    assert _detect_query_mode("some text", "go") == "code"
 
 
 # ============================================================================

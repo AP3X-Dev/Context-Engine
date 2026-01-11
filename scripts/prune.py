@@ -62,18 +62,15 @@ def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
         return 0
 
     # Filter for edges where path appears as caller OR callee
-    flt = models.Filter(
-        must=[
-            models.FieldCondition(
-                key="caller_path", match=models.MatchValue(value=path_str)
-            )
-        ],
-        should=[
-            models.FieldCondition(
-                key="callee_path", match=models.MatchValue(value=path_str)
-            )
-        ]
-    )
+    should_conditions = [
+        models.FieldCondition(
+            key="caller_path", match=models.MatchValue(value=path_str)
+        ),
+        models.FieldCondition(
+            key="callee_path", match=models.MatchValue(value=path_str)
+        ),
+    ]
+    flt = models.Filter(should=should_conditions)
 
     try:
         response = client.delete(
@@ -81,10 +78,30 @@ def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
             points_selector=models.FilterSelector(filter=flt),
         )
         # Extract actual deleted count from response
-        deleted_count = getattr(response, "status", None)
+        deleted_count = None
+
+        result_attr = getattr(response, "result", None)
+        if isinstance(result_attr, dict):
+            deleted_value = result_attr.get("deleted")
+            if isinstance(deleted_value, int):
+                deleted_count = deleted_value
+
         if deleted_count is None:
-            # Qdrant client may not return count, return 1 as success indicator
-            return 1
+            deleted_attr = getattr(response, "deleted", None)
+            if isinstance(deleted_attr, int):
+                deleted_count = deleted_attr
+
+        if deleted_count is None:
+            points_attr = getattr(response, "points", None)
+            try:
+                if points_attr is not None:
+                    deleted_count = len(points_attr)
+            except TypeError:
+                pass
+
+        if deleted_count is None:
+            deleted_count = 1
+
         return deleted_count
     except Exception as e:
         # Check if this is a "collection not found" error
