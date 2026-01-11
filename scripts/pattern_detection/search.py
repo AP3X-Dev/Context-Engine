@@ -27,6 +27,40 @@ from collections import Counter
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# Collection Config Cache (avoid repeated get_collection calls)
+# =============================================================================
+_COLLECTION_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
+_COLLECTION_CONFIG_TTL = 300  # 5 minutes
+
+
+def _get_collection_config(client, collection: str) -> Dict[str, Any]:
+    """Get collection config with caching to avoid repeated Qdrant calls."""
+    import time
+    cache_key = collection
+    now = time.time()
+
+    if cache_key in _COLLECTION_CONFIG_CACHE:
+        cached = _COLLECTION_CONFIG_CACHE[cache_key]
+        if now - cached.get("_cached_at", 0) < _COLLECTION_CONFIG_TTL:
+            return cached
+
+    try:
+        collection_info = client.get_collection(collection)
+        vectors_config = collection_info.config.params.vectors
+        has_pattern_vector = (
+            isinstance(vectors_config, dict) and "pattern_vector" in vectors_config
+        )
+        config = {
+            "has_pattern_vector": has_pattern_vector,
+            "_cached_at": now,
+        }
+        _COLLECTION_CONFIG_CACHE[cache_key] = config
+        return config
+    except Exception as e:
+        logger.warning(f"Failed to get collection config for {collection}: {e}")
+        return {"has_pattern_vector": False, "_cached_at": now}
+
 
 # =============================================================================
 # Helper Classes
@@ -184,6 +218,11 @@ _extractor = None
 _encoder = None
 _learner = None
 
+# Collection config cache (avoids get_collection round-trip per query)
+import time as _time
+_COLLECTION_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
+_COLLECTION_CONFIG_TTL = 300  # 5 minutes
+
 
 def _get_qdrant_client():
     """Get or create Qdrant client."""
@@ -203,6 +242,30 @@ def _get_qdrant_client():
             logger.warning(f"Failed to connect to Qdrant: {e}")
             return None
     return _qdrant_client
+
+
+def _get_collection_config(client, collection: str) -> Dict[str, Any]:
+    """Get cached collection config (has_pattern_vector, etc.)."""
+    now = _time.time()
+    cached = _COLLECTION_CONFIG_CACHE.get(collection)
+    if cached and (now - cached.get("_ts", 0)) < _COLLECTION_CONFIG_TTL:
+        return cached
+
+    try:
+        info = client.get_collection(collection)
+        vectors_config = info.config.params.vectors
+        has_pattern_vector = (
+            isinstance(vectors_config, dict) and "pattern_vector" in vectors_config
+        )
+        config = {
+            "has_pattern_vector": has_pattern_vector,
+            "_ts": now,
+        }
+        _COLLECTION_CONFIG_CACHE[collection] = config
+        return config
+    except Exception as e:
+        logger.debug(f"Failed to get collection config: {e}")
+        return {"has_pattern_vector": False, "_ts": now}
 
 
 def _get_extractor():
@@ -321,6 +384,7 @@ def pattern_search(
     include_snippet: bool = True,
     context_lines: int = 3,
     target_languages: Optional[List[str]] = None,
+    repo: Optional[Union[str, List[str]]] = None,  # Filter by repo name(s)
     hybrid: bool = False,
     semantic_weight: float = 0.3,
     output_format: Any = None,  # "json" (default) or "toon"
@@ -398,26 +462,41 @@ def pattern_search(
 
     # Build search filter
     search_filter = None
+    filter_conditions = []
+
     if target_languages:
         from qdrant_client.models import Filter, FieldCondition, MatchAny
-        search_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="language",
-                    match=MatchAny(any=target_languages)
-                )
-            ]
+        filter_conditions.append(
+            FieldCondition(
+                key="metadata.language",
+                match=MatchAny(any=target_languages)
+            )
         )
+
+    # Add repo filter (critical for scale - limits search to specific repos)
+    if repo:
+        from qdrant_client.models import Filter, FieldCondition, MatchAny, MatchValue
+        repo_list = [repo] if isinstance(repo, str) else list(repo)
+        # Skip filter if wildcard "*"
+        if repo_list != ["*"]:
+            if len(repo_list) == 1:
+                filter_conditions.append(
+                    FieldCondition(key="metadata.repo", match=MatchValue(value=repo_list[0]))
+                )
+            else:
+                filter_conditions.append(
+                    FieldCondition(key="metadata.repo", match=MatchAny(any=repo_list))
+                )
+
+    if filter_conditions:
+        from qdrant_client.models import Filter
+        search_filter = Filter(must=filter_conditions)
 
     try:
         # Search for similar patterns
-        # First check if collection has pattern_vector field
-        collection_info = client.get_collection(collection)
-        vectors_config = collection_info.config.params.vectors
-        # vectors can be a dict (named) or VectorParams (single unnamed vector)
-        has_pattern_vector = (
-            isinstance(vectors_config, dict) and "pattern_vector" in vectors_config
-        )
+        # Use cached collection config to avoid repeated Qdrant calls
+        coll_config = _get_collection_config(client, collection)
+        has_pattern_vector = coll_config.get("has_pattern_vector", False)
 
         # Fetch size: over-fetch only when reranking is enabled
         needs_reranking = aroma_rerank or hybrid
@@ -468,8 +547,16 @@ def pattern_search(
 
             # Include snippet if requested (forced True when aroma_rerank - see line ~366)
             if include_snippet:
+                # Prefer indexed code from payload (no disk I/O) over disk read
+                payload_text = (
+                    payload.get("code") or
+                    meta.get("code") or
+                    payload.get("text") or
+                    meta.get("text")
+                )
                 result.snippet = _get_snippet(
-                    path, result.start_line, result.end_line, context_lines
+                    path, result.start_line, result.end_line, context_lines,
+                    payload_text=payload_text
                 )
                 # Highlight lines matching query pattern (AST-based)
                 if result.snippet and signature.control_flow:
@@ -585,6 +672,7 @@ def search_by_pattern_description(
     min_score: float = 0.0,
     collection: Optional[str] = None,
     target_languages: Optional[List[str]] = None,
+    repo: Optional[Union[str, List[str]]] = None,
     output_format: Any = None,
     compact: bool = False,
 ) -> Union[PatternSearchResponse, Dict[str, Any]]:
@@ -602,6 +690,7 @@ def search_by_pattern_description(
         min_score: Minimum similarity score (0-1), applied before TOON encoding
         collection: Qdrant collection
         target_languages: Filter to specific languages
+        repo: Filter by repo name(s). Use "*" to search all repos.
         output_format: "json" (default) or "toon" for token-efficient format
         compact: If True with TOON, use minimal fields
 
@@ -623,6 +712,7 @@ def search_by_pattern_description(
             min_score=min_score,
             collection=collection,
             target_languages=target_languages,
+            repo=repo,
             output_format=output_format,
             compact=compact,
         )
@@ -645,21 +735,35 @@ def search_by_pattern_description(
     if collection is None:
         collection = os.environ.get("COLLECTION_NAME", "codebase")
 
-    # Build filter
-    search_filter = None
+    # Build filter (target_languages + repo)
+    filter_conditions = []
     if target_languages:
-        from qdrant_client.models import Filter, FieldCondition, MatchAny
-        search_filter = Filter(
-            must=[FieldCondition(key="language", match=MatchAny(any=target_languages))]
+        from qdrant_client.models import FieldCondition, MatchAny
+        filter_conditions.append(
+            FieldCondition(key="metadata.language", match=MatchAny(any=target_languages))
         )
+    if repo:
+        from qdrant_client.models import FieldCondition, MatchAny, MatchValue
+        repo_list = [repo] if isinstance(repo, str) else list(repo)
+        if repo_list != ["*"]:
+            if len(repo_list) == 1:
+                filter_conditions.append(
+                    FieldCondition(key="metadata.repo", match=MatchValue(value=repo_list[0]))
+                )
+            else:
+                filter_conditions.append(
+                    FieldCondition(key="metadata.repo", match=MatchAny(any=repo_list))
+                )
+
+    search_filter = None
+    if filter_conditions:
+        from qdrant_client.models import Filter
+        search_filter = Filter(must=filter_conditions)
 
     try:
-        # Check if collection has pattern_vector field
-        collection_info = client.get_collection(collection)
-        vectors_config = collection_info.config.params.vectors
-        has_pattern_vector = (
-            isinstance(vectors_config, dict) and "pattern_vector" in vectors_config
-        )
+        # Use cached collection config
+        coll_config = _get_collection_config(client, collection)
+        has_pattern_vector = coll_config.get("has_pattern_vector", False)
 
         if has_pattern_vector:
             response = client.query_points(
@@ -822,10 +926,30 @@ def _get_snippet(
     start_line: int,
     end_line: int,
     context_lines: int,
+    payload_text: Optional[str] = None,
 ) -> Optional[str]:
-    """Read snippet from file with context."""
+    """Get snippet from payload or fall back to disk read.
+
+    Args:
+        path: File path for disk fallback
+        start_line: Start line number
+        end_line: End line number
+        context_lines: Number of context lines to include
+        payload_text: Pre-indexed code from Qdrant payload (preferred, avoids I/O)
+
+    Returns:
+        Code snippet string or None
+    """
+    # Fast path: use indexed code from payload (no disk I/O)
+    if payload_text:
+        lines = payload_text.splitlines(keepends=True)
+        # Add context if we have enough lines
+        start = max(0, start_line - 1 - context_lines)
+        end = min(len(lines), end_line + context_lines)
+        return ''.join(lines[start:end]) if lines else payload_text
+
+    # Slow path: read from disk (fallback for legacy indexes without code in payload)
     try:
-        # Resolve path
         workspace = os.environ.get("WORKSPACE_PATH", "/work")
         full_path = os.path.join(workspace, path) if not os.path.isabs(path) else path
 
@@ -835,7 +959,6 @@ def _get_snippet(
         with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
 
-        # Calculate range with context
         start = max(0, start_line - 1 - context_lines)
         end = min(len(lines), end_line + context_lines)
 

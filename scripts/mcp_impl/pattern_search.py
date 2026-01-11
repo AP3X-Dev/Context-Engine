@@ -8,9 +8,11 @@ Supports TOON output format for token-efficient responses.
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
-from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Import logger with fallback
 try:
@@ -19,6 +21,15 @@ try:
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
+
+
+@dataclass
+class QueryModeResult:
+    """Result of query mode detection with confidence scoring."""
+    mode: str  # "code" or "description"
+    confidence: float  # 0.0 to 1.0
+    signals: Dict[str, float]  # Individual signal contributions
+    ast_validated: bool  # Whether AST parsing succeeded
 
 # Import pattern detection components (lazy to avoid startup penalty)
 _PATTERN_SEARCH_LOADED = False
@@ -45,32 +56,318 @@ def _ensure_pattern_search():
         return False
 
 
-# Supported languages for tree-sitter parsing
-_SUPPORTED_LANGUAGES = {
+# Supported languages for tree-sitter parsing (order matters - try common ones first)
+_TREE_SITTER_LANGUAGES = [
     "python", "javascript", "typescript", "go", "rust", "java", "c", "cpp",
     "ruby", "php", "csharp", "kotlin", "swift", "scala", "bash", "lua",
-}
+]
 
-# Fenced code block pattern
+# Fenced code block pattern (definitive - skip all other detection)
 _FENCED_CODE = re.compile(r'^```\w*\n.*\n```$', re.DOTALL)
 
-# Universal code syntax patterns (work across all languages)
-_CODE_SYNTAX = re.compile(
-    r'[{}\[\]();]|'                          # Brackets, braces, parens, semicolons
-    r'::|->|=>|:=|'                          # C++/Rust/Go/JS operators
-    r'\.\w+\(|'                              # Method call: .foo(
-    r'\w+\s*\([^)]*\)|'                      # Function call: foo() or foo(args)
-    r'^\s*(def|func|fn|function|class|struct|enum|impl|trait|interface)\s+\w',  # Definitions
-    re.MULTILINE
-)
+# NL exemplars for embedding comparison (lazy loaded)
+# These should cover common search/query patterns
+_NL_EXEMPLARS = [
+    # Search queries
+    "find code that handles authentication",
+    "show me error handling patterns",
+    "where is the database connection",
+    "how does caching work",
+    "how does the authentication system work",
+    "what functions handle user input",
+    "search for retry logic",
+    "find similar code to this pattern",
+    "list all API endpoints",
+    "explain how this module works",
+    "find code with exponential backoff",
+    "find all tests for this module",
+    "show me functions that process data",
+    "get all logging code",
+    "which class handles this",
+    "functions like the one in utils",
+    "examples of async await usage",
+    # Short concept phrases
+    "singleton implementation",
+    "factory pattern",
+    "observer pattern",
+    "resource cleanup",
+    "connection pooling",
+    "rate limiting",
+    "caching strategy",
+    "input validation",
+    "error handling",
+]
 
-# Multi-line code indicators (braces/semicolons at line boundaries)
-_MULTILINE_CODE = re.compile(
-    r'[{}]\s*$|'                 # Brace at line end
-    r'^\s*[{}]|'                 # Brace at line start
-    r';\s*$',                    # Semicolon at line end
-    re.MULTILINE
-)
+# Embedding cache for NL detection
+_NL_EMBEDDINGS_CACHE = None
+_NL_EMBEDDINGS_LOCK = None
+
+def _get_nl_embeddings_lock():
+    """Lazy init threading lock."""
+    global _NL_EMBEDDINGS_LOCK
+    if _NL_EMBEDDINGS_LOCK is None:
+        import threading
+        _NL_EMBEDDINGS_LOCK = threading.Lock()
+    return _NL_EMBEDDINGS_LOCK
+
+
+def _try_parse_python_ast(text: str) -> bool:
+    """Attempt to parse text as Python code using the ast module.
+
+    Returns True if parsing succeeds (valid Python syntax).
+    """
+    try:
+        ast.parse(text)
+        return True
+    except SyntaxError:
+        return False
+    except Exception:
+        return False
+
+
+def _try_parse_with_tree_sitter(text: str, language: str) -> bool:
+    """Attempt to parse text using tree-sitter for the given language.
+
+    Returns True if parsing produces meaningful structure.
+    For code fragments, tree-sitter may report has_error=True at root
+    but still parse the content correctly, so we check for actual structure.
+    """
+    try:
+        from scripts.ingest.tree_sitter import _ts_parser
+        parser = _ts_parser(language)
+        if not parser:
+            return False
+        tree = parser.parse(bytes(text, "utf-8"))
+        if not tree or not tree.root_node:
+            return False
+
+        root = tree.root_node
+        # No errors = successful parse
+        if not root.has_error:
+            return True
+
+        # has_error=True at root - need to be careful
+        # Tree-sitter tries to recover from errors, but we shouldn't trust
+        # parses that are mostly ERROR nodes with trivial recovery
+        error_count = 0
+        meaningful_count = 0
+        for child in root.children:
+            if child.type == "ERROR" or child.has_error:
+                error_count += 1
+            elif child.type not in ("expression_statement", "identifier", "string"):
+                # Meaningful node types (not just bare identifiers)
+                meaningful_count += 1
+
+        # Require more meaningful nodes than errors, or at least one
+        # meaningful node with no errors
+        if error_count == 0 and meaningful_count > 0:
+            return True
+        if meaningful_count > error_count:
+            return True
+        return False
+    except ImportError:
+        return False
+    except Exception:
+        return False
+
+
+def _try_parse_any_language(text: str, hint: str | None = None) -> tuple[bool, str | None]:
+    """Try parsing text with multiple language parsers.
+
+    Returns (success, language) tuple. Tries hint language first if provided.
+    """
+    # Try Python AST first (fast, no dependencies)
+    if _try_parse_python_ast(text):
+        return True, "python"
+
+    # Build language order - hint first, then common languages
+    languages = []
+    if hint and hint.lower() in _TREE_SITTER_LANGUAGES:
+        languages.append(hint.lower())
+    for lang in _TREE_SITTER_LANGUAGES:
+        if lang not in languages:
+            languages.append(lang)
+
+    # Try tree-sitter parsers
+    for lang in languages:
+        if _try_parse_with_tree_sitter(text, lang):
+            return True, lang
+
+    return False, None
+
+
+def _get_nl_exemplar_embeddings():
+    """Get or compute cached NL exemplar embeddings."""
+    global _NL_EMBEDDINGS_CACHE
+    if _NL_EMBEDDINGS_CACHE is not None:
+        return _NL_EMBEDDINGS_CACHE
+
+    lock = _get_nl_embeddings_lock()
+    with lock:
+        if _NL_EMBEDDINGS_CACHE is not None:
+            return _NL_EMBEDDINGS_CACHE
+
+        try:
+            from scripts.hybrid.embed import get_embedding_model
+            embedder = get_embedding_model()
+            embeddings = list(embedder.embed(_NL_EXEMPLARS))
+            _NL_EMBEDDINGS_CACHE = embeddings
+            logger.info(f"Cached {len(embeddings)} NL exemplar embeddings")
+            return embeddings
+        except Exception as e:
+            logger.warning(f"Failed to compute NL exemplar embeddings: {e}")
+            return None
+
+
+def _compute_nl_similarity(text: str) -> float:
+    """Compute max cosine similarity of text to NL exemplars.
+
+    Returns similarity score 0.0-1.0. Higher = more likely NL.
+    """
+    exemplar_embeddings = _get_nl_exemplar_embeddings()
+    if not exemplar_embeddings:
+        return 0.5  # Neutral if embedder unavailable
+
+    try:
+        from scripts.hybrid.embed import get_embedding_model
+        import numpy as np
+
+        embedder = get_embedding_model()
+        query_emb = list(embedder.embed([text]))[0]
+        query_arr = np.array(query_emb)
+        query_norm = np.linalg.norm(query_arr)
+
+        if query_norm == 0:
+            return 0.5
+
+        max_sim = 0.0
+        for ex_emb in exemplar_embeddings:
+            ex_arr = np.array(ex_emb)
+            ex_norm = np.linalg.norm(ex_arr)
+            if ex_norm == 0:
+                continue
+            sim = float(np.dot(query_arr, ex_arr) / (query_norm * ex_norm))
+            max_sim = max(max_sim, sim)
+
+        return max(0.0, min(1.0, max_sim))
+    except Exception as e:
+        logger.warning(f"NL similarity computation failed: {e}")
+        return 0.5
+
+
+def _detect_query_mode_with_confidence(
+    text: str,
+    language: str | None = None,
+    try_ast: bool = True,
+) -> QueryModeResult:
+    """
+    Detect if text is code or natural language description.
+
+    Strategy (AST + embedder fusion):
+    1. Fenced code blocks → code (definitive)
+    2. Try AST parsing (Python + tree-sitter)
+    3. Use embedder similarity to NL exemplars
+    4. Fuse signals: AST success + low NL similarity = code
+       AST success + high NL similarity = check further (permissive langs like Ruby)
+
+    Args:
+        text: The query text to analyze
+        language: Optional language hint for AST parsing
+        try_ast: Whether to attempt AST parsing (default True)
+
+    Returns:
+        QueryModeResult with mode, confidence, and signal breakdown
+    """
+    text = text.strip()
+    signals: Dict[str, float] = {}
+
+    if not text:
+        return QueryModeResult(
+            mode="description",
+            confidence=1.0,
+            signals={"empty": 1.0},
+            ast_validated=False,
+        )
+
+    # Step 1: Fenced code block (definitive)
+    if _FENCED_CODE.match(text):
+        return QueryModeResult(
+            mode="code",
+            confidence=1.0,
+            signals={"fenced_block": 1.0},
+            ast_validated=False,
+        )
+
+    # Step 2: AST parsing
+    parsed = False
+    parsed_lang = None
+    if try_ast:
+        parsed, parsed_lang = _try_parse_any_language(text, language)
+        if parsed:
+            signals["ast_parsed"] = 1.0
+            signals["parsed_language"] = parsed_lang or "unknown"
+
+    # Step 3: Embedder-based NL similarity
+    nl_sim = _compute_nl_similarity(text)
+    signals["nl_similarity"] = round(nl_sim, 3)
+
+    # Step 4: Fuse AST and NL signals
+    # Languages with permissive grammars (Ruby) parse NL as valid code
+    permissive_langs = {"ruby", "bash", "lua"}
+    is_permissive = parsed_lang in permissive_langs
+
+    # AST parsed with trustworthy language + low NL → definitely code
+    if parsed and not is_permissive and nl_sim < 0.65:
+        return QueryModeResult(
+            mode="code",
+            confidence=0.95,
+            signals=signals,
+            ast_validated=True,
+        )
+
+    # AST parsed but need to check NL similarity for permissive languages
+    if parsed:
+        # Very high NL similarity (>0.9) = exact/near match to NL exemplar
+        # This overrides AST parsing even for strict languages
+        if nl_sim >= 0.9:
+            return QueryModeResult(
+                mode="description",
+                confidence=min(1.0, 0.5 + nl_sim * 0.5),
+                signals=signals,
+                ast_validated=False,  # Don't trust AST for NL-like text
+            )
+        # High NL + permissive lang → description (catches phrases like "caching strategy")
+        if is_permissive and nl_sim >= 0.75:
+            return QueryModeResult(
+                mode="description",
+                confidence=0.8,
+                signals=signals,
+                ast_validated=False,
+            )
+        # AST parsed with lower/moderate NL → trust the AST
+        return QueryModeResult(
+            mode="code",
+            confidence=0.85 if is_permissive else 0.95,
+            signals=signals,
+            ast_validated=True,
+        )
+
+    # No AST parse - rely on NL similarity
+    if nl_sim >= 0.65:
+        return QueryModeResult(
+            mode="description",
+            confidence=min(1.0, 0.5 + nl_sim * 0.5),
+            signals=signals,
+            ast_validated=False,
+        )
+
+    # Low NL similarity + no AST → likely code fragment
+    return QueryModeResult(
+        mode="code",
+        confidence=min(1.0, 0.5 + (1.0 - nl_sim) * 0.4),
+        signals=signals,
+        ast_validated=False,
+    )
 
 
 def _detect_query_mode(text: str, language: str | None) -> str:
@@ -79,30 +376,12 @@ def _detect_query_mode(text: str, language: str | None) -> str:
 
     Works across all 16+ supported languages using universal syntax patterns.
     Returns: "code" or "description"
+
+    Note: This is the legacy interface. For confidence scores, use
+    _detect_query_mode_with_confidence() directly.
     """
-    text = text.strip()
-    if not text:
-        return "description"
-
-    # 1. Fenced code block → code
-    if _FENCED_CODE.match(text):
-        return "code"
-
-    # 2. Multi-line with braces/semicolons → code
-    if '\n' in text and _MULTILINE_CODE.search(text):
-        return "code"
-
-    # 3. Universal code syntax (brackets, operators, calls, definitions)
-    if _CODE_SYNTAX.search(text):
-        return "code"
-
-    # 4. Language hint is advisory only; do NOT force code for NL text
-    if language and language.lower() in _SUPPORTED_LANGUAGES:
-        # If language is provided but we found no code markers, still treat as description
-        return "description"
-
-    # 5. Default to natural language
-    return "description"
+    result = _detect_query_mode_with_confidence(text, language, try_ast=True)
+    return result.mode
 
 
 async def _pattern_search_impl(
@@ -116,6 +395,7 @@ async def _pattern_search_impl(
     semantic_weight: Optional[float] = None,
     collection: Optional[str] = None,
     target_languages: Optional[List[str]] = None,
+    repo: Optional[Union[str, List[str]]] = None,  # Filter by repo name(s) for scale
     output_format: Optional[str] = None,
     compact: Optional[bool] = None,
     aroma_rerank: Optional[bool] = None,
@@ -178,13 +458,25 @@ async def _pattern_search_impl(
     eff_language = str(language).strip() if language else None
     eff_query_mode = str(query_mode).strip().lower() if query_mode else "auto"
 
+    # Track detection metadata for response
+    detection_confidence: float = 1.0
+    detection_signals: Dict[str, float] = {}
+    detection_ast_validated: bool = False
+
     if eff_query_mode == "code":
         is_code = True
+        detection_signals = {"explicit_override": 1.0}
     elif eff_query_mode == "description":
         is_code = False
-    else:  # auto
-        detected = _detect_query_mode(query_text, eff_language)
-        is_code = (detected == "code")
+        detection_signals = {"explicit_override": 1.0}
+    else:  # auto - use enhanced detection with confidence
+        detection_result = _detect_query_mode_with_confidence(
+            query_text, eff_language, try_ast=True
+        )
+        is_code = (detection_result.mode == "code")
+        detection_confidence = detection_result.confidence
+        detection_signals = detection_result.signals
+        detection_ast_validated = detection_result.ast_validated
 
     # Path-specific min_score defaults:
     # - Code path: 0.5 (vector similarity scores are typically higher)
@@ -205,6 +497,7 @@ async def _pattern_search_impl(
                 semantic_weight=eff_semantic_weight,
                 collection=collection,
                 target_languages=target_languages,
+                repo=repo,  # Pass through for scale (limits search to specific repos)
                 output_format=output_format,
                 compact=eff_compact,
                 aroma_rerank=eff_aroma_rerank,
@@ -218,6 +511,7 @@ async def _pattern_search_impl(
                 min_score=eff_min_score,
                 collection=collection,
                 target_languages=target_languages,
+                repo=repo,
                 output_format=output_format,
                 compact=eff_compact,
             )
@@ -229,6 +523,13 @@ async def _pattern_search_impl(
         # Preserve upstream ok flag (derived from search_mode) instead of overriding
         # This ensures errors from core search propagate to MCP clients
         result["query_mode"] = "code" if is_code else "description"
+
+        # Add detection metadata (useful for debugging and transparency)
+        result["detection"] = {
+            "confidence": round(detection_confidence, 3),
+            "ast_validated": detection_ast_validated,
+            "signals": {k: round(v, 3) for k, v in detection_signals.items()},
+        }
 
         return result
     except Exception as e:
