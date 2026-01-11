@@ -42,7 +42,9 @@ def delete_by_path(client: QdrantClient, path_str: str) -> int:
 def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
     """Delete graph edges for a specific file path.
 
-    Deletes edges where the file appears as either caller_path or callee_path.
+    Deletes edges where the file appears as caller_path.
+    Note: Graph edges only store caller_path (not callee_path) since callees
+    are identified by symbol name, not file path.
     Returns the actual number of deleted points, or 0 if collection doesn't exist.
     """
     import logging
@@ -61,16 +63,15 @@ def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
         logger.debug(f"Failed to check graph collection existence: {e}")
         return 0
 
-    # Filter for edges where path appears as caller OR callee
-    should_conditions = [
-        models.FieldCondition(
-            key="caller_path", match=models.MatchValue(value=path_str)
-        ),
-        models.FieldCondition(
-            key="callee_path", match=models.MatchValue(value=path_str)
-        ),
-    ]
-    flt = models.Filter(should=should_conditions)
+    # Filter for edges where path appears as caller
+    # Note: edges only have caller_path field (callee is identified by symbol, not path)
+    flt = models.Filter(
+        must=[
+            models.FieldCondition(
+                key="caller_path", match=models.MatchValue(value=path_str)
+            ),
+        ]
+    )
 
     try:
         response = client.delete(

@@ -1785,7 +1785,7 @@ def graph_backfill_tick(
     processed = 0
     next_offset = None
     edges_created = 0
-    paths_processed: set[str] = set()
+    paths_cleaned: set[str] = set()  # Track paths where we've deleted old edges
 
     while processed < max_points:
         batch_limit = min(64, max_points - processed)
@@ -1817,30 +1817,27 @@ def graph_backfill_tick(
                 if not path:
                     continue
 
-                # Skip if we've already processed this path in this tick
-                if path in paths_processed:
-                    continue
-
                 calls = md.get("calls") or []
                 imports = md.get("imports") or []
-
-                # Skip if no relationship data
-                if not calls and not imports:
-                    continue
 
                 repo = md.get("repo") or repo_name or ""
                 language = md.get("language")
                 symbol_path = md.get("symbol_path")  # No fallback to path - only use true symbol identifiers
 
-                # Delete old edges for this path before adding new ones
+                # Delete old edges for this path ONCE before adding new ones
                 # This ensures we don't have stale edges from removed calls/imports
-                try:
-                    delete_edges_by_path(client, graph_coll, path, repo=repo)
-                except Exception:
-                    pass  # Non-fatal: proceed with upsert
+                if path not in paths_cleaned:
+                    try:
+                        delete_edges_by_path(client, graph_coll, path, repo=repo)
+                    except Exception:
+                        pass  # Non-fatal: proceed with upsert
+                    paths_cleaned.add(path)
 
+                # Skip if no relationship data (but still mark as processed)
+                if not calls and not imports:
+                    pass  # Still mark point below
                 # Extract edges - only if we have a true symbol identifier
-                if symbol_path:
+                elif symbol_path:
                     if calls:
                         all_edges.extend(extract_call_edges(
                             symbol_path=symbol_path,
@@ -1858,12 +1855,6 @@ def graph_backfill_tick(
                             repo=repo,
                             language=language,
                         ))
-                else:
-                    # Skip symbol-level edge extraction when symbol_path is missing
-                    # (file-level cleanup via delete_edges_by_path still occurred above)
-                    pass
-
-                paths_processed.add(path)
                 points_to_mark.append(pt)
                 processed += 1
 
@@ -1896,6 +1887,6 @@ def graph_backfill_tick(
             break
 
     if processed > 0:
-        print(f"[graph_backfill] Processed {processed} points, created {edges_created} edges for {len(paths_processed)} paths")
+        print(f"[graph_backfill] Processed {processed} points, created {edges_created} edges for {len(paths_cleaned)} paths")
 
     return processed
