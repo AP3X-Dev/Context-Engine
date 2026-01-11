@@ -150,13 +150,13 @@ class TestSemanticClassification:
 
     def test_classify_empty_query(self):
         """Empty queries should return HYBRID with 0 confidence."""
-        intent, score = classify_intent("")
+        intent, score, _ = classify_intent("")
         assert intent == QueryIntent.HYBRID
         assert score == 0.0
 
     def test_classify_whitespace_query(self):
         """Whitespace-only queries should return HYBRID."""
-        intent, score = classify_intent("   ")
+        intent, score, _ = classify_intent("   ")
         assert intent == QueryIntent.HYBRID
         assert score == 0.0
 
@@ -164,7 +164,7 @@ class TestSemanticClassification:
     def test_semantic_graph_query(self):
         """Test semantic classification of graph queries (requires embeddings)."""
         # This test is slow because it loads the embedding model
-        intent, score = classify_intent("which functions invoke the authenticate method")
+        intent, score, _ = classify_intent("which functions invoke the authenticate method")
         # Should be GRAPH with decent confidence
         assert intent in (QueryIntent.GRAPH, QueryIntent.HYBRID)
         assert score > 0
@@ -177,7 +177,7 @@ class TestSemanticClassification:
             "how does authentication work",
         ]
         for query in test_queries:
-            sem_intent, sem_score = classify_intent(query)
+            sem_intent, sem_score, _ = classify_intent(query)
             kw_intent, _ = _keyword_fallback(query)
             # They should usually agree, but semantic may be more nuanced
             # Just verify we get valid results
