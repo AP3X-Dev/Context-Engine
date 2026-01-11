@@ -322,8 +322,12 @@ def _detect_query_mode_with_confidence(
     permissive_langs = {"ruby", "bash", "lua"}
     is_permissive = parsed_lang in permissive_langs
 
+    # NL threshold: 0.75 separates NL descriptions from code snippets
+    # Code typically scores 0.6-0.72, NL descriptions score 0.8-1.0
+    NL_THRESHOLD = 0.75
+
     # AST parsed with trustworthy language + low NL → definitely code
-    if parsed and not is_permissive and nl_sim < 0.65:
+    if parsed and not is_permissive and nl_sim < NL_THRESHOLD:
         return QueryModeResult(
             mode="code",
             confidence=0.95,
@@ -343,7 +347,7 @@ def _detect_query_mode_with_confidence(
                 ast_validated=False,  # Don't trust AST for NL-like text
             )
         # High NL + permissive lang → description (catches phrases like "caching strategy")
-        if is_permissive and nl_sim >= 0.65:
+        if is_permissive and nl_sim >= NL_THRESHOLD:
             return QueryModeResult(
                 mode="description",
                 confidence=0.8,
@@ -359,7 +363,7 @@ def _detect_query_mode_with_confidence(
         )
 
     # No AST parse - rely on NL similarity
-    if nl_sim >= 0.65:
+    if nl_sim >= NL_THRESHOLD:
         return QueryModeResult(
             mode="description",
             confidence=min(1.0, 0.5 + nl_sim * 0.5),
