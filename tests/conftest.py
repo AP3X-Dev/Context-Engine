@@ -14,6 +14,11 @@ if str(ROOT) not in sys.path:
 # Enable pattern vectors for pattern search tests
 os.environ.setdefault("PATTERN_VECTORS", "1")
 
+# CRITICAL: Ensure real embedding model for pattern detection tests
+# Some tests set EMBEDDING_MODEL=fake which leaks into subsequent tests
+# Force a real model at conftest load time (before any test runs)
+os.environ.setdefault("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_mcp_imported():
@@ -26,6 +31,32 @@ def _ensure_mcp_imported():
         import mcp.types  # noqa: F401
     except ImportError:
         pass  # mcp package not available, tests will skip if needed
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _preload_real_embedding_model():
+    """Pre-load the real embedding model to prevent fake model pollution.
+
+    Some tests set EMBEDDING_MODEL=fake. This fixture ensures the real model
+    is loaded first and cached, so pattern detection tests work correctly.
+    """
+    # Force real model
+    os.environ["EMBEDDING_MODEL"] = "BAAI/bge-base-en-v1.5"
+    try:
+        from scripts.hybrid.embed import get_embedding_model
+        model = get_embedding_model()
+        # Warm up the model
+        list(model.embed(["test"]))
+
+        # Pre-warm the NL exemplar embeddings for pattern detection
+        try:
+            from scripts.mcp_impl.pattern_search import _get_nl_exemplar_embeddings
+            _get_nl_exemplar_embeddings()
+        except Exception:
+            pass
+    except Exception:
+        pass  # Model loading may fail in some environments
     yield
 
 
