@@ -420,6 +420,7 @@ def run_coir_benchmark_sync(
     query_limit: Optional[int] = None,
     corpus_limit: Optional[int] = None,
     mode: str = "hybrid",
+    skip_index: bool = False,
     **kwargs: Any,
 ) -> CoIRReport:
     """
@@ -433,6 +434,7 @@ def run_coir_benchmark_sync(
       top_k: number of results to retrieve per query
       query_limit: cap query count for faster smoke tests (reliable)
       corpus_limit: cap corpus size for faster smoke tests (reliable)
+      skip_index: skip indexing (use existing collection data)
     """
     _ensure_env_defaults()
 
@@ -464,6 +466,7 @@ def run_coir_benchmark_sync(
         rerank_enabled=bool(rerank_enabled),
         batch_size=batch_size,
         mode=mode,
+        skip_index=skip_index,
         **kwargs,
     )
 
@@ -526,6 +529,7 @@ def main() -> None:
     parser.add_argument("--mode", type=str, default="hybrid", choices=["hybrid", "dense", "lexical"],
                         help="Search mode: 'hybrid' (default), 'dense' (pure semantic), or 'lexical' (pure BM25-style)")
     parser.add_argument("--enable-llm", action="store_true", help="Enable LLM query expansion (disabled by default)")
+    parser.add_argument("--skip-index", action="store_true", help="Skip indexing (use existing collection data)")
     parser.add_argument("--output-folder", type=str, default=None, help="Write coir-eval artifacts here")
     parser.add_argument("--output", type=str, default=None, help="Write JSON report to this file")
     parser.add_argument("--json", dest="json_out", action="store_true", help="Print JSON")
@@ -557,6 +561,7 @@ def main() -> None:
         output_folder=args.output_folder,
         top_k=args.top_k,
         mode=args.mode,
+        skip_index=args.skip_index,
     )
 
     # Auto-generate output filename if not specified

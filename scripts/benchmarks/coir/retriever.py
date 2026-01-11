@@ -60,6 +60,7 @@ class ContextEngineRetriever:
         batch_size: int = 32,
         mode: str = "hybrid",
         task_name: str = "",
+        skip_index: bool = False,
         **kwargs,
     ):
         """
@@ -72,6 +73,7 @@ class ContextEngineRetriever:
             batch_size: Batch size for embedding
             mode: Search mode ('hybrid', 'dense', or 'lexical')
             task_name: Task name for language detection (e.g., 'codesearchnet-go')
+            skip_index: Skip indexing (use existing collection data)
         
         Note: Collection naming is automatic based on corpus fingerprint.
         Each unique corpus+config gets its own named collection for reuse.
@@ -82,6 +84,7 @@ class ContextEngineRetriever:
         self.batch_size = batch_size
         self.mode = mode
         self.task_name = task_name
+        self.skip_index = skip_index
         self._model = None
         self._corpus_index = {}  # doc_id -> embedding
         self._corpus_doc_ids: set = set()  # Track which doc IDs are in current corpus
@@ -275,12 +278,16 @@ class ContextEngineRetriever:
         collection = get_corpus_collection(corpus_list)
         self._indexed_collections.add(collection)
         
-        # index_coir_corpus checks fingerprint and skips if unchanged
-        index_result = await asyncio.to_thread(
-            index_coir_corpus, corpus_list, collection, task_name=self.task_name
-        )
-        if index_result.get("reused"):
-            pass  # Collection reused, no indexing needed
+        # Skip indexing if requested (use existing collection data)
+        if self.skip_index:
+            print(f"[coir] Skipping indexing (--skip-index), using collection {collection}")
+        else:
+            # index_coir_corpus checks fingerprint and skips if unchanged
+            index_result = await asyncio.to_thread(
+                index_coir_corpus, corpus_list, collection, task_name=self.task_name
+            )
+            if index_result.get("reused"):
+                pass  # Collection reused, no indexing needed
 
         # Verify config compatibility (Fail-Fast)
         # Checks that the collection we are about to search matches our current env config

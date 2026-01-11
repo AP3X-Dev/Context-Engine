@@ -214,14 +214,28 @@ def collection_matches_corpus(
     collection: str,
     docs: List[BenchmarkDoc],
 ) -> bool:
-    """Check if collection exists and matches corpus fingerprint."""
+    """Check if collection exists and matches corpus fingerprint.
+
+    Set TRUST_STORED_FINGERPRINT=1 to skip recomputation when a stored
+    fingerprint exists. Useful when env vars may differ between runs
+    but the indexed data is still valid.
+    """
     try:
         info = client.get_collection(collection)
         if info.points_count == 0:
             return False
         stored_fp = get_collection_fingerprint(client, collection)
         if stored_fp:
-            return stored_fp == compute_corpus_fingerprint(docs)
+            # Trust stored fingerprint without recomputing if env var is set
+            trust_stored = os.environ.get("TRUST_STORED_FINGERPRINT", "0") == "1"
+            if trust_stored:
+                print(f"  TRUST_STORED_FINGERPRINT=1: Using existing collection with fingerprint {stored_fp}")
+                return True
+            computed_fp = compute_corpus_fingerprint(docs)
+            if stored_fp != computed_fp:
+                print(f"  Fingerprint mismatch: stored={stored_fp}, computed={computed_fp}")
+                print(f"  Set TRUST_STORED_FINGERPRINT=1 to skip recomputation")
+            return stored_fp == computed_fp
         return False
     except Exception:
         return False
