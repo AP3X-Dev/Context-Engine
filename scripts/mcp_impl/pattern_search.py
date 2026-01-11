@@ -96,6 +96,12 @@ _NL_EXEMPLARS = [
     "caching strategy",
     "input validation",
     "error handling",
+    # Pattern descriptions
+    "decorator pattern wrapping function",
+    "retry with exponential backoff",
+    "middleware pattern",
+    "dependency injection",
+    "builder pattern implementation",
 ]
 
 # Embedding cache for NL detection
@@ -336,8 +342,7 @@ def _detect_query_mode_with_confidence(
                 signals=signals,
                 ast_validated=False,  # Don't trust AST for NL-like text
             )
-        # Permissive lang + moderate NL → description (catches phrases like "caching strategy")
-        # Lowered threshold from 0.75 to 0.65 to match non-permissive threshold
+        # High NL + permissive lang → description (catches phrases like "caching strategy")
         if is_permissive and nl_sim >= 0.65:
             return QueryModeResult(
                 mode="description",
