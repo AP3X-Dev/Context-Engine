@@ -401,6 +401,7 @@ async def _symbol_graph_impl(
     limit: int = 20,
     language: Optional[str] = None,
     under: Optional[str] = None,
+    repo: Optional[str] = None,
     collection: Optional[str] = None,
     session: Optional[str] = None,
     ctx: Any = None,
@@ -414,6 +415,7 @@ async def _symbol_graph_impl(
         limit: Maximum number of results
         language: Optional language filter
         under: Optional path prefix filter
+        repo: Optional repository filter (single repo name or "*" for all)
         collection: Optional collection override
         session: Optional session ID for collection routing
         ctx: MCP context (optional)
@@ -476,7 +478,7 @@ async def _symbol_graph_impl(
                 symbol=symbol,
                 query_type=query_type,
                 limit=limit,
-                repo=None,  # TODO: Add repo filter support
+                repo=repo,
             )
             if graph_results:
                 # Hydrate hollow graph results with actual snippets and line numbers
@@ -503,6 +505,7 @@ async def _symbol_graph_impl(
                     limit=limit,
                     language=language,
                     under=_norm_under(under),
+                    repo=repo,
                 )
             elif query_type == "importers":
                 # Find chunks where metadata.imports array contains the symbol
@@ -514,6 +517,7 @@ async def _symbol_graph_impl(
                     limit=limit,
                     language=language,
                     under=_norm_under(under),
+                    repo=repo,
                 )
 
         if query_type == "definition":
@@ -525,6 +529,7 @@ async def _symbol_graph_impl(
                 limit=limit,
                 language=language,
                 under=_norm_under(under),
+                repo=repo,
             )
 
         # If no results, fall back to semantic search
@@ -534,6 +539,7 @@ async def _symbol_graph_impl(
                 query_type=query_type,
                 limit=limit,
                 language=language,
+                repo=repo,
                 collection=coll,
                 session=session,
             )
@@ -546,6 +552,7 @@ async def _symbol_graph_impl(
             query_type=query_type,
             limit=limit,
             language=language,
+            repo=repo,
             collection=coll,
             session=session,
         )
@@ -568,6 +575,7 @@ async def _query_array_field(
     limit: int,
     language: Optional[str] = None,
     under: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Query for points where an array field contains a specific value.
@@ -596,6 +604,13 @@ async def _query_array_field(
             qmodels.FieldCondition(
                 key="metadata.path_prefix",
                 match=qmodels.MatchValue(value=under),
+            )
+        )
+    if repo and repo != "*":
+        base_conditions.append(
+            qmodels.FieldCondition(
+                key="metadata.repo",
+                match=qmodels.MatchValue(value=repo),
             )
         )
 
@@ -706,6 +721,7 @@ async def _query_definition(
     limit: int,
     language: Optional[str] = None,
     under: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Query for symbol definitions using symbol_path or symbol fields.
@@ -728,6 +744,13 @@ async def _query_definition(
             qmodels.FieldCondition(
                 key="metadata.path_prefix",
                 match=qmodels.MatchValue(value=under),
+            )
+        )
+    if repo and repo != "*":
+        base_conditions.append(
+            qmodels.FieldCondition(
+                key="metadata.repo",
+                match=qmodels.MatchValue(value=repo),
             )
         )
 
@@ -861,6 +884,7 @@ async def _fallback_semantic_search(
     query_type: str,
     limit: int = 20,
     language: Optional[str] = None,
+    repo: Optional[str] = None,
     collection: Optional[str] = None,
     session: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -882,6 +906,7 @@ async def _fallback_semantic_search(
             query=query,
             limit=limit,
             language=language,
+            repo=repo,
             session=session,
             output_format="json",  # Avoid TOON encoding for internal calls
         )

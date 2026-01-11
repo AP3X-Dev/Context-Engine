@@ -1398,6 +1398,7 @@ async def symbol_graph(
     limit: Any = None,
     language: Any = None,
     under: Any = None,
+    repo: Any = None,
     session: Any = None,
     output_format: Any = None,
     ctx: Context = None,
@@ -1415,6 +1416,7 @@ async def symbol_graph(
     - limit: int (default 20). Maximum results to return.
     - language: str (optional). Filter by programming language.
     - under: str (optional). Filter by path prefix.
+    - repo: str (optional). Filter by repository name. Use "*" to search all repos.
     - output_format: "json" (default) or "toon" for token-efficient format.
 
     Returns:
@@ -1425,6 +1427,7 @@ async def symbol_graph(
     - symbol_graph(symbol="get_embedding_model", query_type="callers")
     - symbol_graph(symbol="ASTAnalyzer", query_type="definition")
     - symbol_graph(symbol="qdrant_client", query_type="importers")
+    - symbol_graph(symbol="my_function", query_type="callers", repo="backend")
     """
     if not symbol or not str(symbol).strip():
         return {"error": "symbol parameter is required", "results": []}
@@ -1437,6 +1440,7 @@ async def symbol_graph(
         limit=_limit,
         language=str(language).strip() if language else None,
         under=str(under).strip() if under else None,
+        repo=str(repo).strip() if repo else None,
         session=str(session).strip() if session else None,
         ctx=ctx,
     )
