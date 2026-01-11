@@ -131,16 +131,16 @@ def _select_dense_text(
 ) -> str:
     """Choose the text used for dense embedding.
 
-    Default is code+info for semantic context plus a code snippet.
-    - info = "{language} code from {path} lines {start}-{end}. {first_line}" (baseline that worked)
+    Default is info+pseudo+tags to emphasize intent-rich context:
+    - info = "{language} code from {path} lines {start}-{end}. {first_line}"
     - pseudo/tags = semantic enrichment from LLM
     Dense captures the "what" (intent), lexical handles the "how" (code body).
     """
-    mode = (
-        (str(mode) if mode is not None else str(os.environ.get("INDEX_DENSE_MODE", "info+pseudo+tags") or ""))
-        .strip()
-        .lower()
-    )
+    if mode is None:
+        env_mode = str(os.environ.get("INDEX_DENSE_MODE", "") or "").strip().lower()
+        mode = env_mode or "info+pseudo+tags"
+    else:
+        mode = str(mode).strip().lower()
     # Default dense cap depends on embedding model context window.
     # bge-m3 supports ~8k tokens, so we allow a larger character budget to preserve code context.
     max_chars_env = os.environ.get("INDEX_DENSE_MAX_CHARS")

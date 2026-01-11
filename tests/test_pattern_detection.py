@@ -517,8 +517,8 @@ class TestPatternDetectionEdgeCases:
         result = _detect_query_mode_with_confidence("find code like: for x in items")
         # This could go either way; we accept either with lower confidence
         assert result.confidence < 0.9
-        # Ensure a mode was chosen even for ambiguous inputs
-        assert result.mode in {"text", "code", "description"}
+        # Ensure a mode was chosen even for ambiguous inputs (mode is always code/description)
+        assert result.mode in {"code", "description"}
 
     def test_question_about_code(self):
         result = _detect_query_mode_with_confidence("how does def main(): work?")
