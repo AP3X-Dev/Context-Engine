@@ -105,6 +105,9 @@ SYMBOL_BOOST = _safe_float(os.environ.get("HYBRID_SYMBOL_BOOST", "0.15"), 0.15)
 SYMBOL_EQUALITY_BOOST = _safe_float(
     os.environ.get("HYBRID_SYMBOL_EQUALITY_BOOST", "0.25"), 0.25
 )
+GRAPH_CONNECTION_BOOST = _safe_float(
+    os.environ.get("HYBRID_GRAPH_CONNECTION_BOOST", "0.2"), 0.2
+)
 FNAME_BOOST = _safe_float(
     os.environ.get("HYBRID_FNAME_BOOST", str(SYMBOL_EQUALITY_BOOST * 0.5)),
     SYMBOL_EQUALITY_BOOST * 0.5,

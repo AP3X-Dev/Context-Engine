@@ -434,6 +434,7 @@ async def _symbol_graph_impl(
     collection: Optional[str] = None,
     session: Optional[str] = None,
     ctx: Any = None,
+    depth: int = 1,
 ) -> Dict[str, Any]:
     """
     Query the symbol graph to find callers, definitions, or importers.
@@ -448,6 +449,7 @@ async def _symbol_graph_impl(
         collection: Optional collection override
         session: Optional session ID for collection routing
         ctx: MCP context (optional)
+        depth: Number of hops for traversal (1=direct, 2=callers of callers, etc.)
 
     Returns:
         Dict with "results" list and metadata
@@ -586,6 +588,61 @@ async def _symbol_graph_impl(
             session=session,
         )
 
+    # Multi-hop traversal: if depth > 1 and we have callers/importers results,
+    # recursively find callers/importers of those results
+    if depth > 1 and results and query_type in ("callers", "importers"):
+        all_results = list(results)  # Copy initial results
+        seen_symbols: Set[str] = {symbol}  # Track visited symbols
+        current_hop_results = results
+
+        for hop in range(2, depth + 1):
+            if not current_hop_results:
+                break
+
+            next_hop_results: List[Dict[str, Any]] = []
+
+            for r in current_hop_results:
+                # Get the caller/importer symbol to traverse from
+                hop_symbol = r.get("symbol_path") or r.get("symbol", "")
+                if not hop_symbol or hop_symbol in seen_symbols:
+                    continue
+                seen_symbols.add(hop_symbol)
+
+                # Query for callers/importers of this symbol
+                hop_graph_results = await _query_graph_collection(
+                    client=client,
+                    collection=coll,
+                    symbol=hop_symbol,
+                    query_type=query_type,
+                    limit=max(5, limit // hop),  # Reduce limit per hop
+                    repo=repo,
+                )
+
+                if hop_graph_results:
+                    # Hydrate and add hop metadata
+                    hydrated = await _hydrate_graph_results(client, coll, hop_graph_results)
+                    for hr in hydrated:
+                        hr["hop"] = hop
+                        hr["via"] = hop_symbol
+                        if hr.get("symbol_path") not in seen_symbols:
+                            next_hop_results.append(hr)
+                            all_results.append(hr)
+
+                # Stop if we have enough results
+                if len(all_results) >= limit * 2:
+                    break
+
+            current_hop_results = next_hop_results
+
+            # Stop if no new results found
+            if not next_hop_results:
+                break
+
+        # Mark first hop results and truncate
+        for r in results:
+            r["hop"] = 1
+        results = all_results[:limit]
+
     return {
         "results": results,
         "symbol": symbol,
@@ -593,6 +650,7 @@ async def _symbol_graph_impl(
         "count": len(results),
         "collection": coll,
         "used_graph": used_graph,
+        "depth": depth,
     }
 
 

@@ -1401,6 +1401,7 @@ async def symbol_graph(
     repo: Any = None,
     session: Any = None,
     output_format: Any = None,
+    depth: Any = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """Query the symbol graph to find callers, definitions, or importers.
@@ -1418,21 +1419,26 @@ async def symbol_graph(
     - under: str (optional). Filter by path prefix.
     - repo: str (optional). Filter by repository name. Use "*" to search all repos.
     - output_format: "json" (default) or "toon" for token-efficient format.
+    - depth: int (default 1). Multi-hop traversal depth. 2 = callers of callers, etc.
 
     Returns:
-    - {"results": [...], "symbol": str, "query_type": str, "count": int}
+    - {"results": [...], "symbol": str, "query_type": str, "count": int, "depth": int}
     - Each result includes path, start_line, end_line, symbol_path, and relevant context.
+    - Multi-hop results include "hop" (1, 2, ...) and "via" (intermediate symbol).
 
     Example:
     - symbol_graph(symbol="get_embedding_model", query_type="callers")
     - symbol_graph(symbol="ASTAnalyzer", query_type="definition")
     - symbol_graph(symbol="qdrant_client", query_type="importers")
     - symbol_graph(symbol="my_function", query_type="callers", repo="backend")
+    - symbol_graph(symbol="authenticate", query_type="callers", depth=2)
     """
     if not symbol or not str(symbol).strip():
         return {"error": "symbol parameter is required", "results": []}
 
     _limit = safe_int(limit, default=20, logger=logger, context="symbol_graph.limit")
+    _depth = safe_int(depth, default=1, logger=logger, context="symbol_graph.depth")
+    _depth = max(1, min(5, _depth))  # Clamp depth to [1, 5]
 
     result = await _symbol_graph_impl(
         symbol=str(symbol).strip(),
@@ -1443,6 +1449,7 @@ async def symbol_graph(
         repo=str(repo).strip() if repo else None,
         session=str(session).strip() if session else None,
         ctx=ctx,
+        depth=_depth,
     )
 
     # Format output

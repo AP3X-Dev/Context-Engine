@@ -72,6 +72,7 @@ from scripts.hybrid_config import (
     EF_SEARCH,
     SYMBOL_BOOST,
     SYMBOL_EQUALITY_BOOST,
+    GRAPH_CONNECTION_BOOST,
     FNAME_BOOST,
     RECENCY_WEIGHT,
     CORE_FILE_BOOST,
@@ -1271,6 +1272,33 @@ def _run_hybrid_search_impl(
     if _suggested_mode == "graph_guided":
         _graph_injection_active = True
 
+    # --- Mode-based Weight Routing ---
+    # Adjust fusion weights based on suggested_mode from query optimizer
+    _MODE_GRAPH_BOOST_MULT = float(os.environ.get("MODE_GRAPH_BOOST_MULT", "2.5") or 2.5)
+    _MODE_SEMANTIC_DENSE_MULT = float(os.environ.get("MODE_SEMANTIC_DENSE_MULT", "1.5") or 1.5)
+    _MODE_SEMANTIC_LEX_MULT = float(os.environ.get("MODE_SEMANTIC_LEX_MULT", "0.5") or 0.5)
+
+    if _suggested_mode == "graph_guided":
+        # Graph-guided: increase graph connection boost, slight decrease on dense
+        _AD_DENSE_W *= 0.8
+        # Graph boost multiplier will be applied later in scoring
+        _graph_boost_multiplier = _MODE_GRAPH_BOOST_MULT
+    elif _suggested_mode == "semantic_only":
+        # Semantic-only: heavy dense, reduce lexical
+        _AD_DENSE_W *= _MODE_SEMANTIC_DENSE_MULT
+        _AD_LEX_VEC_W *= _MODE_SEMANTIC_LEX_MULT
+        _AD_LEX_TEXT_W *= _MODE_SEMANTIC_LEX_MULT
+        _graph_boost_multiplier = 1.0
+    elif _suggested_mode == "multi_granular":
+        # Multi-granular: balanced but broader retrieval
+        _graph_boost_multiplier = 1.5
+    else:
+        # hybrid (default): no adjustments
+        _graph_boost_multiplier = 1.0
+
+    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+        logger.debug(f"Mode routing: {_suggested_mode} -> dense_w={_AD_DENSE_W:.2f}, lex_w={_AD_LEX_TEXT_W:.2f}, graph_mult={_graph_boost_multiplier:.1f}")
+
     # --- Intent Classification (Legacy Fallback / Refinement) ---
     # We keep it for now but prioritze optimizer decision
     # _query_intent = _classify_query_intent(" ".join(qlist))
@@ -1938,6 +1966,24 @@ def _run_hybrid_search_impl(
             if ql == sym or ql == sym_path or ql in sym_parts:
                 rec["sym_eq"] += SYMBOL_EQUALITY_BOOST
                 rec["s"] += SYMBOL_EQUALITY_BOOST
+            # Graph connection boost: if result calls or imports a query symbol
+            # Apply mode-based multiplier (_graph_boost_multiplier) for intent routing
+            _eff_graph_boost = GRAPH_CONNECTION_BOOST * _graph_boost_multiplier
+            if _eff_graph_boost > 0 and len(ql) >= 3:
+                calls = md.get("calls") or []
+                imports = md.get("imports") or []
+                # Check if query matches any called/imported symbol
+                for called in calls:
+                    if ql in str(called).lower():
+                        rec["graph"] = rec.get("graph", 0.0) + _eff_graph_boost
+                        rec["s"] += _eff_graph_boost
+                        break
+                else:
+                    for imp in imports:
+                        if ql in str(imp).lower():
+                            rec["graph"] = rec.get("graph", 0.0) + _eff_graph_boost * 0.5
+                            rec["s"] += _eff_graph_boost * 0.5
+                            break
         path = str(md.get("path") or "")
         # Filename boost: production-grade matching (handles snake/camel/kebab, acronyms, etc.)
         if FNAME_BOOST > 0.0 and path:
