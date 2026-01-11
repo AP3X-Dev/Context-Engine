@@ -55,6 +55,11 @@ from typing import Any, Dict, List, Optional, Tuple
 os.environ["OPENLIT_ENABLED"] = "0"
 os.environ["OTEL_SDK_DISABLED"] = "true"
 
+# Suppress noisy httpx logs (show only WARNING+)
+import logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -92,7 +97,28 @@ class CoIRReport:
         }
 
 
-def _ensure_env_defaults() -> None:
+def _is_apple_silicon() -> bool:
+    """Detect Apple Silicon for GPU/memory optimizations."""
+    import platform
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def _get_onnx_providers() -> List[str]:
+    """Get optimal ONNX providers for current platform."""
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+        # Prefer CoreML on Apple Silicon (uses Neural Engine + GPU)
+        if "CoreMLExecutionProvider" in available:
+            return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in available:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    except Exception:
+        pass
+    return ["CPUExecutionProvider"]
+
+
+def _ensure_env_defaults(use_gpu: bool = False) -> None:
     # Align with other benchmark scripts: fix docker hostname and ensure non-empty URL.
     if "qdrant:" in (os.environ.get("QDRANT_URL", "") or ""):
         os.environ["QDRANT_URL"] = "http://localhost:6333"
@@ -100,6 +126,8 @@ def _ensure_env_defaults() -> None:
         os.environ["QDRANT_URL"] = "http://localhost:6333"
     # Enable in-process reranker for reliability
     os.environ.setdefault("RERANK_IN_PROCESS", "1")
+    # Disable learning reranker for benchmarks (prevents warning spam)
+    os.environ.setdefault("RERANK_LEARNING", "0")
     # Determinism defaults (best-effort; still recorded in runtime info)
     os.environ.setdefault("EMBEDDING_SEED", "42")
     os.environ.setdefault("PYTHONHASHSEED", "0")
@@ -110,6 +138,21 @@ def _ensure_env_defaults() -> None:
     _project_root = Path(__file__).parent.parent.parent.parent
     os.environ.setdefault("RERANKER_ONNX_PATH", str(_project_root / "models" / "model_qint8_avx512_vnni.onnx"))
     os.environ.setdefault("RERANKER_TOKENIZER_PATH", str(_project_root / "models" / "tokenizer.json"))
+
+    # GPU/CoreML acceleration for Apple Silicon
+    if use_gpu or os.environ.get("COIR_USE_GPU", "").lower() in ("1", "true", "yes"):
+        providers = _get_onnx_providers()
+        os.environ["ONNX_PROVIDERS"] = ",".join(providers)
+        # Signal to embedding/reranker code to use GPU providers
+        os.environ["COIR_USE_GPU"] = "1"
+        print(f"[coir] GPU mode enabled, ONNX providers: {providers}")
+
+        # Memory-optimized settings for unified memory (Apple Silicon)
+        if _is_apple_silicon():
+            os.environ.setdefault("COIR_PARALLEL_BATCH", "25")
+            os.environ.setdefault("COIR_RERANK_TOP_N", "30")
+            os.environ.setdefault("EMBED_BATCH_SIZE", "16")
+            print("[coir] Apple Silicon detected: batch_size=25")
 
     try:
         seed = int(os.environ.get("EMBEDDING_SEED", "42") or 42)
@@ -530,10 +573,14 @@ def main() -> None:
                         help="Search mode: 'hybrid' (default), 'dense' (pure semantic), or 'lexical' (pure BM25-style)")
     parser.add_argument("--enable-llm", action="store_true", help="Enable LLM query expansion (disabled by default)")
     parser.add_argument("--skip-index", action="store_true", help="Skip indexing (use existing collection data)")
+    parser.add_argument("--gpu", action="store_true", help="Enable GPU/CoreML acceleration (Apple Silicon/CUDA)")
     parser.add_argument("--output-folder", type=str, default=None, help="Write coir-eval artifacts here")
     parser.add_argument("--output", type=str, default=None, help="Write JSON report to this file")
     parser.add_argument("--json", dest="json_out", action="store_true", help="Print JSON")
     args = parser.parse_args()
+
+    # Initialize env defaults (with GPU support if requested)
+    _ensure_env_defaults(use_gpu=args.gpu)
 
     # Enable Context-Engine features for accurate benchmarking
     if not args.no_expand:
