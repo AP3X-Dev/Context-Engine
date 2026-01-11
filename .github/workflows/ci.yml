@@ -32,6 +32,14 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
         restore-keys: |
           ${{ runner.os }}-pip-
+
+    - name: Cache embedding models
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/huggingface
+        key: ${{ runner.os }}-embeddings-bge-base-en-v1.5
+        restore-keys: |
+          ${{ runner.os }}-embeddings-
           
     - name: Install dependencies
       run: |
@@ -50,6 +58,10 @@ jobs:
         # Note: COLLECTION_NAME is intentionally NOT set globally.
         # Integration tests set their own unique collection names.
         # Unit tests mock Qdrant and don't need a real collection.
+
+    - name: Pre-download embedding model
+      run: |
+        python -c "from fastembed import TextEmbedding; m = TextEmbedding(model_name='BAAI/bge-base-en-v1.5'); list(m.embed(['test']))"
 
     - name: Run tests
       run: pytest -q
