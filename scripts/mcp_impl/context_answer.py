@@ -62,6 +62,21 @@ logger = logging.getLogger(__name__)
 # Prevents concurrent requests from clobbering each other's env changes
 _CA_ENV_LOCK = threading.Lock()
 
+# Keys to strip from citations for slim MCP output (agents only need path + rel_path)
+_VERBOSE_PATH_KEYS = ("host_path", "container_path", "client_path")
+
+
+def _slim_citations(citations: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Strip verbose path fields from citations for cleaner MCP output.
+    
+    Keeps: id, path, rel_path, start_line, end_line, adaptive_expanded
+    Strips: host_path, container_path, client_path (redundant for agents)
+    """
+    return [
+        {k: v for k, v in cit.items() if k not in _VERBOSE_PATH_KEYS}
+        for cit in citations
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Answer cleanup
@@ -1972,25 +1987,37 @@ def _ca_build_citations_and_context(
         eline = int(it.get("end_line") or 0)
         _hostp = it.get("host_path")
         _contp = it.get("container_path")
-        # Provide both container-absolute and repo-relative forms for compatibility
-        def _norm(p: str) -> str:
+
+        # Compute repo-relative path from container_path (always /work/repo-name/...)
+        def _to_rel_path(container_path: str | None, fallback_path: str) -> str:
+            """Extract repo-relative path from container_path or fallback.
+
+            container_path format: /work/repo-name-hash/scripts/foo.py
+            Returns: scripts/foo.py
+            """
             try:
-                if p.startswith("/work/"):
-                    return p[len("/work/"):]
-                return p.lstrip("/") if p.startswith("/work") else p
+                # Prefer container_path - consistent /work/repo-name/... format
+                if container_path and container_path.startswith("/work/"):
+                    parts = container_path[6:].split("/", 1)  # Skip "/work/"
+                    return parts[1] if len(parts) > 1 else parts[0]
+                # Fallback: try to parse fallback_path if it's a /work path
+                if fallback_path.startswith("/work/"):
+                    parts = fallback_path[6:].split("/", 1)
+                    return parts[1] if len(parts) > 1 else parts[0]
+                # Already relative or unknown format - return as-is
+                if not fallback_path.startswith("/"):
+                    return fallback_path
+                return fallback_path
             except Exception:
-                return p
+                return fallback_path
+
         _cit = {
             "id": idx,
             "path": path,  # keep original for backward compatibility (tests expect /work/...)
-            "rel_path": _norm(path),
+            "rel_path": _to_rel_path(_contp, path),
             "start_line": sline,
             "end_line": eline,
         }
-        if _hostp:
-            _cit["host_path"] = _norm(str(_hostp))
-        if _contp:
-            _cit["container_path"] = str(_contp)
         # Expose adaptive span sizing flag if present
         if it.get("_adaptive_expanded"):
             _cit["adaptive_expanded"] = True
@@ -3123,7 +3150,7 @@ async def _context_answer_impl(
         return {
             "error": "decoder disabled: set REFRAG_RUNTIME or REFRAG_DECODER=1",
             "answer": _fallback_txt.strip(),
-            "citations": citations,
+            "citations": _slim_citations(citations),
             "query": original_queries,
             "used": {"decoder": False, "extractive_fallback": True},
         }
@@ -3148,7 +3175,7 @@ async def _context_answer_impl(
             )
             return {
                 "answer": _fallback_txt.strip(),
-                "citations": citations,
+                "citations": _slim_citations(citations),
                 "query": original_queries,
                 "used": {"gate_first": True, "refrag": True, "deadline_fallback": True},
             }
@@ -3195,7 +3222,7 @@ async def _context_answer_impl(
     except Exception as e:
         return {
             "error": f"decoder call failed: {e}",
-            "citations": citations,
+            "citations": _slim_citations(citations),
             "query": original_queries,
         }
 
@@ -3299,7 +3326,7 @@ async def _context_answer_impl(
 
     out = {
         "answer": answer.strip(),
-        "citations": citations,
+        "citations": _slim_citations(citations),
         "query": original_queries,
         "used": {"gate_first": True, "refrag": True},
     }
