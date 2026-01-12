@@ -2911,7 +2911,7 @@ async def _context_answer_impl(
                     items=items,
                     collection=coll,
                     repo=repo,
-                    max_neighbors=5,
+                    max_neighbors=2,
                 )
             except Exception as e:
                 logger.debug(f"Subgraph context injection failed: {e}")
