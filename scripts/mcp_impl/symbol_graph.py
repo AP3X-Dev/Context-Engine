@@ -406,26 +406,59 @@ async def _hydrate_graph_results(
     if not results:
         return results
 
-    # Collect unique paths
+    # Collect unique paths and symbols
     unique_paths = list({r.get("path", "") for r in results if r.get("path")})
-    if not unique_paths:
+    unique_symbols = list({
+        r.get("symbol_path") or r.get("symbol", "")
+        for r in results
+        if r.get("symbol_path") or r.get("symbol")
+    })
+
+    # If we have neither paths nor symbols, nothing to hydrate
+    if not unique_paths and not unique_symbols:
         return results
 
     try:
-        # SINGLE batch query: OR filter across all paths
-        path_conditions = [
-            models.FieldCondition(
-                key="metadata.path",
-                match=models.MatchValue(value=path)
-            )
-            for path in unique_paths
-        ]
+        # Build filter conditions
+        conditions = []
+
+        # Add path conditions if we have paths
+        if unique_paths:
+            conditions.extend([
+                models.FieldCondition(
+                    key="metadata.path",
+                    match=models.MatchValue(value=path)
+                )
+                for path in unique_paths
+            ])
+
+        # Add symbol conditions for results without paths (callees case)
+        # This allows hydration by symbol lookup
+        if unique_symbols:
+            for sym in unique_symbols:
+                # Try both symbol and symbol_path fields
+                base_sym = sym.split(".")[-1] if "." in sym else sym
+                conditions.append(
+                    models.FieldCondition(
+                        key="metadata.symbol",
+                        match=models.MatchValue(value=base_sym)
+                    )
+                )
+                if sym != base_sym:
+                    conditions.append(
+                        models.FieldCondition(
+                            key="metadata.symbol_path",
+                            match=models.MatchValue(value=sym)
+                        )
+                    )
 
         def do_scroll():
+            # Calculate limit based on paths or symbols
+            result_limit = max(len(unique_paths), len(unique_symbols), 1) * 10
             return client.scroll(
                 collection_name=collection,
-                scroll_filter=models.Filter(should=path_conditions),
-                limit=len(unique_paths) * 10,  # ~10 chunks per file max
+                scroll_filter=models.Filter(should=conditions),
+                limit=result_limit,  # ~10 chunks per file/symbol max
                 with_payload=True,
                 with_vectors=False,  # Don't fetch vectors - saves bandwidth
             )
@@ -436,9 +469,10 @@ async def _hydrate_graph_results(
             return results
 
         # Build lookup: (path, symbol) -> point data
-        # Also index by path alone for fallback
+        # Also index by path alone and symbol alone for fallback
         lookup: Dict[tuple, Any] = {}
         path_fallback: Dict[str, Any] = {}
+        symbol_fallback: Dict[str, Any] = {}  # For callees without paths
 
         for p in points:
             payload = getattr(p, "payload", {}) or {}
@@ -457,22 +491,34 @@ async def _hydrate_graph_results(
                 if path not in path_fallback:
                     path_fallback[path] = (payload, md)
 
+            # Also index by symbol alone for callees hydration
+            if sym and sym not in symbol_fallback:
+                symbol_fallback[sym] = (payload, md)
+            if sym_path and sym_path not in symbol_fallback:
+                symbol_fallback[sym_path] = (payload, md)
+
         # Hydrate each result
         for r in results:
             path = r.get("path", "")
             sym = r.get("symbol_path") or r.get("symbol", "")
             base_sym = sym.split(".")[-1] if "." in sym else sym
 
-            # Try to match: (path, symbol_path), (path, base_sym), then path fallback
+            # Try to match: (path, symbol_path), (path, base_sym), path fallback, or symbol fallback
             match = (
                 lookup.get((path, sym)) or
                 lookup.get((path, base_sym)) or
-                path_fallback.get(path)
+                path_fallback.get(path) or
+                symbol_fallback.get(sym) or
+                symbol_fallback.get(base_sym)
             )
 
             if match:
                 payload, md = match
                 info = payload.get("information", "") or payload.get("content", "")
+
+                # Fill in path if missing (callees case - graph edges don't have callee_path)
+                if not r.get("path"):
+                    r["path"] = str(md.get("path") or "")
 
                 # Update with hydrated data - use defensive parsing for line numbers
                 r["start_line"] = _parse_int_or_default(
@@ -781,22 +827,38 @@ async def _query_callees(
         if not caller_path:
             return []
 
-        # Query graph edges where caller_path matches
+        # Query graph edges where caller_symbol matches (or fallback to caller_path)
+        # Use symbol_path if available (e.g., "module.ClassName.method"), else use symbol
+        caller_symbol_key = caller_md.get("symbol_path") or caller_md.get("symbol") or ""
+
         def query_edges():
+            # Try matching by caller_symbol first (more precise)
+            must_conditions = [
+                qmodels.FieldCondition(
+                    key="edge_type",
+                    match=qmodels.MatchValue(value="calls"),
+                ),
+            ]
+
+            # Prefer caller_symbol match (exact function), fallback to caller_path (all file calls)
+            if caller_symbol_key:
+                must_conditions.append(
+                    qmodels.FieldCondition(
+                        key="caller_symbol",
+                        match=qmodels.MatchValue(value=caller_symbol_key),
+                    )
+                )
+            else:
+                must_conditions.append(
+                    qmodels.FieldCondition(
+                        key="caller_path",
+                        match=qmodels.MatchValue(value=caller_path),
+                    )
+                )
+
             return client.scroll(
                 collection_name=graph_coll,
-                scroll_filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="edge_type",
-                            match=qmodels.MatchValue(value="calls"),
-                        ),
-                        qmodels.FieldCondition(
-                            key="caller_path",
-                            match=qmodels.MatchValue(value=caller_path),
-                        ),
-                    ]
-                ),
+                scroll_filter=qmodels.Filter(must=must_conditions),
                 limit=limit * 3,  # Get more to allow filtering
                 with_payload=True,
                 with_vectors=False,
@@ -1038,10 +1100,10 @@ async def _symbol_graph_impl(
     used_graph = False
 
     try:
-        # Try graph collection first for callers/importers (fast indexed query).
+        # Try graph collection first for callers/importers/callees (fast indexed query).
         # IMPORTANT: treat graph as an accelerator. If it's present-but-empty (e.g. freshly created
         # before a full reindex), optionally fall back to legacy array queries to avoid false negatives.
-        if query_type in ("callers", "importers"):
+        if query_type in ("callers", "importers", "callees"):
             graph_results = await _query_graph_collection(
                 client=client,
                 collection=coll,
@@ -1063,8 +1125,8 @@ async def _symbol_graph_impl(
                     results = []
                     used_graph = True
 
-        # Handle callees separately (not graph-based)
-        if query_type == "callees":
+        # Fallback for callees: use _query_callees which can use metadata.calls array
+        if query_type == "callees" and not results and not used_graph:
             results = await _query_callees(
                 client=client,
                 collection=coll,
@@ -1886,3 +1948,4 @@ async def _get_symbol_calls(
         logger.warning(f"_get_symbol_calls failed: {e}")
 
     return []
+# trigger
