@@ -53,11 +53,14 @@ class TestIntentLogging:
 
                 assert log_file.exists()
 
-                # Check content
+                # Check content - find our specific event (may have others from prior tests)
                 with open(log_file, "r") as f:
                     lines = f.readlines()
-                    assert len(lines) == 1
-                    logged_event = json.loads(lines[0])
+                    assert len(lines) >= 1
+                    # Find our test event by unique query
+                    our_events = [json.loads(l) for l in lines if "test query" in l]
+                    assert len(our_events) == 1
+                    logged_event = our_events[0]
                     assert logged_event["query"] == "test query"
                     assert logged_event["confidence"] == 0.85
 

@@ -25,9 +25,11 @@ def test_chunk_semantic_fallback_no_ts(monkeypatch):
     # Should behave like chunk_lines because there are no symbols in this text,
     # regardless of tree-sitter availability.
     chunks2 = ing.chunk_lines(text, max_lines=8, overlap=3)
-    # Compare ignoring the is_semantic key (added by chunk_semantic wrapper)
+    # Compare ignoring keys added by chunk_semantic wrapper
     for c in chunks:
         c.pop("is_semantic", None)
+        c.pop("calls", None)
+        c.pop("imports", None)
     assert chunks == chunks2
 
 
