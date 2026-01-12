@@ -392,7 +392,11 @@ class ContextEngineRetriever:
             # Extract scores
             doc_scores = {}
             for r in result.get("results", []):
-                doc_id = r.get("doc_id") or r.get("code_id") or r.get("_id") or (r.get("payload") or {}).get("_id")
+                payload = r.get("payload") or {}
+                doc_id = (
+                    r.get("doc_id") or r.get("code_id") or r.get("_id")
+                    or payload.get("doc_id") or payload.get("code_id") or payload.get("_id")
+                )
                 score = r.get("score", 0.0)
                 if doc_id:
                     score_val = float(score)

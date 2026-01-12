@@ -49,6 +49,14 @@ EmbeddingModel = Any if TextEmbedding is None else TextEmbedding
 # ---------------------------------------------------------------------------
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 
+# Asymmetric embedding support (e.g., Jina v3 with query_embed/passage_embed)
+# Enable via ASYMMETRIC_EMBEDDING=1 to use query_embed for queries
+# This produces different embeddings than passage_embed for asymmetric models
+ASYMMETRIC_EMBEDDING = (
+    str(os.environ.get("ASYMMETRIC_EMBEDDING", "0")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 # ---------------------------------------------------------------------------
 # Unified cache system
 # ---------------------------------------------------------------------------
@@ -218,9 +226,16 @@ def _embed_with_unified_cache(
             missing_indices.append(i)
 
     # Batch-embed all missing queries in one call
+    # Use query_embed if available AND ASYMMETRIC_EMBEDDING=1 (e.g., Jina v3)
     if missing_queries:
+        # Select embedding function: query_embed for asymmetric models, else regular embed
+        if ASYMMETRIC_EMBEDDING and hasattr(model, "query_embed"):
+            embed_fn = model.query_embed
+        else:
+            embed_fn = model.embed
+
         try:
-            vecs = list(model.embed(missing_queries))
+            vecs = list(embed_fn(missing_queries))
             # Cache all new embeddings
             for q, vec in zip(missing_queries, vecs):
                 key = (str(model_name), str(q))
@@ -229,7 +244,7 @@ def _embed_with_unified_cache(
             # Fallback to one-by-one if batch fails
             for q in missing_queries:
                 key = (str(model_name), str(q))
-                vec = next(model.embed([q])).tolist()
+                vec = next(embed_fn([q])).tolist()
                 cache.set(key, vec)
 
     # Return embeddings in original order from cache
@@ -260,10 +275,16 @@ def _embed_with_legacy_cache(
                 missing_indices.append(i)
 
     # Batch-embed all missing queries in one call
+    # Use query_embed if available AND ASYMMETRIC_EMBEDDING=1 (e.g., Jina v3)
     if missing_queries:
+        if ASYMMETRIC_EMBEDDING and hasattr(model, "query_embed"):
+            embed_fn = model.query_embed
+        else:
+            embed_fn = model.embed
+
         try:
             # Embed all missing queries at once
-            vecs = list(model.embed(missing_queries))
+            vecs = list(embed_fn(missing_queries))
             with _EMBED_LOCK:
                 # Cache all new embeddings
                 for q, vec in zip(missing_queries, vecs):
@@ -277,7 +298,7 @@ def _embed_with_legacy_cache(
             # Fallback to one-by-one if batch fails
             for q in missing_queries:
                 key = (str(model_name), str(q))
-                vec = next(model.embed([q])).tolist()
+                vec = next(embed_fn([q])).tolist()
                 with _EMBED_LOCK:
                     if key not in _EMBED_QUERY_CACHE:
                         _EMBED_QUERY_CACHE[key] = vec

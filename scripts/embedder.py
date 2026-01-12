@@ -24,6 +24,10 @@ DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 QWEN3_MODEL = "electroglyph/Qwen3-Embedding-0.6B-onnx-uint8"
 QWEN3_DIM = 1024
 
+# Snowflake Arctic v2.0 model (not yet in fastembed, register as custom)
+ARCTIC_V2_MODEL = "Snowflake/snowflake-arctic-embed-l-v2.0"
+ARCTIC_V2_DIM = 1024
+
 # Feature flags
 QWEN3_ENABLED = (
     str(os.environ.get("QWEN3_EMBEDDING_ENABLED", "0")).strip().lower()
@@ -66,6 +70,8 @@ _EMBED_MODEL_CACHE: Dict[str, Any] = {}
 _EMBED_MODEL_LOCKS: Dict[str, threading.Lock] = {}
 _QWEN3_REGISTERED = False
 _QWEN3_REGISTER_LOCK = threading.Lock()
+_ARCTIC_V2_REGISTERED = False
+_ARCTIC_V2_REGISTER_LOCK = threading.Lock()
 
 
 def _register_qwen3_model() -> None:
@@ -95,6 +101,44 @@ def _register_qwen3_model() -> None:
             pass
 
 
+def _register_arctic_v2_model() -> None:
+    """Register Snowflake Arctic v2.0 ONNX model with FastEmbed (one-time, thread-safe).
+
+    This model is not yet in fastembed (see https://github.com/qdrant/fastembed/issues/426)
+    but we can load it as a custom model using the add_custom_model interface.
+
+    Model details:
+    - Pooling: CLS token
+    - Normalization: True
+    - Dimension: 1024
+    - Query prefix: "query: " (for asymmetric retrieval)
+    """
+    global _ARCTIC_V2_REGISTERED
+    if _ARCTIC_V2_REGISTERED:
+        return
+
+    with _ARCTIC_V2_REGISTER_LOCK:
+        if _ARCTIC_V2_REGISTERED:
+            return
+        try:
+            from fastembed import TextEmbedding
+            from fastembed.common.model_description import ModelSource, PoolingType
+
+            TextEmbedding.add_custom_model(
+                model=ARCTIC_V2_MODEL,
+                pooling=PoolingType.CLS,
+                normalization=True,
+                sources=ModelSource(hf=ARCTIC_V2_MODEL),
+                dim=ARCTIC_V2_DIM,
+                model_file="onnx/model.onnx",
+                additional_files=["onnx/model.onnx_data"],
+            )
+            _ARCTIC_V2_REGISTERED = True
+        except Exception as e:
+            # Registration failed - model may already exist or fastembed issue
+            print(f"[embedder] Arctic v2.0 registration failed: {e}")
+
+
 def get_embedding_model(model_name: Optional[str] = None) -> Any:
     """Get or create a cached embedding model instance.
 
@@ -112,6 +156,10 @@ def get_embedding_model(model_name: Optional[str] = None) -> Any:
     # Register Qwen3 if enabled and requested
     if QWEN3_ENABLED and "qwen3" in model_name.lower():
         _register_qwen3_model()
+
+    # Register Snowflake Arctic v2.0 if requested (not yet in fastembed)
+    if "arctic-embed" in model_name.lower() and "v2" in model_name.lower():
+        _register_arctic_v2_model()
 
     # Check cache first (fast path)
     cached = _EMBED_MODEL_CACHE.get(model_name)

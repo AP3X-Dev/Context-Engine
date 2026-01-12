@@ -481,20 +481,28 @@ def run_pure_dense_search(
             must.append(models.FieldCondition(key="metadata.repo", match=models.MatchValue(value=repo)))
     flt = models.Filter(must=must) if must else None
 
-    # Single query embedding - no variants, no expansion
+    # Optional: generate query variants for improved recall (max-score fusion)
+    # Enable via DENSE_QUERY_VARIANTS=1 env var
+    use_variants = os.environ.get("DENSE_QUERY_VARIANTS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    if use_variants:
+        queries_to_embed = _generate_code_query_variants(query)
+    else:
+        queries_to_embed = [query]
+
+    # Embed all query variants
+    # Use query_embed if available (asymmetric models like Jina v3)
     try:
-        embeddings = _embed_queries_cached(model, [query])
+        embeddings = _embed_queries_cached(model, queries_to_embed)
     except Exception:
+        embed_fn = getattr(model, "query_embed", None) or model.embed
         try:
-            embeddings = list(model.embed([query]))
+            embeddings = list(embed_fn(queries_to_embed))
         except Exception:
-            embeddings = [next(model.embed([query]))]
+            embeddings = [next(embed_fn([q])) for q in queries_to_embed]
 
     if not embeddings:
         return []
-
-    query_vec = embeddings[0]
-    vec_list = query_vec.tolist() if hasattr(query_vec, "tolist") else list(query_vec)
 
     # Get client
     client = get_qdrant_client(
@@ -503,29 +511,40 @@ def run_pure_dense_search(
     )
 
     try:
-        # Single dense query - no pooling, no re-scoring
-        ranked_points = dense_query(client, vec_name, vec_list, flt, limit, coll, query_text=query)
+        # Max-score fusion across query variants
+        # Each doc gets the max score across all query variants
+        score_map: Dict[str, Dict[str, Any]] = {}
 
-        # Build output
-        results = []
-        for p in ranked_points:
-            payload = p.payload or {}
-            md = payload.get("metadata") or {}
+        for emb in embeddings:
+            vec_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+            ranked_points = dense_query(client, vec_name, vec_list, flt, limit * 2, coll, query_text=query)
 
-            # Prefer host_path when available (consistent with hybrid search)
-            _path = md.get("host_path") or payload.get("path") or md.get("path") or ""
+            for p in ranked_points:
+                payload = p.payload or {}
+                md = payload.get("metadata") or {}
 
-            results.append({
-                "score": float(getattr(p, "score", 0) or 0),
-                "path": _path,
-                "symbol": payload.get("symbol") or md.get("symbol") or "",
-                "start_line": int(md.get("start_line") or 0),
-                "end_line": int(md.get("end_line") or 0),
-                "code_id": payload.get("code_id") or payload.get("_id") or "",
-                "doc_id": payload.get("code_id") or payload.get("_id") or "",
-                "payload": payload,
-            })
+                # Use doc_id or point id as key
+                doc_id = (
+                    payload.get("doc_id") or payload.get("code_id") or payload.get("_id")
+                    or str(getattr(p, "id", ""))
+                )
+                score = float(getattr(p, "score", 0) or 0)
 
+                if doc_id not in score_map or score > score_map[doc_id]["score"]:
+                    _path = md.get("host_path") or payload.get("path") or md.get("path") or ""
+                    score_map[doc_id] = {
+                        "score": score,
+                        "path": _path,
+                        "symbol": payload.get("symbol") or md.get("symbol") or "",
+                        "start_line": int(md.get("start_line") or 0),
+                        "end_line": int(md.get("end_line") or 0),
+                        "code_id": payload.get("code_id") or payload.get("doc_id") or payload.get("_id") or "",
+                        "doc_id": doc_id,
+                        "payload": payload,
+                    }
+
+        # Sort by score descending and return top limit
+        results = sorted(score_map.values(), key=lambda x: x["score"], reverse=True)[:limit]
         return results
 
     finally:

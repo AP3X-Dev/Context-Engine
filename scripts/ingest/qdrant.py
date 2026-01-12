@@ -804,5 +804,21 @@ def hash_id(text: str, path: str, start: int, end: int) -> int:
 
 
 def embed_batch(model, texts: List[str]) -> List[List[float]]:
-    """Embed a batch of texts using the embedding model."""
-    return [vec.tolist() for vec in model.embed(texts)]
+    """Embed a batch of texts using the embedding model.
+
+    When ASYMMETRIC_EMBEDDING=1, uses passage_embed for documents (if available).
+    This enables asymmetric retrieval with models like Jina v3 that have
+    separate query/passage adapters.
+    """
+    # Check for asymmetric embedding mode
+    asymmetric = (
+        str(os.environ.get("ASYMMETRIC_EMBEDDING", "0")).strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+    if asymmetric and hasattr(model, "passage_embed"):
+        # Use passage_embed for documents (asymmetric models like Jina v3)
+        return [vec.tolist() for vec in model.passage_embed(texts)]
+    else:
+        # Standard symmetric embedding
+        return [vec.tolist() for vec in model.embed(texts)]
