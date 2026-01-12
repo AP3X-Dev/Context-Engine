@@ -437,18 +437,37 @@ def _evaluate_with_custom_search(
             qrels, task_results, k_values
         )
 
+        # Compute MRR (Mean Reciprocal Rank) at various k values
+        mrr_k_values = [1, 3, 5, 10, 100, 1000]
+        mrr = {}
+        for k in mrr_k_values:
+            mrr_sum = 0.0
+            num_queries = 0
+            for qid in qrels:
+                if qid not in task_results:
+                    continue
+                num_queries += 1
+                # Get ranked results sorted by score descending
+                ranked = sorted(task_results[qid].items(), key=lambda x: x[1], reverse=True)[:k]
+                for rank, (doc_id, _) in enumerate(ranked, 1):
+                    if doc_id in qrels[qid] and qrels[qid][doc_id] > 0:
+                        mrr_sum += 1.0 / rank
+                        break
+            mrr[f"MRR@{k}"] = round(mrr_sum / num_queries, 5) if num_queries > 0 else 0.0
+
         metrics = {
             "NDCG": ndcg,
             "MAP": map_score,
             "Recall": recall,
             "Precision": precision,
+            "MRR": mrr,
         }
 
         # Save results
         with open(output_file, "w") as f:
             json_mod.dump({"metrics": metrics, "pipeline": "context-engine-hybrid"}, f, indent=2)
 
-        print(f"[coir] {task_name}: NDCG@10={ndcg.get('NDCG@10', 'N/A')}", flush=True)
+        print(f"[coir] {task_name}: NDCG@10={ndcg.get('NDCG@10', 'N/A')}, MRR@1000={mrr.get('MRR@1000', 'N/A')}", flush=True)
         results[task_name] = metrics
 
     return results

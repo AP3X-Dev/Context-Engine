@@ -177,6 +177,7 @@ def extract_call_edges(
     path: str,
     repo: str,
     start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
     language: Optional[str] = None,
     caller_point_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -187,7 +188,8 @@ def extract_call_edges(
         calls: List of called symbols
         path: File path of the caller
         repo: Repository name
-        start_line: Optional line number
+        start_line: Optional start line of caller function
+        end_line: Optional end line of caller function
         language: Programming language of the caller
         caller_point_id: ID of the source chunk in the main collection
 
@@ -212,9 +214,11 @@ def extract_call_edges(
             "edge_type": EDGE_TYPE_CALLS,
             "repo": repo,
         }
-        # Only include start_line if it has a value
+        # Include line info if available
         if start_line is not None:
             payload["start_line"] = start_line
+        if end_line is not None:
+            payload["end_line"] = end_line
         if language:
             payload["language"] = language
         if caller_point_id:

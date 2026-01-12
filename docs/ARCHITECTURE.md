@@ -144,7 +144,7 @@ Context Engine maintains pre-computed graph edges in dedicated Qdrant collection
 **Edge Schema:**
 ```json
 {
-  "caller_symbol": "MyClass.process_data",
+  "caller_symbol": "process_data",
   "callee_symbol": "validate_input",
   "caller_path": "src/handlers/processor.py",
   "edge_type": "calls",
@@ -154,8 +154,12 @@ Context Engine maintains pre-computed graph edges in dedicated Qdrant collection
 }
 ```
 
+The schema provides both granularity levels for agentic workflows:
+- `caller_path`: File path for immediate agent action (view, edit)
+- `caller_symbol`: Function/method name for understanding which function makes the call
+
 **Fast Indexed Queries:**
-- `get_callers(symbol)`: Find all functions that call a symbol
+- `get_callers(symbol)`: Find all files/functions that call a symbol
 - `get_callees(symbol)`: Find all functions a symbol calls
 - `get_importers(module)`: Find all files importing a module
 
@@ -164,7 +168,7 @@ Context Engine maintains pre-computed graph edges in dedicated Qdrant collection
 Tree-sitter-based multi-language AST analysis for semantic code understanding:
 
 - **Symbol Extraction**: Functions, classes, methods with signatures, docstrings, decorators
-- **Call Graph Construction**: Maps caller → callee relationships within files
+- **Call Graph Construction**: Maps caller → callee relationships with enclosing function context
 - **Dependency Tracking**: Extracts imports and module dependencies
 - **Semantic Chunking**: Splits code at function/class boundaries (not arbitrary line counts)
 

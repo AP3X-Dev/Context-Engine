@@ -155,10 +155,8 @@ def _maybe_handle_staging_file(
     except Exception:
         return False
     if result.returncode != 0:
-        # TODO: Instead of launching one subprocess per file, queue changes and run a 
-        # single ingest_code.py --root <repo> pass with --no-skip-unchanged. That 
-        # reuses ingest’s own skip logic, but requires more plumbing (collect paths, 
-        # pass via manifest/CLI, etc.).
+        # Note: Current implementation launches one subprocess per file for immediate indexing.
+        # Future optimization: batch changes and run single ingest_code.py pass.
         try:
             logger.error(
                 "watch_index::subprocess_index_failed",

@@ -372,7 +372,13 @@ class ONNXRecursiveReranker(RecursiveReranker):
                     tok.enable_truncation(max_length=512)
                 except Exception:
                     pass
-                sess = ort.InferenceSession(self.onnx_path, providers=["CPUExecutionProvider"])
+                # Default to CPU for production. Set ONNX_PROVIDERS for local GPU.
+                providers_env = os.environ.get("ONNX_PROVIDERS", "").strip()
+                if providers_env:
+                    providers = [p.strip() for p in providers_env.split(",") if p.strip()]
+                else:
+                    providers = ["CPUExecutionProvider"]
+                sess = ort.InferenceSession(self.onnx_path, providers=providers)
                 self._session, self._tokenizer = sess, tok
             except Exception:
                 self._session, self._tokenizer = None, None

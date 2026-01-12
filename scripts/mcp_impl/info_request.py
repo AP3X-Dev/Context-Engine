@@ -18,6 +18,7 @@ __all__ = [
     "_format_information_field",
     "_extract_relationships",
     "_calculate_confidence",
+    "_compute_score_statistics",
 ]
 
 import re
@@ -128,11 +129,85 @@ def _extract_relationships(result: dict) -> dict:
     }
 
 
+def _compute_score_statistics(results: list) -> dict:
+    """Compute statistical metrics from result scores.
+
+    Handles edge cases:
+    - Empty results
+    - Single result
+    - Identical scores (zero variance)
+    - Invalid scores (NaN)
+
+    Returns:
+        dict with mean, std, min, max, cv (coefficient of variation)
+    """
+    if not results:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "cv": 0.0}
+
+    # Extract scores safely
+    scores = []
+    for r in results:
+        try:
+            score_val = r.get("score", 0)
+            # Skip None values explicitly
+            if score_val is None:
+                continue
+            s = float(score_val if score_val != 0 else 0)
+            # Check for NaN using self-comparison
+            if s == s:
+                scores.append(s)
+        except (ValueError, TypeError):
+            continue
+
+    if not scores:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "cv": 0.0}
+
+    if len(scores) == 1:
+        val = scores[0]
+        return {"mean": val, "std": 0.0, "min": val, "max": val, "cv": 0.0}
+
+    # Compute statistics
+    mean_score = sum(scores) / len(scores)
+    variance = sum((s - mean_score) ** 2 for s in scores) / len(scores)
+    std_score = variance ** 0.5
+    min_score = min(scores)
+    max_score = max(scores)
+
+    # Coefficient of variation (CV = std / mean)
+    # Avoid division by zero
+    if abs(mean_score) < 1e-9:
+        cv = 0.0
+    else:
+        cv = std_score / abs(mean_score)
+
+    return {
+        "mean": round(mean_score, 4),
+        "std": round(std_score, 4),
+        "min": round(min_score, 4),
+        "max": round(max_score, 4),
+        "cv": round(cv, 4),
+    }
+
+
 def _calculate_confidence(query: str, results: list) -> dict:
-    """Calculate confidence metrics for the search."""
+    """Calculate confidence metrics for the search with variance analysis.
+
+    Returns confidence dict with:
+    - level: "high", "medium", "low", or "none"
+    - score: average score
+    - top_score: best score
+    - symbol_matches: count of symbol matches
+    - variance_score: variance of scores
+    - score_spread: max - min score
+    - consistency_level: "high", "medium", or "low"
+    - coefficient_of_variation: CV metric
+    - min_score, max_score: score range
+    - low_confidence_hint: suggestion when confidence is low (optional)
+    """
     if not results:
         return {"level": "none", "score": 0.0, "reason": "no_results"}
 
+    # Compute base metrics
     avg_score = sum(r.get("score", 0) for r in results) / len(results)
     top_score = results[0].get("score", 0) if results else 0
 
@@ -144,6 +219,24 @@ def _calculate_confidence(query: str, results: list) -> dict:
                for tok in query_tokens)
     )
 
+    # Compute score variance metrics
+    stats = _compute_score_statistics(results)
+    variance_score = stats["std"] ** 2  # Variance from std
+    score_spread = stats["max"] - stats["min"]
+    cv = stats["cv"]
+
+    # Determine consistency level based on CV thresholds
+    # CV < 0.2: high consistency (scores are similar)
+    # CV 0.2-0.4: medium consistency
+    # CV > 0.4: low consistency (scores vary widely)
+    if cv < 0.2:
+        consistency_level = "high"
+    elif cv < 0.4:
+        consistency_level = "medium"
+    else:
+        consistency_level = "low"
+
+    # Determine overall confidence level
     if top_score > 0.8 and symbol_matches > 0:
         level = "high"
     elif avg_score > 0.6:
@@ -153,10 +246,24 @@ def _calculate_confidence(query: str, results: list) -> dict:
     else:
         level = "none"
 
-    return {
+    result = {
         "level": level,
         "score": round(avg_score, 3),
         "top_score": round(top_score, 3),
         "symbol_matches": symbol_matches,
+        "variance_score": round(variance_score, 4),
+        "score_spread": round(score_spread, 4),
+        "consistency_level": consistency_level,
+        "coefficient_of_variation": cv,
+        "min_score": stats["min"],
+        "max_score": stats["max"],
     }
+
+    # Add hint for low confidence
+    if level == "low":
+        result["low_confidence_hint"] = (
+            "Try more specific terms or include function/class names for better results"
+        )
+
+    return result
 
