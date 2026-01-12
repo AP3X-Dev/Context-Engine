@@ -226,14 +226,15 @@ Python, TypeScript/JavaScript, Go, Java, Rust, C#, PHP, Shell, Terraform, YAML, 
 *Corpus: 20,604 code snippets | 500 queries | Pure dense retrieval, no reranking*
 *Jina-Code: jinaai/jina-embeddings-v2-base-code (code-specific, 8k context)*
 
-### COIR (Full Corpus, Hybrid + Rerank)
+### CoIR Benchmark (Full Corpus, Dense Retrieval)
 
-| Benchmark | Corpus | Queries | NDCG@10 | Recall@10 |
-|-----------|--------|---------|---------|-----------|
-| **CodeSearchNet-Python** | 280K | 15K | **58.5%** | **70.0%** |
-| CodeSearchNet-Go | 182K | 8K | 38.6% | 55.4% |
+| Benchmark | Corpus | Queries | NDCG@10 |
+|-----------|--------|---------|---------|
+| **CodeSearchNet-Python** | 280K | 14.9K | **74.37%** |
+| **CodeSearchNet-Go** | 280K | 14.9K | **74.51%** |
+| **CodeSearchNet-JavaScript** | 280K | 14.9K | **57.19%** |
 
-*Full corpus evaluation with hybrid search + ONNX reranking*
+*Full CoIR corpus evaluation with dense retrieval (Jina-Code embeddings)*
 
 ---
 
