@@ -110,14 +110,16 @@ print(GRAPH_BACKEND_TYPE)  # "qdrant" or "neo4j"
 ### Query Relationships
 
 ```python
+graph_store = "collection_graph" if GRAPH_BACKEND_TYPE == "qdrant" else "collection"
+
 # Find callers of a function
-callers = backend.get_callers("collection_graph", "my_function", repo="my-repo")
+callers = backend.get_callers(graph_store, "my_function", repo="my-repo")
 
 # Find what a function calls
-callees = backend.get_callees("collection_graph", "my_function")
+callees = backend.get_callees(graph_store, "my_function")
 
 # Find files that import a module
-importers = backend.get_importers("collection_graph", "os", repo="my-repo")
+importers = backend.get_importers(graph_store, "os", repo="my-repo")
 ```
 
 ## Neo4j Plugin
@@ -140,4 +142,3 @@ docker compose -f docker-compose.yml -f docker-compose.neo4j.yml up -d
 ```
 
 See [plugins/neo4j_graph/README.md](../../plugins/neo4j_graph/README.md) for details.
-

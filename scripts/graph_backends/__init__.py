@@ -76,6 +76,8 @@ def get_graph_backend() -> "GraphBackend":
                 "Falling back to Qdrant. Copy plugins/neo4j_graph to your deployment."
             )
             from .qdrant_backend import QdrantGraphBackend
+            global GRAPH_BACKEND_TYPE
+            GRAPH_BACKEND_TYPE = "qdrant"
             _BACKEND_INSTANCE = QdrantGraphBackend()
     else:
         from .qdrant_backend import QdrantGraphBackend
@@ -99,4 +101,3 @@ def __getattr__(name: str):
         from .qdrant_backend import QdrantGraphBackend
         return QdrantGraphBackend
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

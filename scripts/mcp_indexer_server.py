@@ -2142,6 +2142,7 @@ if _NEO4J_GRAPH_ENABLED:
         repo: Any = None,
         language: Any = None,
         include_paths: Any = None,
+        collection: Any = None,
         output_format: Any = None,
     ) -> Dict[str, Any]:
         """Advanced Neo4j graph queries for symbol relationships.
@@ -2164,6 +2165,7 @@ if _NEO4J_GRAPH_ENABLED:
         - limit: int (default 50). Maximum results.
         - repo: str. Filter by repository.
         - include_paths: bool. Include full traversal paths in results.
+        - collection: str. Graph collection scope (defaults to COLLECTION_NAME).
         - output_format: "json" (default) or "toon".
 
         Examples:
@@ -2178,6 +2180,7 @@ if _NEO4J_GRAPH_ENABLED:
         _repo = str(repo).strip() if repo else None
         _language = str(language).strip() if language else None
         _include_paths = _coerce_bool(include_paths, default=False)
+        _collection = str(collection).strip() if collection else None
         _output_format = str(output_format).strip().lower() if output_format else "json"
 
         return await _neo4j_graph_query_impl(
@@ -2188,6 +2191,7 @@ if _NEO4J_GRAPH_ENABLED:
             repo=_repo,
             language=_language,
             include_paths=_include_paths,
+            collection=_collection,
             output_format=_output_format,
         )
 

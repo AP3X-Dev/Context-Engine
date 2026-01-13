@@ -588,6 +588,12 @@ def _inject_graph_neighbors(
         return
 
     from scripts.ingest.graph_edges import get_callees, get_callers
+    backend = None
+    try:
+        from scripts.graph_backends import get_graph_backend
+        backend = get_graph_backend()
+    except Exception:
+        backend = None
 
     neighbor_ids = set()
     neighbor_refs = []  # (path, symbol) pairs if IDs missing
@@ -604,8 +610,13 @@ def _inject_graph_neighbors(
         # Fetch logical neighbors from pre-indexed graph edges
         try:
             # Get callees (what this symbol calls) and callers (who calls this symbol)
-            edges = get_callees(client, graph_collection, sym, repo=repo, limit=5)
-            edges.extend(get_callers(client, graph_collection, sym, repo=repo, limit=3))
+            if backend and backend.backend_type == "neo4j":
+                graph_store = base_collection
+                edges = backend.get_callees(graph_store, sym, repo=repo, limit=5)
+                edges.extend(backend.get_callers(graph_store, sym, repo=repo, limit=3))
+            else:
+                edges = get_callees(client, graph_collection, sym, repo=repo, limit=5)
+                edges.extend(get_callers(client, graph_collection, sym, repo=repo, limit=3))
 
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                 logger.debug(f"Graph navigation for '{sym}': found {len(edges)} edges in {graph_collection}")

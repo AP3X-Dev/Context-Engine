@@ -59,6 +59,18 @@ GRAPH_COLLECTION_SUFFIX = "_graph"
 _GRAPH_COLLECTION_EXISTS: Dict[str, bool] = {}
 
 
+def _get_graph_backend():
+    """Return Neo4j graph backend when enabled, otherwise None."""
+    try:
+        from scripts.graph_backends import get_graph_backend
+        backend = get_graph_backend()
+        if backend.backend_type == "neo4j":
+            return backend
+    except Exception:
+        return None
+    return None
+
+
 def _normalize_symbol(symbol: str) -> str:
     """Normalize a symbol name for robust matching.
 
@@ -732,6 +744,93 @@ async def _query_graph_collection(
         return None
 
 
+async def _query_graph_backend(
+    backend: Any,
+    client: Any,
+    collection: str,
+    symbol: str,
+    query_type: str,
+    limit: int,
+    repo: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Query graph backend (Neo4j) and return results in graph-collection format.
+    """
+    if query_type not in ("callers", "callees", "importers"):
+        return None
+
+    graph_store = collection
+
+    variants = _symbol_variants(symbol) or [symbol]
+
+    def do_query():
+        edges_all: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for variant in variants:
+            if query_type == "callers":
+                edges = backend.get_callers(graph_store, variant, repo=repo, limit=limit)
+            elif query_type == "callees":
+                edges = backend.get_callees(graph_store, variant, repo=repo, limit=limit)
+            else:
+                edges = backend.get_importers(graph_store, variant, repo=repo, limit=limit)
+
+            for edge in edges or []:
+                edge_key = edge.get("edge_id") or f"{edge.get('caller_symbol')}|{edge.get('callee_symbol')}|{edge.get('caller_path')}"
+                if edge_key in seen:
+                    continue
+                seen.add(edge_key)
+                edges_all.append(edge)
+                if len(edges_all) >= limit:
+                    return edges_all
+
+        return edges_all
+
+    try:
+        edges = await asyncio.to_thread(do_query)
+    except Exception as e:
+        logger.debug(f"Graph backend query failed: {e}")
+        return None
+
+    if not edges:
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for edge in edges:
+        if query_type == "callees":
+            target_symbol = edge.get("callee_symbol", "")
+            target_path = edge.get("callee_path", "")
+            start_line = 0
+        else:
+            target_symbol = edge.get("caller_symbol", "")
+            target_path = edge.get("caller_path", "")
+            start_line = edge.get("start_line")
+
+        language = edge.get("language", "")
+
+        if "/" in target_symbol or target_symbol.endswith(".py"):
+            symbol_name = Path(target_symbol).stem
+        elif "." in target_symbol:
+            symbol_name = target_symbol.split(".")[-1]
+        else:
+            symbol_name = target_symbol
+
+        end_line = edge.get("end_line")
+        results.append(
+            {
+                "path": target_path,
+                "start_line": int(start_line) if start_line else 0,
+                "end_line": int(end_line) if end_line else 0,
+                "symbol": symbol_name,
+                "symbol_path": target_symbol,
+                "language": language or "",
+                "snippet": "",
+                "from_graph": True,
+            }
+        )
+
+    return results
+
+
 def _path_proximity_score(caller_path: str, callee_path: str) -> int:
     """Score path proximity: same file > same dir > same parent > same repo.
 
@@ -1068,6 +1167,8 @@ async def _symbol_graph_impl(
             coll = os.environ.get("COLLECTION_NAME", "codebase")
     if not coll:
         coll = os.environ.get("COLLECTION_NAME", "codebase")
+    if coll.endswith("_graph"):
+        coll = coll[: -len("_graph")]
 
     # Connect to Qdrant using engine's standard env vars
     try:
@@ -1085,6 +1186,13 @@ async def _symbol_graph_impl(
             "query_type": query_type,
             "collection": coll,
         }
+
+    graph_backend = _get_graph_backend()
+
+    async def graph_query_fn(**kwargs):
+        if graph_backend:
+            return await _query_graph_backend(graph_backend, **kwargs)
+        return await _query_graph_collection(**kwargs)
 
     # Validate query_type
     if query_type not in ("callers", "definition", "importers", "callees"):
@@ -1104,7 +1212,7 @@ async def _symbol_graph_impl(
         # IMPORTANT: treat graph as an accelerator. If it's present-but-empty (e.g. freshly created
         # before a full reindex), optionally fall back to legacy array queries to avoid false negatives.
         if query_type in ("callers", "importers", "callees"):
-            graph_results = await _query_graph_collection(
+            graph_results = await graph_query_fn(
                 client=client,
                 collection=coll,
                 symbol=symbol,
@@ -1126,7 +1234,7 @@ async def _symbol_graph_impl(
                     used_graph = True
 
         # Fallback for callees: use _query_callees which can use metadata.calls array
-        if query_type == "callees" and not results and not used_graph:
+        if query_type == "callees" and not results and not used_graph and not graph_backend:
             results = await _query_callees(
                 client=client,
                 collection=coll,
@@ -1216,7 +1324,7 @@ async def _symbol_graph_impl(
                 seen_symbols.add(hop_symbol)
 
                 hop_tasks.append(
-                    _query_graph_collection(
+                    graph_query_fn(
                         client=client,
                         collection=coll,
                         symbol=hop_symbol,
