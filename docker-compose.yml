@@ -472,7 +472,7 @@ services:
       - QWEN3_QUERY_INSTRUCTION=${QWEN3_QUERY_INSTRUCTION:-1}
       - QWEN3_INSTRUCTION_TEXT=${QWEN3_INSTRUCTION_TEXT}
       - WATCH_ROOT=${WATCH_ROOT:-/work}
-      # - WATCH_USE_POLLING=${WATCH_USE_POLLING:-1} SET on MAC OSx
+      - WATCH_USE_POLLING=${WATCH_USE_POLLING:-1} SET on MAC OSx
       - HOST_INDEX_PATH=/work
       - QDRANT_TIMEOUT=${QDRANT_TIMEOUT:-60}
       # Chunking config - use ${VAR:-} to properly inherit from .env (not host shell)

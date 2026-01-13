@@ -2123,6 +2123,75 @@ if _PATTERN_SEARCH_ENABLED:
         )
 
 
+# ---------------------------------------------------------------------------
+# Neo4j Graph Query - Advanced graph traversals (conditional on NEO4J_GRAPH=1)
+# ---------------------------------------------------------------------------
+_NEO4J_GRAPH_ENABLED = str(os.environ.get("NEO4J_GRAPH", "")).strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+if _NEO4J_GRAPH_ENABLED:
+    from scripts.mcp_impl.neo4j_graph import _neo4j_graph_query_impl
+
+    @mcp.tool()
+    async def neo4j_graph_query(
+        query_type: Any = None,
+        symbol: Any = None,
+        depth: Any = None,
+        limit: Any = None,
+        repo: Any = None,
+        language: Any = None,
+        include_paths: Any = None,
+        output_format: Any = None,
+    ) -> Dict[str, Any]:
+        """Advanced Neo4j graph queries for symbol relationships.
+
+        SaaS-ready graph database queries enabled when NEO4J_GRAPH=1.
+
+        Query types:
+        - callers: Who calls this symbol? (depth 1)
+        - callees: What does this symbol call? (depth 1)
+        - transitive_callers: Multi-hop callers (up to depth)
+        - transitive_callees: Multi-hop callees (up to depth)
+        - impact: What would break if I change this? (reverse transitive)
+        - dependencies: What does this depend on? (calls + imports)
+        - cycles: Detect circular dependencies
+
+        Key parameters:
+        - query_type: str. Type of graph query (see above).
+        - symbol: str. Symbol to analyze (required).
+        - depth: int (default 1). Max traversal depth for transitive queries.
+        - limit: int (default 50). Maximum results.
+        - repo: str. Filter by repository.
+        - include_paths: bool. Include full traversal paths in results.
+        - output_format: "json" (default) or "toon".
+
+        Examples:
+        - neo4j_graph_query(query_type="callers", symbol="authenticate")
+        - neo4j_graph_query(query_type="impact", symbol="User", depth=3)
+        - neo4j_graph_query(query_type="cycles", symbol="ServiceA")
+        """
+        _query_type = str(query_type).strip() if query_type else "callers"
+        _symbol = str(symbol).strip() if symbol else None
+        _depth = safe_int(depth, default=1, logger=logger, context="neo4j_graph.depth")
+        _limit = safe_int(limit, default=50, logger=logger, context="neo4j_graph.limit")
+        _repo = str(repo).strip() if repo else None
+        _language = str(language).strip() if language else None
+        _include_paths = _coerce_bool(include_paths, default=False)
+        _output_format = str(output_format).strip().lower() if output_format else "json"
+
+        return await _neo4j_graph_query_impl(
+            query_type=_query_type,
+            symbol=_symbol,
+            depth=_depth,
+            limit=_limit,
+            repo=_repo,
+            language=_language,
+            include_paths=_include_paths,
+            output_format=_output_format,
+        )
+
+
 _relax_var_kwarg_defaults()
 
 if __name__ == "__main__":
@@ -2162,6 +2231,7 @@ if __name__ == "__main__":
     logger.info(f"  Rerank Top N: {os.environ.get('RERANK_TOP_N', '20')}")
     logger.info(f"  Rerank Timeout MS: {os.environ.get('RERANK_TIMEOUT_MS', '500')}")
     logger.info(f"  Pattern Search: {'enabled' if _PATTERN_SEARCH_ENABLED else 'disabled (set PATTERN_VECTORS=1)'}")
+    logger.info(f"  Neo4j Graph: {'enabled' if _NEO4J_GRAPH_ENABLED else 'disabled (set NEO4J_GRAPH=1)'}")
     logger.info("=" * 60)
 
     # Server warmup: async parallel loading of embedding + reranker models

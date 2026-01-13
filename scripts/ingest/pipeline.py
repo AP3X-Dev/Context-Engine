@@ -75,14 +75,63 @@ from scripts.ingest.qdrant import (
     embed_batch,
     PATTERN_VECTOR_NAME,
 )
-from scripts.ingest.graph_edges import (
-    ensure_graph_collection,
-    extract_call_edges,
-    extract_import_edges,
-    upsert_edges,
-    delete_edges_by_path,
-    get_graph_collection_name,
-)
+# Graph edges - route through backend adapter when Neo4j is enabled
+_NEO4J_GRAPH_ENABLED = os.environ.get("NEO4J_GRAPH", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+if _NEO4J_GRAPH_ENABLED:
+    # Use backend abstraction layer for Neo4j support
+    from scripts.graph_backends.ingest_adapter import (
+        ensure_graph_store as ensure_graph_collection,
+        extract_call_edges as _extract_call_edges_adapter,
+        extract_import_edges as _extract_import_edges_adapter,
+        upsert_edges as _upsert_edges_adapter,
+        delete_edges_by_path,
+        GRAPH_COLLECTION_SUFFIX,
+    )
+
+    def get_graph_collection_name(base: str) -> str:
+        return f"{base}{GRAPH_COLLECTION_SUFFIX}"
+
+    # Adapters convert GraphEdge objects to dicts for existing code
+    def extract_call_edges(**kwargs):
+        edges = _extract_call_edges_adapter(**kwargs)
+        return [{"id": e.id, "payload": e.to_dict()} for e in edges]
+
+    def extract_import_edges(**kwargs):
+        edges = _extract_import_edges_adapter(**kwargs)
+        return [{"id": e.id, "payload": e.to_dict()} for e in edges]
+
+    def upsert_edges(client, graph_coll, edges, batch_size=100):
+        # Convert dict edges back to GraphEdge objects
+        from scripts.graph_backends.base import GraphEdge
+        graph_edges = []
+        for e in edges:
+            payload = e.get("payload", {})
+            graph_edges.append(GraphEdge(
+                id=e.get("id", ""),
+                caller_symbol=payload.get("caller_symbol", ""),
+                callee_symbol=payload.get("callee_symbol", ""),
+                caller_path=payload.get("caller_path", ""),
+                edge_type=payload.get("edge_type", ""),
+                repo=payload.get("repo", ""),
+                start_line=payload.get("start_line"),
+                end_line=payload.get("end_line"),
+                language=payload.get("language"),
+                caller_point_id=payload.get("caller_point_id"),
+            ))
+        return _upsert_edges_adapter(client, graph_coll, graph_edges, batch_size)
+else:
+    # Default: use existing Qdrant-native graph_edges
+    from scripts.ingest.graph_edges import (
+        ensure_graph_collection,
+        extract_call_edges,
+        extract_import_edges,
+        upsert_edges,
+        delete_edges_by_path,
+        get_graph_collection_name,
+    )
 
 # Import utility functions
 from scripts.utils import sanitize_vector_name as _sanitize_vector_name
