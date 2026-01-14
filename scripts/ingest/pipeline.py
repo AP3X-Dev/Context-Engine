@@ -898,6 +898,8 @@ def _index_single_file_inner(
                                 start_line=start_line,
                                 end_line=end_line,
                                 language=language,
+                                collection=collection,
+                                qdrant_client=client,
                             )
                         )
                     if imports:
@@ -908,6 +910,8 @@ def _index_single_file_inner(
                                 path=str(file_path),
                                 repo=repo_tag,
                                 language=language,
+                                collection=collection,
+                                qdrant_client=client,
                             )
                         )
                 else:
@@ -919,6 +923,8 @@ def _index_single_file_inner(
                             calls=calls,
                             path=source_file_path,
                             repo=repo_tag,
+                            collection=collection,
+                            qdrant_client=client,
                         ))
                     if imports:
                         all_edges.extend(extract_import_edges(
@@ -926,6 +932,8 @@ def _index_single_file_inner(
                             imports=imports,
                             path=source_file_path,
                             repo=repo_tag,
+                            collection=collection,
+                            qdrant_client=client,
                         ))
 
                 if all_edges:

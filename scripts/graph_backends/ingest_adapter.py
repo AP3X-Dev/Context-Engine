@@ -63,6 +63,8 @@ def extract_call_edges(
     caller_point_id: Optional[str] = None,
     symbol_paths: Optional[Dict[str, str]] = None,
     import_paths: Optional[Dict[str, str]] = None,
+    collection: Optional[str] = None,
+    qdrant_client: Optional["QdrantClient"] = None,
 ) -> List[GraphEdge]:
     """Extract call edge objects from a chunk's calls list.
 
@@ -77,6 +79,8 @@ def extract_call_edges(
         caller_point_id: Qdrant point ID of caller chunk
         symbol_paths: Dict mapping symbol names to their file paths (for same-file resolution)
         import_paths: Dict mapping imported names to their module paths (for import resolution)
+        collection: Collection name for cross-file symbol resolution
+        qdrant_client: Qdrant client for cross-file symbol resolution
 
     Returns GraphEdge objects for use with any backend.
     """
@@ -87,6 +91,15 @@ def extract_call_edges(
     edges = []
     symbol_paths = symbol_paths or {}
     import_paths = import_paths or {}
+
+    # Get symbol resolver for cross-file resolution
+    resolver = None
+    if collection and os.environ.get("RESOLVE_CROSS_FILE_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+        try:
+            from .symbol_resolver import get_symbol_resolver
+            resolver = get_symbol_resolver(collection, qdrant_client)
+        except Exception:
+            pass
 
     for callee in calls:
         if not callee:
@@ -109,7 +122,16 @@ def extract_call_edges(
         if not callee_path and callee in import_paths:
             callee_path = import_paths[callee]
 
-        # 3. For unresolved callees, use a deterministic stub path
+        # 3. Try cross-file resolution via symbol resolver
+        if not callee_path and resolver:
+            try:
+                resolved = resolver.resolve_symbol(callee, repo)
+                if resolved:
+                    callee_path = resolved
+            except Exception:
+                pass
+
+        # 4. For unresolved callees, use a deterministic stub path
         # This ensures all references to "print" go to the same "<builtin>/print" node
         if not callee_path:
             # Categorize: builtins vs external vs unknown
@@ -159,6 +181,8 @@ def extract_import_edges(
     repo: str,
     language: Optional[str] = None,
     caller_point_id: Optional[str] = None,
+    collection: Optional[str] = None,
+    qdrant_client: Optional["QdrantClient"] = None,
 ) -> List[GraphEdge]:
     """Extract import edge objects from a chunk's imports list."""
     if not imports:
@@ -168,12 +192,30 @@ def extract_import_edges(
     caller = symbol_path or norm_path
     edges = []
 
+    # Get symbol resolver for cross-file resolution
+    resolver = None
+    if collection and os.environ.get("RESOLVE_CROSS_FILE_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+        try:
+            from .symbol_resolver import get_symbol_resolver
+            resolver = get_symbol_resolver(collection, qdrant_client)
+        except Exception:
+            pass
+
     for imported in imports:
         if not imported:
             continue
-        # For imports, callee_path is the module path itself (e.g., "os.path", "numpy")
-        # This creates deterministic nodes for external modules
-        callee_path = f"<module>/{imported}"
+
+        # Try to resolve import to actual file path
+        callee_path = None
+        if resolver:
+            try:
+                callee_path = resolver.resolve_import(imported, repo)
+            except Exception:
+                pass
+
+        # Fall back to module stub if not resolved
+        if not callee_path:
+            callee_path = f"<module>/{imported}"
 
         edge_id = _edge_id(caller, imported, norm_path, EDGE_TYPE_IMPORTS, repo)
         edges.append(GraphEdge(

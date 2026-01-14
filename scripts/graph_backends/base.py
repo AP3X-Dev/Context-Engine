@@ -168,3 +168,43 @@ class GraphBackend(ABC):
         """Find all files that import a module."""
         pass
 
+    def resolve_symbol(
+        self,
+        graph_store: str,
+        symbol_name: str,
+        repo: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve a symbol name to its definition file path.
+
+        Args:
+            graph_store: Graph store identifier
+            symbol_name: The symbol to resolve
+            repo: Optional repo filter
+
+        Returns:
+            File path where symbol is defined, or None if not found.
+
+        Note: Default implementation returns None. Backends may override
+        to provide resolution via their native query mechanisms.
+        """
+        return None
+
+    def resolve_import(
+        self,
+        graph_store: str,
+        import_name: str,
+        repo: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve an import to its source file path.
+
+        Args:
+            graph_store: Graph store identifier
+            import_name: The imported module name
+            repo: Optional repo filter
+
+        Returns:
+            File path of the module, or None if external/not found.
+
+        Note: Default implementation returns None. Backends may override.
+        """
+        return None
