@@ -604,6 +604,7 @@ async def _query_graph_collection(
     query_type: str,
     limit: int,
     repo: Optional[str] = None,
+    depth: int = 1,  # Accepted for compatibility but not used (Qdrant doesn't support multi-hop)
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Query the graph collection for fast indexed lookups.
@@ -752,16 +753,31 @@ async def _query_graph_backend(
     query_type: str,
     limit: int,
     repo: Optional[str] = None,
+    depth: int = 1,
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    Query graph backend (Neo4j) and return results in graph-collection format.
+    Query graph backend and return results in graph-collection format.
+
+    When enhanced graph backend is available and depth > 1, uses multi-hop
+    traversal for richer results (transitive callers/callees).
     """
     if query_type not in ("callers", "callees", "importers"):
         return None
 
     graph_store = collection
-
     variants = _symbol_variants(symbol) or [symbol]
+
+    # Try enhanced multi-hop traversal when depth > 1
+    if depth > 1:
+        enhanced_results = await _try_enhanced_multihop_query(
+            symbol=symbol,
+            query_type=query_type,
+            depth=depth,
+            limit=limit,
+            repo=repo,
+        )
+        if enhanced_results is not None:
+            return enhanced_results
 
     def do_query():
         edges_all: List[Dict[str, Any]] = []
@@ -829,6 +845,69 @@ async def _query_graph_backend(
         )
 
     return results
+
+
+async def _try_enhanced_multihop_query(
+    symbol: str,
+    query_type: str,
+    depth: int,
+    limit: int,
+    repo: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Try enhanced multi-hop traversal using advanced graph backend.
+
+    Returns None if enhanced backend is not available, allowing fallback.
+    This is transparent to users - just provides richer results when available.
+    """
+    try:
+        from scripts.graph_backends.graph_rag import get_transitive_callers
+    except ImportError:
+        return None
+
+    if query_type not in ("callers", "callees"):
+        return None  # Multi-hop only makes sense for callers/callees
+
+    try:
+        if query_type == "callers":
+            results = get_transitive_callers(symbol, repo=repo, depth=depth, limit=limit)
+        else:
+            # For callees, use similar approach
+            try:
+                from scripts.graph_backends.graph_rag import _get_knowledge_graph
+                kg = _get_knowledge_graph()
+                if kg:
+                    results = kg.get_callees(symbol, repo=repo, depth=depth, limit=limit)
+                else:
+                    return None
+            except Exception:
+                return None
+
+        if not results:
+            return None
+
+        # Convert to standard format
+        formatted = []
+        for r in results:
+            hop = r.get("distance", 1) or r.get("hop", 1) or 1
+            formatted.append({
+                "path": r.get("path", ""),
+                "start_line": r.get("start_line", 0) or 0,
+                "end_line": r.get("end_line", 0) or 0,
+                "symbol": r.get("name", ""),
+                "symbol_path": r.get("id", "") or r.get("name", ""),
+                "language": r.get("language", ""),
+                "snippet": "",
+                "from_graph": True,
+                "hop": hop,
+                "via": symbol if hop == 1 else "",  # First hop is via the queried symbol
+            })
+
+        logger.debug(f"Enhanced multi-hop returned {len(formatted)} results (depth={depth})")
+        return formatted
+
+    except Exception as e:
+        logger.debug(f"Enhanced multi-hop query failed: {e}")
+        return None
 
 
 def _path_proximity_score(caller_path: str, callee_path: str) -> int:
@@ -1219,6 +1298,7 @@ async def _symbol_graph_impl(
                 query_type=query_type,
                 limit=limit,
                 repo=repo,
+                depth=depth,  # Pass depth for multi-hop traversal
             )
             if graph_results:
                 # Hydrate hollow graph results with actual snippets and line numbers

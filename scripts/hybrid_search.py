@@ -73,6 +73,7 @@ from scripts.hybrid_config import (
     SYMBOL_BOOST,
     SYMBOL_EQUALITY_BOOST,
     GRAPH_CONNECTION_BOOST,
+    IMPORTANCE_BOOST_MAX,
     FNAME_BOOST,
     RECENCY_WEIGHT,
     CORE_FILE_BOOST,
@@ -560,6 +561,64 @@ def run_pure_dense_search(
 
 
 # ---------------------------------------------------------------------------
+# PageRank-based Importance Boost (transparent when enhanced graph available)
+# ---------------------------------------------------------------------------
+
+# Cache for importance lookups (cleared each search to avoid stale data)
+_IMPORTANCE_CACHE: Dict[str, float] = {}
+_IMPORTANCE_CACHE_ENABLED = False
+
+
+def _get_symbol_importance_boost(symbol: str, rec: Dict[str, Any]) -> float:
+    """Get PageRank-based importance boost for a symbol.
+
+    Returns 0.0 if enhanced graph backend is not available.
+    This is transparent to users - just applies the boost silently.
+    """
+    global _IMPORTANCE_CACHE_ENABLED
+
+    if not symbol or IMPORTANCE_BOOST_MAX <= 0:
+        return 0.0
+
+    # Only try enhanced graph if not already checked and failed
+    if not _IMPORTANCE_CACHE_ENABLED:
+        try:
+            from scripts.graph_backends.graph_rag import get_symbol_importance
+            _IMPORTANCE_CACHE_ENABLED = True
+        except ImportError:
+            return 0.0
+
+    # Check cache first
+    cache_key = symbol.lower()
+    if cache_key in _IMPORTANCE_CACHE:
+        importance = _IMPORTANCE_CACHE[cache_key]
+    else:
+        try:
+            from scripts.graph_backends.graph_rag import get_symbol_importance
+            importance = get_symbol_importance(symbol) or 0.0
+            _IMPORTANCE_CACHE[cache_key] = importance
+        except Exception:
+            _IMPORTANCE_CACHE[cache_key] = 0.0
+            importance = 0.0
+
+    # Scale importance (0.0 to 1.0) to boost (0.0 to IMPORTANCE_BOOST_MAX)
+    # Use a log scale to avoid extreme values dominating
+    if importance > 0:
+        import math
+        # Log scale: log(1 + importance * 10) / log(11) gives 0.0 to 1.0
+        scaled = math.log1p(importance * 10) / math.log(11)
+        return min(IMPORTANCE_BOOST_MAX, scaled * IMPORTANCE_BOOST_MAX)
+
+    return 0.0
+
+
+def _clear_importance_cache():
+    """Clear the importance cache (called at start of each search)."""
+    global _IMPORTANCE_CACHE
+    _IMPORTANCE_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
 # Graph-Guided Candidate Injection
 # Uses pre-computed call/import edges to expand the candidate pool.
 # ---------------------------------------------------------------------------
@@ -730,6 +789,9 @@ def run_hybrid_search(
     repo: str | list[str] | None = None,  # Filter by repo name(s); "*" to disable auto-filter
     per_query: int | None = None,  # Base candidate retrieval per query (default: adaptive)
 ) -> List[Dict[str, Any]]:
+    # Clear importance cache for fresh lookups
+    _clear_importance_cache()
+
     # Use pooled client instead of creating a new one per request
     client = get_qdrant_client(
         url=os.environ.get("QDRANT_URL", QDRANT_URL),
@@ -2014,6 +2076,14 @@ def _run_hybrid_search_impl(
                             rec["graph"] = rec.get("graph", 0.0) + _eff_graph_boost * 0.5
                             rec["s"] += _eff_graph_boost * 0.5
                             break
+
+        # PageRank-based importance boost (transparent when enhanced graph available)
+        if IMPORTANCE_BOOST_MAX > 0.0 and sym:
+            importance_boost = _get_symbol_importance_boost(sym, rec)
+            if importance_boost > 0:
+                rec["graph"] = rec.get("graph", 0.0) + importance_boost
+                rec["s"] += importance_boost
+
         path = str(md.get("path") or "")
         # Filename boost: production-grade matching (handles snake/camel/kebab, acronyms, etc.)
         if FNAME_BOOST > 0.0 and path:
