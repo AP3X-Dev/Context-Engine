@@ -1396,14 +1396,16 @@ async def _symbol_graph_impl(
             next_hop_results: List[Dict[str, Any]] = []
 
             # Parallelize traversal across current hop symbols
-            hop_tasks = []
+            # Track (via_symbol, task) pairs to maintain correct attribution
+            hop_tasks_with_via: List[Tuple[str, Any]] = []
             for r in current_hop_results:
                 hop_symbol = r.get("symbol_path") or r.get("symbol", "")
                 if not hop_symbol or hop_symbol in seen_symbols:
                     continue
                 seen_symbols.add(hop_symbol)
 
-                hop_tasks.append(
+                hop_tasks_with_via.append((
+                    hop_symbol,  # via_symbol for attribution
                     graph_query_fn(
                         client=client,
                         collection=coll,
@@ -1412,14 +1414,15 @@ async def _symbol_graph_impl(
                         limit=max(5, limit // hop),
                         repo=repo,
                     )
-                )
+                ))
 
-            if hop_tasks:
+            if hop_tasks_with_via:
+                # Extract just the tasks for gather
+                hop_tasks = [task for _, task in hop_tasks_with_via]
                 hop_results_batch = await asyncio.gather(*hop_tasks)
 
-                for i, hop_graph_results in enumerate(hop_results_batch):
+                for (via_symbol, _), hop_graph_results in zip(hop_tasks_with_via, hop_results_batch):
                     if hop_graph_results:
-                        via_symbol = current_hop_results[i].get("symbol_path") or current_hop_results[i].get("symbol", "")
                         hydrated = await _hydrate_graph_results(client, coll, hop_graph_results)
                         for hr in hydrated:
                             hr["hop"] = hop
@@ -1434,9 +1437,15 @@ async def _symbol_graph_impl(
             if not next_hop_results:
                 break
 
-        # Mark first hop results and truncate
+        # Mark first hop results
         for r in results:
             r["hop"] = 1
+
+        # Sort by hop first (ascending), then by proximity_score within each hop (descending)
+        # This ensures stable ordering: hop=1 results first, then hop=2, etc.
+        all_results.sort(
+            key=lambda x: (x.get("hop", 1), -x.get("proximity_score", 0)),
+        )
         results = all_results[:limit]
 
     # Add suggestions if no results found

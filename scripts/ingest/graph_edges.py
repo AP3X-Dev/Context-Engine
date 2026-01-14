@@ -170,7 +170,7 @@ def _edge_id(
     return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
-def _resolve_callee_path(callee: str, repo: str, language: str = "python") -> str:
+def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None) -> str:
     """Resolve a callee symbol to its definition file path.
 
     Resolution order:
@@ -182,22 +182,23 @@ def _resolve_callee_path(callee: str, repo: str, language: str = "python") -> st
     Args:
         callee: The callee symbol name
         repo: Repository name
-        language: Programming language for builtin detection (default: python)
+        language: Programming language for builtin detection (None = skip language-specific checks)
     """
-    # Use AST analyzer's tree-sitter based builtin detection
-    try:
-        from scripts.ast_analyzer import is_builtin, is_stdlib
+    # Use AST analyzer's tree-sitter based builtin detection (only if language known)
+    if language:
+        try:
+            from scripts.ast_analyzer import is_builtin
 
-        # Extract base name for detection
-        base_name = callee.split(".")[-1] if "." in callee else callee
-        base_name = base_name.split("::")[-1] if "::" in base_name else base_name
+            # Extract base name for detection
+            base_name = callee.split(".")[-1] if "." in callee else callee
+            base_name = base_name.split("::")[-1] if "::" in base_name else base_name
 
-        if is_builtin(base_name, language):
-            return f"<builtin>/{base_name}"
-    except ImportError:
-        pass  # Fallback if AST analyzer unavailable
+            if is_builtin(base_name, language):
+                return f"<builtin>/{base_name}"
+        except ImportError:
+            pass  # Fallback if AST analyzer unavailable
 
-    # Try cross-file resolution via symbol resolver
+    # Try cross-file resolution via symbol resolver (language-agnostic)
     try:
         from scripts.graph_backends.symbol_resolver import get_symbol_resolver
         collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
@@ -209,20 +210,21 @@ def _resolve_callee_path(callee: str, repo: str, language: str = "python") -> st
     except Exception:
         pass
 
-    # Check stdlib using AST analyzer
-    try:
-        from scripts.ast_analyzer import is_stdlib
-        if "." in callee:
-            module_prefix = callee.split(".")[0]
-            if is_stdlib(module_prefix, language):
-                return f"<stdlib>/{callee}"
-    except ImportError:
-        pass
+    # Check stdlib using AST analyzer (only if language known)
+    if language:
+        try:
+            from scripts.ast_analyzer import is_stdlib
+            if "." in callee:
+                module_prefix = callee.split(".")[0]
+                if is_stdlib(module_prefix, language):
+                    return f"<stdlib>/{callee}"
+        except ImportError:
+            pass
 
     return f"<external>/{callee}"
 
 
-def _resolve_import_path(imported: str, repo: str, language: str = "python") -> str:
+def _resolve_import_path(imported: str, repo: str, language: Optional[str] = None) -> str:
     """Resolve an import to its source file path.
 
     Resolution order:
@@ -233,18 +235,19 @@ def _resolve_import_path(imported: str, repo: str, language: str = "python") -> 
     Args:
         imported: The imported module/symbol name
         repo: Repository name
-        language: Programming language (default: python)
+        language: Programming language (None = skip language-specific checks)
     """
-    # Check stdlib using AST analyzer
-    try:
-        from scripts.ast_analyzer import is_stdlib
-        module_base = imported.split(".")[0]
-        if is_stdlib(module_base, language):
-            return f"<stdlib>/{imported}"
-    except ImportError:
-        pass
+    # Check stdlib using AST analyzer (only if language known)
+    if language:
+        try:
+            from scripts.ast_analyzer import is_stdlib
+            module_base = imported.split(".")[0]
+            if is_stdlib(module_base, language):
+                return f"<stdlib>/{imported}"
+        except ImportError:
+            pass
 
-    # Try cross-file resolution
+    # Try cross-file resolution (language-agnostic)
     try:
         from scripts.graph_backends.symbol_resolver import get_symbol_resolver
         collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
@@ -294,8 +297,8 @@ def extract_call_edges(
         if not callee:
             continue
 
-        # Resolve callee to its definition file path
-        callee_path = _resolve_callee_path(callee, repo)
+        # Resolve callee to its definition file path (language-aware for stdlib/builtin detection)
+        callee_path = _resolve_callee_path(callee, repo, language=language)
 
         edge_id = _edge_id(symbol_path, callee, norm_path, EDGE_TYPE_CALLS, repo)
         payload = {
@@ -353,8 +356,8 @@ def extract_import_edges(
         if not imported:
             continue
 
-        # Resolve import to its source file path
-        callee_path = _resolve_import_path(imported, repo)
+        # Resolve import to its source file path (language-aware for stdlib detection)
+        callee_path = _resolve_import_path(imported, repo, language=language)
 
         edge_id = _edge_id(caller, imported, norm_path, EDGE_TYPE_IMPORTS, repo)
         payload = {

@@ -575,6 +575,10 @@ async def _ca_inject_subgraph_context(
                 if not path or path in existing_paths:
                     continue
 
+                # Skip pseudo-paths that aren't retrievable code spans
+                if path.startswith("<stdlib>/") or path.startswith("<external>/") or path.startswith("<builtin>/"):
+                    continue
+
                 if path not in path_to_info:
                     path_to_info[path] = {
                         "symbols": set(),
@@ -662,6 +666,11 @@ async def _try_enhanced_subgraph_context(
             path = node.get("path", "")
             if not path or path in existing_paths or path in seen_paths:
                 continue
+
+            # Skip pseudo-paths that aren't retrievable code spans
+            if path.startswith("<stdlib>/") or path.startswith("<external>/") or path.startswith("<builtin>/"):
+                continue
+
             seen_paths.add(path)
 
             # Get importance score for ranking
