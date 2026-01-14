@@ -26,7 +26,8 @@ class GraphEdge:
     end_line: Optional[int] = None
     language: Optional[str] = None
     caller_point_id: Optional[str] = None
-    
+    callee_path: Optional[str] = None  # Resolved path of the callee symbol
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         d = {
@@ -42,6 +43,8 @@ class GraphEdge:
             d["end_line"] = self.end_line
         if self.language:
             d["language"] = self.language
+        if self.callee_path:
+            d["callee_path"] = self.callee_path
         if self.caller_point_id:
             d["caller_point_id"] = self.caller_point_id
         return d
