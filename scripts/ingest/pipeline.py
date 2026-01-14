@@ -114,6 +114,7 @@ if _NEO4J_GRAPH_ENABLED:
                 caller_symbol=payload.get("caller_symbol", ""),
                 callee_symbol=payload.get("callee_symbol", ""),
                 caller_path=payload.get("caller_path", ""),
+                callee_path=payload.get("callee_path"),  # Resolved callee path
                 edge_type=payload.get("edge_type", ""),
                 repo=payload.get("repo", ""),
                 start_line=payload.get("start_line"),

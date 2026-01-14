@@ -10,7 +10,20 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional
+
+# API version for compatibility checking between core and plugins
+GRAPH_BACKEND_API_VERSION = "1.0.0"
+
+
+class EdgeType(str, Enum):
+    """Edge types for graph relationships."""
+    CALLS = "calls"
+    IMPORTS = "imports"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 @dataclass
@@ -208,3 +221,12 @@ class GraphBackend(ABC):
         Note: Default implementation returns None. Backends may override.
         """
         return None
+
+    def close(self) -> None:
+        """Close any open connections and release resources.
+
+        Backends with persistent connections (e.g., Neo4j driver) should
+        override this to properly clean up. Default is a no-op for backends
+        that don't hold persistent resources.
+        """
+        pass

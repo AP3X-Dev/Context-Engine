@@ -165,10 +165,98 @@ def _edge_id(
     Uses full 32-char hex (128 bits) to avoid collision risk at scale.
     Path is normalized before hashing for consistency.
     """
-    # Normalize path and include repo to avoid cross-repo collisions
     norm_path = _normalize_path(caller_path)
     key = f"{edge_type}:{repo}:{caller_symbol}:{callee_symbol}:{norm_path}"
-    return hashlib.sha256(key.encode()).hexdigest()[:32]  # 128-bit, not 64-bit
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
+def _resolve_callee_path(callee: str, repo: str, language: str = "python") -> str:
+    """Resolve a callee symbol to its definition file path.
+
+    Resolution order:
+    1. Check if builtin for the given language (via AST analyzer's tree-sitter extraction)
+    2. Try symbol resolver cache (cross-file resolution via indexed symbols)
+    3. Check if stdlib module prefix
+    4. Fallback to <external>
+
+    Args:
+        callee: The callee symbol name
+        repo: Repository name
+        language: Programming language for builtin detection (default: python)
+    """
+    # Use AST analyzer's tree-sitter based builtin detection
+    try:
+        from scripts.ast_analyzer import is_builtin, is_stdlib
+
+        # Extract base name for detection
+        base_name = callee.split(".")[-1] if "." in callee else callee
+        base_name = base_name.split("::")[-1] if "::" in base_name else base_name
+
+        if is_builtin(base_name, language):
+            return f"<builtin>/{base_name}"
+    except ImportError:
+        pass  # Fallback if AST analyzer unavailable
+
+    # Try cross-file resolution via symbol resolver
+    try:
+        from scripts.graph_backends.symbol_resolver import get_symbol_resolver
+        collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
+        if collection:
+            resolver = get_symbol_resolver(collection)
+            resolved = resolver.resolve_symbol(callee, repo)
+            if resolved:
+                return resolved
+    except Exception:
+        pass
+
+    # Check stdlib using AST analyzer
+    try:
+        from scripts.ast_analyzer import is_stdlib
+        if "." in callee:
+            module_prefix = callee.split(".")[0]
+            if is_stdlib(module_prefix, language):
+                return f"<stdlib>/{callee}"
+    except ImportError:
+        pass
+
+    return f"<external>/{callee}"
+
+
+def _resolve_import_path(imported: str, repo: str, language: str = "python") -> str:
+    """Resolve an import to its source file path.
+
+    Resolution order:
+    1. Check if stdlib for the given language
+    2. Try symbol resolver cache
+    3. Fallback to <external>
+
+    Args:
+        imported: The imported module/symbol name
+        repo: Repository name
+        language: Programming language (default: python)
+    """
+    # Check stdlib using AST analyzer
+    try:
+        from scripts.ast_analyzer import is_stdlib
+        module_base = imported.split(".")[0]
+        if is_stdlib(module_base, language):
+            return f"<stdlib>/{imported}"
+    except ImportError:
+        pass
+
+    # Try cross-file resolution
+    try:
+        from scripts.graph_backends.symbol_resolver import get_symbol_resolver
+        collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
+        if collection:
+            resolver = get_symbol_resolver(collection)
+            resolved = resolver.resolve_import(imported, repo)
+            if resolved:
+                return resolved
+    except Exception:
+        pass
+
+    return f"<external>/{imported}"
 
 
 def extract_call_edges(
@@ -199,22 +287,25 @@ def extract_call_edges(
     if not symbol_path or not calls:
         return []
 
-    # Normalize path for consistent matching
     norm_path = _normalize_path(path)
-
     edges = []
+
     for callee in calls:
         if not callee:
             continue
+
+        # Resolve callee to its definition file path
+        callee_path = _resolve_callee_path(callee, repo)
+
         edge_id = _edge_id(symbol_path, callee, norm_path, EDGE_TYPE_CALLS, repo)
         payload = {
             "caller_symbol": symbol_path,
             "callee_symbol": callee,
             "caller_path": norm_path,
+            "callee_path": callee_path,
             "edge_type": EDGE_TYPE_CALLS,
             "repo": repo,
         }
-        # Include line info if available
         if start_line is not None:
             payload["start_line"] = start_line
         if end_line is not None:
@@ -254,21 +345,23 @@ def extract_import_edges(
     if not imports:
         return []
 
-    # Normalize path for consistent matching
     norm_path = _normalize_path(path)
-
-    # For imports, use file path as caller if no symbol
     caller = symbol_path or norm_path
-
     edges = []
+
     for imported in imports:
         if not imported:
             continue
+
+        # Resolve import to its source file path
+        callee_path = _resolve_import_path(imported, repo)
+
         edge_id = _edge_id(caller, imported, norm_path, EDGE_TYPE_IMPORTS, repo)
         payload = {
             "caller_symbol": caller,
             "callee_symbol": imported,
             "caller_path": norm_path,
+            "callee_path": callee_path,
             "edge_type": EDGE_TYPE_IMPORTS,
             "repo": repo,
         }
