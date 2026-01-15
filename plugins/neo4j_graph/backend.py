@@ -4,7 +4,7 @@
 """
 Neo4j graph backend implementation.
 
-SaaS-ready graph database backend using Neo4j for symbol relationships.
+Graph database backend using Neo4j for symbol relationships.
 Enables advanced graph traversals, path finding, and relationship analytics.
 
 Enable via: NEO4J_GRAPH=1

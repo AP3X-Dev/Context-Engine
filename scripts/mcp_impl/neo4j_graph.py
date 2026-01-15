@@ -239,11 +239,14 @@ def _query_transitive_callers(
     collection: str,
 ) -> List[Dict]:
     """Multi-hop caller traversal."""
+    # Cypher doesn't support parameterized path lengths, so we embed depth directly
+    safe_depth = max(1, min(10, int(depth)))
+
     if include_paths:
         # Include full path information
         if repo and repo != "*":
-            result = session.run("""
-                MATCH path = (caller:Symbol {collection: $collection})-[:CALLS*1..$depth]->(target:Symbol {name: $symbol, collection: $collection})
+            result = session.run(f"""
+                MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH caller, path, length(path) as hop
                 RETURN caller.name as symbol, hop,
@@ -251,10 +254,10 @@ def _query_transitive_callers(
                        caller.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "repo": repo, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
         else:
-            result = session.run("""
-                MATCH path = (caller:Symbol {collection: $collection})-[:CALLS*1..$depth]->(target:Symbol {name: $symbol, collection: $collection})
+            result = session.run(f"""
+                MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH caller, path, length(path) as hop
                 RETURN caller.name as symbol, hop,
@@ -262,24 +265,24 @@ def _query_transitive_callers(
                        caller.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "collection": collection, "limit": limit})
     else:
         if repo and repo != "*":
-            result = session.run("""
-                MATCH path = (caller:Symbol {collection: $collection})-[:CALLS*1..$depth]->(target:Symbol {name: $symbol, collection: $collection})
+            result = session.run(f"""
+                MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT caller
                 RETURN caller.name as symbol, caller.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "repo": repo, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
         else:
-            result = session.run("""
-                MATCH path = (caller:Symbol {collection: $collection})-[:CALLS*1..$depth]->(target:Symbol {name: $symbol, collection: $collection})
+            result = session.run(f"""
+                MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT caller
                 RETURN caller.name as symbol, caller.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "collection": collection, "limit": limit})
 
     return [dict(r) for r in result]
 
@@ -294,10 +297,13 @@ def _query_transitive_callees(
     collection: str,
 ) -> List[Dict]:
     """Multi-hop callee traversal."""
+    # Cypher doesn't support parameterized path lengths, so we embed depth directly
+    safe_depth = max(1, min(10, int(depth)))
+
     if include_paths:
         if repo and repo != "*":
-            result = session.run("""
-                MATCH path = (source:Symbol {name: $symbol, collection: $collection})-[:CALLS*1..$depth]->(callee:Symbol {collection: $collection})
+            result = session.run(f"""
+                MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH callee, path, length(path) as hop
                 RETURN callee.name as symbol, hop,
@@ -305,10 +311,10 @@ def _query_transitive_callees(
                        callee.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "repo": repo, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
         else:
-            result = session.run("""
-                MATCH path = (source:Symbol {name: $symbol, collection: $collection})-[:CALLS*1..$depth]->(callee:Symbol {collection: $collection})
+            result = session.run(f"""
+                MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH callee, path, length(path) as hop
                 RETURN callee.name as symbol, hop,
@@ -316,24 +322,24 @@ def _query_transitive_callees(
                        callee.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "collection": collection, "limit": limit})
     else:
         if repo and repo != "*":
-            result = session.run("""
-                MATCH path = (source:Symbol {name: $symbol, collection: $collection})-[:CALLS*1..$depth]->(callee:Symbol {collection: $collection})
+            result = session.run(f"""
+                MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT callee
                 RETURN callee.name as symbol, callee.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "repo": repo, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
         else:
-            result = session.run("""
-                MATCH path = (source:Symbol {name: $symbol, collection: $collection})-[:CALLS*1..$depth]->(callee:Symbol {collection: $collection})
+            result = session.run(f"""
+                MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT callee
                 RETURN callee.name as symbol, callee.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "depth": depth, "collection": collection, "limit": limit})
+            """, {"symbol": symbol, "collection": collection, "limit": limit})
 
     return [dict(r) for r in result]
 
@@ -348,22 +354,26 @@ def _query_dependencies(
     collection: str,
 ) -> List[Dict]:
     """Query both calls and imports for full dependency analysis."""
+    # Cypher doesn't support parameterized path lengths, so we embed depth directly
+    safe_depth = max(1, min(10, int(depth)))
+    _ = include_paths  # Reserved for future use
+
     if repo and repo != "*":
-        result = session.run("""
-            MATCH path = (source:Symbol {name: $symbol, collection: $collection})-[:CALLS|IMPORTS*1..$depth]->(dep:Symbol {collection: $collection})
+        result = session.run(f"""
+            MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS|IMPORTS*1..{safe_depth}]->(dep:Symbol {{collection: $collection}})
             WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
             WITH DISTINCT dep
             RETURN dep.name as symbol, dep.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "depth": depth, "repo": repo, "collection": collection, "limit": limit})
+        """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
     else:
-        result = session.run("""
-            MATCH path = (source:Symbol {name: $symbol, collection: $collection})-[:CALLS|IMPORTS*1..$depth]->(dep:Symbol {collection: $collection})
+        result = session.run(f"""
+            MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS|IMPORTS*1..{safe_depth}]->(dep:Symbol {{collection: $collection}})
             WHERE all(r IN relationships(path) WHERE r.collection = $collection)
             WITH DISTINCT dep
             RETURN dep.name as symbol, dep.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "depth": depth, "collection": collection, "limit": limit})
+        """, {"symbol": symbol, "collection": collection, "limit": limit})
 
     return [dict(r) for r in result]
 

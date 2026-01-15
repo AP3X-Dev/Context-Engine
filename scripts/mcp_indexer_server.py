@@ -2147,7 +2147,7 @@ if _NEO4J_GRAPH_ENABLED:
     ) -> Dict[str, Any]:
         """Advanced Neo4j graph queries for symbol relationships.
 
-        SaaS-ready graph database queries enabled when NEO4J_GRAPH=1.
+        Graph database queries enabled when NEO4J_GRAPH=1.
 
         Query types:
         - callers: Who calls this symbol? (depth 1)
