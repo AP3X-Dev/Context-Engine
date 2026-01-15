@@ -1277,11 +1277,11 @@ def log_activity(
 def _generate_collection_name_from_repo(repo_name: str) -> str:
     """Generate collection name with 8-char hash for local workspaces.
 
-    Used by local indexer/watcher. Remote uploads use 16+8 char pattern
-    for collision avoidance when folder names may be identical.
+    Uses 16-char hash for collision avoidance when folder names may be
+    identical across different users/machines in remote upload scenarios.
     """
     hash_obj = hashlib.sha256(repo_name.encode())
-    short_hash = hash_obj.hexdigest()[:8]
+    short_hash = hash_obj.hexdigest()[:16]
     return f"{repo_name}-{short_hash}"
 
 def _normalize_repo_name_for_collection(repo_name: str) -> str:
