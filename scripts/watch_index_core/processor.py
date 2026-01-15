@@ -155,10 +155,8 @@ def _maybe_handle_staging_file(
     except Exception:
         return False
     if result.returncode != 0:
-        # TODO: Instead of launching one subprocess per file, queue changes and run a 
-        # single ingest_code.py --root <repo> pass with --no-skip-unchanged. That 
-        # reuses ingest’s own skip logic, but requires more plumbing (collect paths, 
-        # pass via manifest/CLI, etc.).
+        # Note: Current implementation launches one subprocess per file for immediate indexing.
+        # Future optimization: batch changes and run single ingest_code.py pass.
         try:
             logger.error(
                 "watch_index::subprocess_index_failed",
@@ -254,6 +252,16 @@ def _process_paths(
                     safe_print(f"[deleted] {p} -> {collection}")
                 except Exception:
                     pass
+                # Also delete graph edges for this file
+                try:
+                    from scripts.ingest.graph_edges import (
+                        delete_edges_by_path,
+                        get_graph_collection_name,
+                    )
+                    graph_coll = get_graph_collection_name(collection)
+                    delete_edges_by_path(client, graph_coll, str(p), repo=repo_name)
+                except Exception:
+                    pass  # Graph collection may not exist yet
             try:
                 if repo_name:
                     remove_cached_file(str(p), repo_name)

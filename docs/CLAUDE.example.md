@@ -96,6 +96,14 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
     - Good for: "find retry loops with exponential backoff", "try: ... except: logger.error()", "error handling patterns".
     - Cross-language: Python pattern can match Go/Rust/Java with similar control flow.
     - Note: Returns error if pattern detection module is not available.
+  - symbol_graph:
+    - Use for: structural navigation (callers, definitions, importers).
+    - Think: "who calls this function?", "where is this class defined?".
+    - **Note**: Results are "hydrated" with ~500-char source snippets for immediate context.
+  - info_request:
+    - Use for: rapid broad discovery and architectural overviews.
+    - Good for: "how does the reranker work?", "overview of database modules".
+    - Tip: Set `include_explanation=true` for NL summaries and `include_relationships=true` for dependencies.
 
   Advanced lineage workflow (code + history):
 

@@ -43,7 +43,7 @@ async def test_tier2_fallback_unconditional_with_language_filter(tmp_path, monke
     os.environ["COLLECTION_NAME"] = f"test-{uuid.uuid4().hex[:8]}"
     os.environ["USE_TREE_SITTER"] = "0"
     os.environ["HYBRID_IN_PROCESS"] = "1"
-    os.environ["EMBEDDING_MODEL"] = "fake"
+    monkeypatch.setenv("EMBEDDING_MODEL", "fake")
     os.environ["REFRAG_GATE_FIRST"] = "1"  # ensure Tier-1 gate-first path is active
 
     # Stub embeddings everywhere (FakeEmbedder produces 32-dim vectors)

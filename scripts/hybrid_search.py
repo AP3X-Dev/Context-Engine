@@ -13,6 +13,7 @@ All internal logic has been refactored into smaller, focused modules:
 - hybrid_filters.py: File classification and query DSL parsing
 - hybrid_ranking.py: RRF, scoring, diversification, and micro-span budgeting
 - hybrid_expand.py: Query expansion (synonyms, semantic, LLM-assisted)
+- ingest/graph_edges.py: Pre-computed graph edges for fast symbol graph queries
 
 This façade:
 1. Re-exports all public APIs for backwards compatibility
@@ -44,9 +45,7 @@ if str(_ROOT_DIR) not in sys.path:
 # ---------------------------------------------------------------------------
 from qdrant_client import QdrantClient, models
 
-# ---------------------------------------------------------------------------
-# Re-exports from hybrid_config
-# ---------------------------------------------------------------------------
+from scripts.ingest.graph_edges import get_callees, get_callers, get_graph_collection_name
 from scripts.hybrid_config import (
     # Helper functions
     _safe_int,
@@ -73,6 +72,7 @@ from scripts.hybrid_config import (
     EF_SEARCH,
     SYMBOL_BOOST,
     SYMBOL_EQUALITY_BOOST,
+    GRAPH_CONNECTION_BOOST,
     FNAME_BOOST,
     RECENCY_WEIGHT,
     CORE_FILE_BOOST,
@@ -481,20 +481,28 @@ def run_pure_dense_search(
             must.append(models.FieldCondition(key="metadata.repo", match=models.MatchValue(value=repo)))
     flt = models.Filter(must=must) if must else None
 
-    # Single query embedding - no variants, no expansion
+    # Optional: generate query variants for improved recall (max-score fusion)
+    # Enable via DENSE_QUERY_VARIANTS=1 env var
+    use_variants = os.environ.get("DENSE_QUERY_VARIANTS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    if use_variants:
+        queries_to_embed = _generate_code_query_variants(query)
+    else:
+        queries_to_embed = [query]
+
+    # Embed all query variants
+    # Use query_embed if available (asymmetric models like Jina v3)
     try:
-        embeddings = _embed_queries_cached(model, [query])
+        embeddings = _embed_queries_cached(model, queries_to_embed)
     except Exception:
+        embed_fn = getattr(model, "query_embed", None) or model.embed
         try:
-            embeddings = list(model.embed([query]))
+            embeddings = list(embed_fn(queries_to_embed))
         except Exception:
-            embeddings = [next(model.embed([query]))]
+            embeddings = [next(embed_fn([q])) for q in queries_to_embed]
 
     if not embeddings:
         return []
-
-    query_vec = embeddings[0]
-    vec_list = query_vec.tolist() if hasattr(query_vec, "tolist") else list(query_vec)
 
     # Get client
     client = get_qdrant_client(
@@ -503,29 +511,40 @@ def run_pure_dense_search(
     )
 
     try:
-        # Single dense query - no pooling, no re-scoring
-        ranked_points = dense_query(client, vec_name, vec_list, flt, limit, coll, query_text=query)
+        # Max-score fusion across query variants
+        # Each doc gets the max score across all query variants
+        score_map: Dict[str, Dict[str, Any]] = {}
 
-        # Build output
-        results = []
-        for p in ranked_points:
-            payload = p.payload or {}
-            md = payload.get("metadata") or {}
+        for emb in embeddings:
+            vec_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+            ranked_points = dense_query(client, vec_name, vec_list, flt, limit * 2, coll, query_text=query)
 
-            # Prefer host_path when available (consistent with hybrid search)
-            _path = md.get("host_path") or payload.get("path") or md.get("path") or ""
+            for p in ranked_points:
+                payload = p.payload or {}
+                md = payload.get("metadata") or {}
 
-            results.append({
-                "score": float(getattr(p, "score", 0) or 0),
-                "path": _path,
-                "symbol": payload.get("symbol") or md.get("symbol") or "",
-                "start_line": int(md.get("start_line") or 0),
-                "end_line": int(md.get("end_line") or 0),
-                "code_id": payload.get("code_id") or payload.get("_id") or "",
-                "doc_id": payload.get("code_id") or payload.get("_id") or "",
-                "payload": payload,
-            })
+                # Use doc_id or point id as key
+                doc_id = (
+                    payload.get("doc_id") or payload.get("code_id") or payload.get("_id")
+                    or str(getattr(p, "id", ""))
+                )
+                score = float(getattr(p, "score", 0) or 0)
 
+                if doc_id not in score_map or score > score_map[doc_id]["score"]:
+                    _path = md.get("host_path") or payload.get("path") or md.get("path") or ""
+                    score_map[doc_id] = {
+                        "score": score,
+                        "path": _path,
+                        "symbol": payload.get("symbol") or md.get("symbol") or "",
+                        "start_line": int(md.get("start_line") or 0),
+                        "end_line": int(md.get("end_line") or 0),
+                        "code_id": payload.get("code_id") or payload.get("doc_id") or payload.get("_id") or "",
+                        "doc_id": doc_id,
+                        "payload": payload,
+                    }
+
+        # Sort by score descending and return top limit
+        results = sorted(score_map.values(), key=lambda x: x["score"], reverse=True)[:limit]
         return results
 
     finally:
@@ -538,6 +557,146 @@ def run_pure_dense_search(
 # The function is now in hybrid_embed.py as embed_queries_cached
 # Keep the underscore-prefixed alias for any legacy callers
 
+
+
+# ---------------------------------------------------------------------------
+# Graph-Guided Candidate Injection
+# Uses pre-computed call/import edges to expand the candidate pool.
+# ---------------------------------------------------------------------------
+
+def _inject_graph_neighbors(
+    client: "QdrantClient",
+    graph_collection: str,
+    seeds: List[Any],
+    score_map: Dict[str, Dict[str, Any]],
+    base_collection: str,
+) -> None:
+    """
+    Expand candidate pool by fetching neighbors of 'seeds' from the graph.
+
+    This implements the core of Graph-Guided Candidate Injection by finding
+    logical connections (callers/callees) and ensuring they are in the result pool.
+
+    Args:
+        client: Qdrant client
+        graph_collection: Name of the graph edges collection (e.g., "codebase_graph")
+        seeds: List of Qdrant points to expand from
+        score_map: The current candidate score map to inject into
+        base_collection: The RESOLVED base collection name (must be valid, not None)
+    """
+    if not seeds or not graph_collection or not base_collection:
+        return
+
+    from scripts.ingest.graph_edges import get_callees, get_callers
+
+    neighbor_ids = set()
+    neighbor_refs = []  # (path, symbol) pairs if IDs missing
+
+    for p in seeds:
+        payload = getattr(p, "payload", {}) or {}
+        md = payload.get("metadata", {})
+        sym = md.get("symbol") or payload.get("symbol")
+        if not sym:
+            continue
+
+        repo = md.get("repo")
+
+        # Fetch logical neighbors from pre-indexed graph edges
+        try:
+            # Get callees (what this symbol calls) and callers (who calls this symbol)
+            edges = get_callees(client, graph_collection, sym, repo=repo, limit=5)
+            edges.extend(get_callers(client, graph_collection, sym, repo=repo, limit=3))
+
+            if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                logger.debug(f"Graph navigation for '{sym}': found {len(edges)} edges in {graph_collection}")
+
+            for edge in edges:
+                # FIX: Only use caller_point_id - edge.get("id") is the EDGE doc ID, not chunk ID
+                cid = edge.get("caller_point_id")
+                if cid and str(cid) not in score_map:
+                    neighbor_ids.add(cid)
+                else:
+                    # Fallback to symbol + path lookup if caller_point_id is missing
+                    # FIX: Always use caller_path + caller_symbol - this is the chunk we want
+                    # For "calls" edges: caller_path/caller_symbol is who makes the call
+                    # For "callers" edges: same - caller is the one doing the calling
+                    p_path = edge.get("caller_path")
+                    p_sym = edge.get("caller_symbol")
+                    if p_path and p_sym:
+                        neighbor_refs.append((p_path, p_sym))
+        except Exception:
+            continue
+
+    # 1. Fetch by direct IDs (fast path)
+    if neighbor_ids:
+        try:
+            points = client.retrieve(
+                collection_name=base_collection,
+                ids=list(neighbor_ids),
+                with_payload=True,
+                with_vectors=False
+            )
+            for p in points:
+                _inject_point_to_map(p, score_map)
+        except Exception:
+            pass
+
+    # 2. Fetch by path + symbol fallback (if IDs not available)
+    if neighbor_refs and len(score_map) < 50:  # Safety cap for injection
+        for path, sym in neighbor_refs[:10]:
+            try:
+                # Only if not already present
+                # ADAPTIVE: In file-level graph mode, sym == path, so just check path
+                if sym and sym != path:
+                    already_in = any(
+                        (v["pt"].payload.get("metadata", {}).get("path") == path and
+                         v["pt"].payload.get("metadata", {}).get("symbol") == sym)
+                        for v in score_map.values()
+                    )
+                else:
+                    already_in = any(
+                        v["pt"].payload.get("metadata", {}).get("path") == path
+                        for v in score_map.values()
+                    )
+                if not already_in:
+                    # Low-cost scroll lookup
+                    # ADAPTIVE: If symbol looks like a path (file-level graph), drop symbol filter
+                    must_flt = [models.FieldCondition(key="metadata.path", match=models.MatchValue(value=path))]
+                    if sym and sym != path:
+                        must_flt.append(models.FieldCondition(key="metadata.symbol", match=models.MatchValue(value=sym)))
+                    
+                    res, _ = client.scroll(
+                        collection_name=base_collection,
+                        scroll_filter=models.Filter(must=must_flt),
+                        limit=1
+                    )
+                    if res:
+                        _inject_point_to_map(res[0], score_map)
+            except Exception:
+                continue
+
+def _inject_point_to_map(p: Any, score_map: Dict[str, Dict[str, Any]]) -> None:
+    """Helper to add neighbor into score_map with 'graph' signal."""
+    pid = str(p.id)
+    if pid not in score_map:
+        # Give a small base score so it's ranked, but let boosts/rerank decide final pos.
+        # It gets 'lx' (lexical) and 'd' (dense) of 0 initially.
+        score_map[pid] = {
+            "pt": p,
+            "s": 0.0,
+            "d": 0.0,
+            "lx": 0.0,
+            "sym_sub": 0.0,
+            "sym_eq": 0.0,
+            "fname": 0.0,
+            "core": 0.0,
+            "vendor": 0.0,
+            "langb": 0.0,
+            "rec": 0.0,
+            "test": 0.0,
+            "graph": 0.1,  # Signal that this was a graph injection
+        }
+        score_map[pid]["s"] = 0.1
 
 def run_hybrid_search(
     queries: List[str],
@@ -1052,36 +1211,68 @@ def _run_hybrid_search_impl(
 
     _dt("setup+expand")
 
+    # --- Unified Search Router (Query Intelligence) ---
+    # MUST be initialized before lexical query to determine _use_dense_only
+    from scripts.query_optimizer import get_query_optimizer, QueryType
+    # Use singleton optimizer instance for efficiency (avoids per-request instantiation)
+    # Use actual collection size for proper tuning (fallback to 10000 if unavailable)
+    _coll_size_for_optimizer = _coll_size if _coll_size > 0 else 10000
+    optimizer = get_query_optimizer(collection_size=_coll_size_for_optimizer)
+    profile = optimizer.analyze_query(queries[0] if queries else "", language=language)
+
+    # Adaptive Search Tuning
+    _ef_search = profile.recommended_ef
+    _use_dense_only = profile.use_dense_only
+    _suggested_mode = profile.suggested_mode
+
+    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+        logger.debug(f"Router Decision: {profile.query_type.value} -> mode={_suggested_mode}, EF={_ef_search}")
+
+    # Use intent from optimizer to drive scoring boosts
+    if profile.query_type == QueryType.SEMANTIC or profile.query_type == QueryType.COMPLEX:
+        _query_intent = "conceptual"
+    elif profile.query_type == QueryType.SIMPLE or profile.query_type == QueryType.GRAPH:
+        _query_intent = "identifier"
+    else:
+        _query_intent = "mixed"
+
     # Lexical vector query (with scaled retrieval)
     # Use sparse vectors when LEX_SPARSE_MODE is enabled for lossless matching
     score_map: Dict[str, Dict[str, Any]] = {}
     _used_sparse_lex = False  # Track if we actually used sparse (for scoring)
-    try:
-        if LEX_SPARSE_MODE:
-            sparse_vec = lex_sparse_vector(qlist)
-            lex_results = sparse_lex_query(client, sparse_vec, flt, _scaled_per_query, collection)
-            # Fallback to dense lex if sparse returned empty (collection may not have sparse index)
-            if not lex_results:
-                lex_vec = lex_hash_vector(qlist)
-                lex_results = lex_query(client, lex_vec, flt, _scaled_per_query, collection)
-                if lex_results:
-                    logger.debug("LEX_SPARSE_MODE enabled but sparse query returned empty; fell back to dense lex")
+    lex_results: List[Any] = []
+
+    # FIX: Honor _use_dense_only - skip lexical search entirely when router recommends dense-only
+    if _use_dense_only:
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug("Skipping lexical search: _use_dense_only=True (router recommendation)")
+    else:
+        try:
+            if LEX_SPARSE_MODE:
+                sparse_vec = lex_sparse_vector(qlist)
+                lex_results = sparse_lex_query(client, sparse_vec, flt, _scaled_per_query, collection)
+                # Fallback to dense lex if sparse returned empty (collection may not have sparse index)
+                if not lex_results:
+                    lex_vec = lex_hash_vector(qlist)
+                    lex_results = lex_query(client, lex_vec, flt, _scaled_per_query, collection)
+                    if lex_results:
+                        logger.debug("LEX_SPARSE_MODE enabled but sparse query returned empty; fell back to dense lex")
+                else:
+                    _used_sparse_lex = True  # Actually used sparse vectors
             else:
-                _used_sparse_lex = True  # Actually used sparse vectors
-        else:
-            lex_vec = lex_hash_vector(qlist)
-            lex_results = lex_query(client, lex_vec, flt, _scaled_per_query, collection)
-    except Exception as e:
-        # On sparse query failure, try falling back to dense lex
-        if LEX_SPARSE_MODE:
-            try:
                 lex_vec = lex_hash_vector(qlist)
                 lex_results = lex_query(client, lex_vec, flt, _scaled_per_query, collection)
-                logger.warning("LEX_SPARSE_MODE sparse query failed (%s); fell back to dense lex", e)
-            except Exception:
+        except Exception as e:
+            # On sparse query failure, try falling back to dense lex
+            if LEX_SPARSE_MODE:
+                try:
+                    lex_vec = lex_hash_vector(qlist)
+                    lex_results = lex_query(client, lex_vec, flt, _scaled_per_query, collection)
+                    logger.warning("LEX_SPARSE_MODE sparse query failed (%s); fell back to dense lex", e)
+                except Exception:
+                    lex_results = []
+            else:
                 lex_results = []
-        else:
-            lex_results = []
 
     _dt("lex_query")
 
@@ -1095,8 +1286,41 @@ def _run_hybrid_search_impl(
     else:
         _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W = DENSE_WEIGHT, LEX_VECTOR_WEIGHT, LEXICAL_WEIGHT
 
-    # Intent-based dense boost: conceptual queries need more semantic weight
-    _query_intent = _classify_query_intent(" ".join(qlist))
+    # Force graph injection for graph intent even if disabled by env
+    _graph_injection_active = _env_truthy(os.environ.get("HYBRID_GRAPH_INJECTION", "1"), True)
+    if _suggested_mode == "graph_guided":
+        _graph_injection_active = True
+
+    # --- Mode-based Weight Routing ---
+    # Adjust fusion weights based on suggested_mode from query optimizer
+    _MODE_GRAPH_BOOST_MULT = float(os.environ.get("MODE_GRAPH_BOOST_MULT", "2.5") or 2.5)
+    _MODE_SEMANTIC_DENSE_MULT = float(os.environ.get("MODE_SEMANTIC_DENSE_MULT", "1.5") or 1.5)
+    _MODE_SEMANTIC_LEX_MULT = float(os.environ.get("MODE_SEMANTIC_LEX_MULT", "0.5") or 0.5)
+
+    if _suggested_mode == "graph_guided":
+        # Graph-guided: increase graph connection boost, slight decrease on dense
+        _AD_DENSE_W *= 0.8
+        # Graph boost multiplier will be applied later in scoring
+        _graph_boost_multiplier = _MODE_GRAPH_BOOST_MULT
+    elif _suggested_mode == "semantic_only":
+        # Semantic-only: heavy dense, reduce lexical
+        _AD_DENSE_W *= _MODE_SEMANTIC_DENSE_MULT
+        _AD_LEX_VEC_W *= _MODE_SEMANTIC_LEX_MULT
+        _AD_LEX_TEXT_W *= _MODE_SEMANTIC_LEX_MULT
+        _graph_boost_multiplier = 1.0
+    elif _suggested_mode == "multi_granular":
+        # Multi-granular: balanced but broader retrieval
+        _graph_boost_multiplier = 1.5
+    else:
+        # hybrid (default): no adjustments
+        _graph_boost_multiplier = 1.0
+
+    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+        logger.debug(f"Mode routing: {_suggested_mode} -> dense_w={_AD_DENSE_W:.2f}, lex_w={_AD_LEX_TEXT_W:.2f}, graph_mult={_graph_boost_multiplier:.1f}")
+
+    # --- Intent Classification (Legacy Fallback / Refinement) ---
+    # We keep it for now but prioritze optimizer decision
+    # _query_intent = _classify_query_intent(" ".join(qlist))
     _CONCEPTUAL_DENSE_BOOST = float(os.environ.get("CONCEPTUAL_DENSE_BOOST", "3.0"))
     if _query_intent == "conceptual":
         _AD_DENSE_W *= _CONCEPTUAL_DENSE_BOOST  # Boost dense for semantic queries
@@ -1322,6 +1546,42 @@ def _run_hybrid_search_impl(
         total_dense_results = sum(len(rs) for rs in result_sets)
         logger.debug(f"Dense query returned {total_dense_results} total results across {len(result_sets)} queries")
 
+    # --- Graph-Guided Candidate Injection ---
+    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+        logger.debug(f"Graph Injection Check: lex={len(lex_results or [])} dense={sum(len(rs) for rs in result_sets)}")
+    # Expand candidate pool by fetching neighbors of top semantic/lexical results.
+    try:
+        if _graph_injection_active:
+            # Combine initial results to find top "seeds" for graph expansion
+            seeds = []
+            seen_ids = set()
+            # Interleave lexical and top dense result to get broad seeds
+            if lex_results:
+                for p in lex_results[:3]:
+                    if p.id not in seen_ids:
+                        seeds.append(p)
+                        seen_ids.add(p.id)
+            for rs in result_sets:
+                for p in rs[:3]:
+                    if p.id not in seen_ids:
+                        seeds.append(p)
+                        seen_ids.add(p.id)
+            
+            if seeds:
+                resolved_base_coll = _collection(collection)
+                graph_coll = get_graph_collection_name(resolved_base_coll)
+                # Inject neighbors into score_map
+                before_count = len(score_map)
+                # FIX: Pass resolved collection name, not raw collection parameter
+                _inject_graph_neighbors(client, graph_coll, seeds, score_map, resolved_base_coll)
+                after_count = len(score_map)
+                if after_count > before_count:
+                    logger.info(f"Graph injection added {after_count - before_count} candidates")
+                _dt("graph_injection")
+    except Exception as e:
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(f"Graph injection failed: {e}")
+
     _dt("dense_score_map")
 
     # Optional ReFRAG-style mini-vector gating: add compact-vector RRF if enabled
@@ -1462,8 +1722,8 @@ def _run_hybrid_search_impl(
         else {}
     )
 
-    # Skip PRF in dense-preserving mode (would distort pure dense ordering)
-    if not _DENSE_PRESERVING and prf_enabled and score_map:
+    # Skip PRF in dense-preserving mode or dense-only mode (would distort pure dense ordering)
+    if not _DENSE_PRESERVING and not _use_dense_only and prf_enabled and score_map:
         try:
             top_docs = int(os.environ.get("PRF_TOP_DOCS", "8") or 8)
         except (ValueError, TypeError):
@@ -1725,6 +1985,24 @@ def _run_hybrid_search_impl(
             if ql == sym or ql == sym_path or ql in sym_parts:
                 rec["sym_eq"] += SYMBOL_EQUALITY_BOOST
                 rec["s"] += SYMBOL_EQUALITY_BOOST
+            # Graph connection boost: if result calls or imports a query symbol
+            # Apply mode-based multiplier (_graph_boost_multiplier) for intent routing
+            _eff_graph_boost = GRAPH_CONNECTION_BOOST * _graph_boost_multiplier
+            if _eff_graph_boost > 0 and len(ql) >= 3:
+                calls = md.get("calls") or []
+                imports = md.get("imports") or []
+                # Check if query matches any called/imported symbol
+                for called in calls:
+                    if ql in str(called).lower():
+                        rec["graph"] = rec.get("graph", 0.0) + _eff_graph_boost
+                        rec["s"] += _eff_graph_boost
+                        break
+                else:
+                    for imp in imports:
+                        if ql in str(imp).lower():
+                            rec["graph"] = rec.get("graph", 0.0) + _eff_graph_boost * 0.5
+                            rec["s"] += _eff_graph_boost * 0.5
+                            break
         path = str(md.get("path") or "")
         # Filename boost: production-grade matching (handles snake/camel/kebab, acronyms, etc.)
         if FNAME_BOOST > 0.0 and path:
@@ -2319,6 +2597,7 @@ def _run_hybrid_search_impl(
             "config_penalty": round(float(m.get("cfg", 0.0)), 4),
             "impl_boost": round(float(m.get("impl", 0.0)), 4),
             "doc_penalty": round(float(m.get("doc", 0.0)), 4),
+            "graph": round(float(m.get("graph", 0.0)), 4),
         }
 
         # Add reranker info to components if present
@@ -2330,8 +2609,8 @@ def _run_hybrid_search_impl(
             why = []
             if comp["dense_rrf"]:
                 why.append(f"dense_rrf:{comp['dense_rrf']}")
-            for k in ("lexical", "symbol_substr", "symbol_exact", "fname_boost", "core_boost", "lang_boost", "impl_boost"):
-                if comp[k]:
+            for k in ("lexical", "symbol_substr", "symbol_exact", "fname_boost", "core_boost", "lang_boost", "impl_boost", "graph"):
+                if comp.get(k):
                     why.append(f"{k}:{comp[k]}")
             if comp["vendor_penalty"]:
                 why.append(f"vendor_penalty:{comp['vendor_penalty']}")

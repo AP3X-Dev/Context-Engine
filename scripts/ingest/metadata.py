@@ -223,8 +223,10 @@ def _extract_calls(language: str, text: str) -> List[str]:
 
 
 # Tree-sitter node type mappings per language
-# Maps language -> (call_types, member_field_map)
-# member_field_map: node_type -> (object_field, property_field)
+# Maps language -> {calls, constructors, member}
+# - calls: list of call node types
+# - constructors: list of new/object creation node types
+# - member: node_type -> (object_field, property_field) for qualified names
 _TS_LANG_CONFIG = {
     "python": {
         "calls": ["call"],

@@ -251,3 +251,91 @@ class TestAdaptivePerQuery:
 
         out = ranking_module._adaptive_per_query(base_limit, base_size * 1000, has_filters=False)
         assert out <= 400
+
+
+# ============================================================================
+# Tests: Score Variance Detection (New Feature)
+# ============================================================================
+class TestDetectScoreVariance:
+    """Tests for _detect_score_variance function."""
+
+    def test_empty_scores(self, ranking_module):
+        """Empty scores should return zeros."""
+        result = ranking_module._detect_score_variance([])
+        assert result["cv"] == 0.0
+        assert result["high_variance"] is False
+        assert result["variance"] == 0.0
+
+    def test_insufficient_scores(self, ranking_module):
+        """Less than 3 scores should return zeros."""
+        result = ranking_module._detect_score_variance([0.5, 0.6])
+        assert result["cv"] == 0.0
+        assert result["high_variance"] is False
+
+    def test_identical_scores(self, ranking_module):
+        """Identical scores should have CV=0."""
+        scores = [0.5] * 10
+        result = ranking_module._detect_score_variance(scores)
+        assert result["cv"] == 0.0
+        assert result["high_variance"] is False
+        assert result["variance"] == 0.0
+
+    def test_low_variance(self, ranking_module):
+        """Low variance (CV < 0.3) should not trigger high_variance flag."""
+        scores = [0.75, 0.73, 0.77]
+        result = ranking_module._detect_score_variance(scores)
+        assert result["cv"] < 0.3
+        assert result["high_variance"] is False
+
+    def test_high_variance(self, ranking_module):
+        """High variance (CV > 0.3) should trigger high_variance flag."""
+        scores = [0.9, 0.3, 0.6]
+        result = ranking_module._detect_score_variance(scores)
+        assert result["cv"] > 0.3
+        assert result["high_variance"] is True
+
+    def test_known_cv_calculation(self, ranking_module):
+        """Test CV calculation with known values."""
+        scores = [1.0, 2.0, 3.0, 4.0, 5.0]
+        result = ranking_module._detect_score_variance(scores)
+        assert abs(result["mean"] - 3.0) < 0.01
+        assert abs(result["std"] - 1.414) < 0.01
+        assert abs(result["cv"] - 0.471) < 0.01
+
+    def test_nan_filtering(self, ranking_module):
+        """NaN scores should be filtered out."""
+        scores = [0.8, float("nan"), 0.6, 0.7]
+        result = ranking_module._detect_score_variance(scores)
+        assert abs(result["mean"] - 0.7) < 0.01
+
+    def test_zero_mean_no_div_by_zero(self, ranking_module):
+        """Zero mean should result in CV=0 (avoid division by zero)."""
+        scores = [0.0, 0.0, 0.0]
+        result = ranking_module._detect_score_variance(scores)
+        assert result["cv"] == 0.0
+
+    def test_score_variance_cv(self, ranking_module):
+        """Test CV calculation and high_variance flag for AC4.
+
+        This test validates AC4: Score variance calculation in ranking.py computes
+        coefficient of variation (CV) and returns high_variance=true flag when CV > 0.3.
+        """
+        # Test case 1: CV = 0.4 should trigger high_variance=true
+        scores_high_cv = [0.2, 0.5, 0.8, 0.9]
+        result = ranking_module._detect_score_variance(scores_high_cv)
+        assert result["cv"] > 0.3
+        assert result["high_variance"] is True
+        assert "adaptive_spans_used" not in result  # This counter is added in search.py, not here
+
+        # Test case 2: CV < 0.3 should not trigger high_variance
+        scores_low_cv = [0.7, 0.72, 0.68]
+        result = ranking_module._detect_score_variance(scores_low_cv)
+        assert result["cv"] < 0.3
+        assert result["high_variance"] is False
+
+        # Test case 3: Verify all expected fields present
+        assert "mean" in result
+        assert "std" in result
+        assert "variance" in result
+        assert "cv" in result
+        assert "high_variance" in result

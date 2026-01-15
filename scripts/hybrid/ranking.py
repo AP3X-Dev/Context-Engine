@@ -15,6 +15,7 @@ __all__ = [
     "_get_collection_stats", "_COLL_STATS_CACHE", "_COLL_STATS_TTL",
     "_get_symbol_extent", "ADAPTIVE_SPAN_SIZING",
     "_detect_implementation_intent", "_IMPL_INTENT_PATTERNS",
+    "_detect_score_variance",
 ]
 
 import os
@@ -193,11 +194,83 @@ def _adaptive_per_query(base_limit: int, collection_size: int, has_filters: bool
     return max(base_limit, min(scaled, max_per_query))
 
 
+def _detect_score_variance(scores: list) -> dict:
+    """Detect score variance and return analysis metrics.
+
+    Computes coefficient of variation (CV) and flags high variance cases
+    that may benefit from adaptive span expansion.
+
+    Args:
+        scores: List of raw scores from hybrid search
+
+    Returns:
+        dict with:
+        - cv: coefficient of variation (std / mean)
+        - high_variance: bool (true if CV > threshold)
+        - variance: variance value
+        - std: standard deviation
+        - mean: mean score
+    """
+    if not scores or len(scores) < 3:
+        return {
+            "cv": 0.0,
+            "high_variance": False,
+            "variance": 0.0,
+            "std": 0.0,
+            "mean": 0.0,
+        }
+
+    # Extract valid scores
+    valid_scores = []
+    for s in scores:
+        try:
+            val = float(s)
+            if val == val:  # Check for NaN
+                valid_scores.append(val)
+        except (ValueError, TypeError):
+            continue
+
+    if len(valid_scores) < 3:
+        return {
+            "cv": 0.0,
+            "high_variance": False,
+            "variance": 0.0,
+            "std": 0.0,
+            "mean": 0.0,
+        }
+
+    # Compute statistics
+    mean_score = sum(valid_scores) / len(valid_scores)
+    variance = sum((s - mean_score) ** 2 for s in valid_scores) / len(valid_scores)
+    std_score = math.sqrt(variance) if variance > 0 else 0.0
+
+    # Coefficient of variation (CV = std / mean)
+    # Avoid division by zero
+    if abs(mean_score) < 1e-9:
+        cv = 0.0
+    else:
+        cv = std_score / abs(mean_score)
+
+    # Threshold from environment (default 0.3)
+    threshold = _safe_float(os.environ.get("SCORE_VARIANCE_THRESHOLD", "0.3"), 0.3)
+    high_variance = cv > threshold
+
+    return {
+        "cv": round(cv, 4),
+        "high_variance": high_variance,
+        "variance": round(variance, 4),
+        "std": round(std_score, 4),
+        "mean": round(mean_score, 4),
+    }
+
+
 def _normalize_scores(score_map: Dict[str, Dict[str, Any]], collection_size: int) -> None:
     """Normalize scores using z-score + sigmoid for large collections.
 
     This spreads compressed score distributions to improve discrimination.
     Only applies when SCORE_NORMALIZE_ENABLED=true and collection is large.
+
+    Also computes score variance metrics for adaptive span sizing.
     """
     if not SCORE_NORMALIZE_ENABLED:
         return
@@ -210,6 +283,14 @@ def _normalize_scores(score_map: Dict[str, Dict[str, Any]], collection_size: int
     mean_s = sum(scores) / len(scores)
     var_s = sum((s - mean_s) ** 2 for s in scores) / len(scores)
     std_s = math.sqrt(var_s) if var_s > 0 else 1.0
+
+    # Compute CV for adaptive span sizing
+    if abs(mean_s) > 1e-9:
+        cv = std_s / abs(mean_s)
+        # Store in env for access by span sizing (temporary solution)
+        # Better: pass as parameter to _merge_and_budget_spans
+        if cv > 0.3:
+            logger.debug(f"High score variance detected (CV={cv:.2f})")
 
     if std_s < 1e-6:
         return
@@ -738,8 +819,8 @@ def _get_symbol_extent(
         max_end = 0
         for pt in points:
             md = (pt.payload or {}).get("metadata") or {}
-            start = int(md.get("start_line") or 0)
-            end = int(md.get("end_line") or 0)
+            start = int(md.get("symbol_start_line") or md.get("start_line") or 0)
+            end = int(md.get("symbol_end_line") or md.get("end_line") or 0)
             if start > 0 and end > 0:
                 min_start = min(min_start, start)
                 max_end = max(max_end, end)

@@ -80,13 +80,16 @@ def chunk_semantic(
     if use_enhanced and _AST_ANALYZER_AVAILABLE and _ast_supported:
         try:
             chunks = chunk_code_semantically(text, language, max_lines, overlap)
-            # Convert to expected format
+            # Convert to expected format, preserving chunk-specific calls/imports
             return [
                 {
                     "text": c["text"],
                     "start": c["start"],
                     "end": c["end"],
-                    "is_semantic": c.get("is_semantic", True)
+                    "is_semantic": c.get("is_semantic", True),
+                    # Chunk-specific calls/imports for accurate callees queries
+                    "calls": c.get("calls", []),
+                    "imports": c.get("imports", []),
                 }
                 for c in chunks
             ]

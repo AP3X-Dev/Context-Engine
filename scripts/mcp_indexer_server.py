@@ -401,6 +401,17 @@ def _start_readyz_server():
                         self.end_headers()
                         payload = {"ok": True, "app": APP_NAME}
                         self.wfile.write(_json_dumps_bytes(payload))
+                    elif self.path == "/health/warmup":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        try:
+                            from scripts.warm_start import get_warmup_status
+                            warmup_status = get_warmup_status()
+                        except Exception:
+                            warmup_status = {"status": "unknown", "latency_ms": None}
+                        payload = {"ok": True, **warmup_status}
+                        self.wfile.write(_json_dumps_bytes(payload))
                     elif self.path == "/tools":
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
@@ -842,6 +853,23 @@ async def qdrant_status(
         }
     except Exception as e:
         return {"collection": coll, "error": str(e)}
+
+
+@mcp.tool()
+async def warmup_status(
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Get current warmup status for models (embedding + reranker).
+
+    Returns:
+    - {"status": "cold"|"warming"|"warm"|"failed", "embedding_ms": float, "reranker_ms": float, "total_ms": float}
+    - or {"status": "failed", "error": "..."}
+    """
+    try:
+        from scripts.warm_start import get_warmup_status
+        return get_warmup_status()
+    except Exception as e:
+        return {"status": "unknown", "error": str(e)}
 
 
 @mcp.tool()
@@ -1398,8 +1426,10 @@ async def symbol_graph(
     limit: Any = None,
     language: Any = None,
     under: Any = None,
+    repo: Any = None,
     session: Any = None,
     output_format: Any = None,
+    depth: Any = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """Query the symbol graph to find callers, definitions, or importers.
@@ -1408,6 +1438,7 @@ async def symbol_graph(
     - "Who calls X?" → query_type="callers"
     - "Where is X defined?" → query_type="definition"
     - "What imports Y?" → query_type="importers"
+    - "What does X call?" → query_type="callees"
 
     Key parameters:
     - symbol: str. The function, class, or module name to search for.
@@ -1415,21 +1446,28 @@ async def symbol_graph(
     - limit: int (default 20). Maximum results to return.
     - language: str (optional). Filter by programming language.
     - under: str (optional). Filter by path prefix.
+    - repo: str (optional). Filter by repository name. Use "*" to search all repos.
     - output_format: "json" (default) or "toon" for token-efficient format.
+    - depth: int (default 1). Multi-hop traversal depth. 2 = callers of callers, etc.
 
     Returns:
-    - {"results": [...], "symbol": str, "query_type": str, "count": int}
+    - {"results": [...], "symbol": str, "query_type": str, "count": int, "depth": int}
     - Each result includes path, start_line, end_line, symbol_path, and relevant context.
+    - Multi-hop results include "hop" (1, 2, ...) and "via" (intermediate symbol).
 
     Example:
     - symbol_graph(symbol="get_embedding_model", query_type="callers")
     - symbol_graph(symbol="ASTAnalyzer", query_type="definition")
     - symbol_graph(symbol="qdrant_client", query_type="importers")
+    - symbol_graph(symbol="my_function", query_type="callers", repo="backend")
+    - symbol_graph(symbol="authenticate", query_type="callers", depth=2)
     """
     if not symbol or not str(symbol).strip():
         return {"error": "symbol parameter is required", "results": []}
 
     _limit = safe_int(limit, default=20, logger=logger, context="symbol_graph.limit")
+    _depth = safe_int(depth, default=1, logger=logger, context="symbol_graph.depth")
+    _depth = max(1, min(5, _depth))  # Clamp depth to [1, 5]
 
     result = await _symbol_graph_impl(
         symbol=str(symbol).strip(),
@@ -1437,8 +1475,10 @@ async def symbol_graph(
         limit=_limit,
         language=str(language).strip() if language else None,
         under=str(under).strip() if under else None,
+        repo=str(repo).strip() if repo else None,
         session=str(session).strip() if session else None,
         ctx=ctx,
+        depth=_depth,
     )
 
     # Format output
@@ -2124,61 +2164,36 @@ if __name__ == "__main__":
     logger.info(f"  Pattern Search: {'enabled' if _PATTERN_SEARCH_ENABLED else 'disabled (set PATTERN_VECTORS=1)'}")
     logger.info("=" * 60)
 
-    # Optional warmups: gated by env flags to avoid delaying readiness on fresh containers
+    # Server warmup: async parallel loading of embedding + reranker models
+    warmup_enabled = os.environ.get("SERVER_WARMUP_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+    if warmup_enabled:
+        logger.info("Starting model warmup (embedding + reranker)...")
+        try:
+            from scripts.warm_start import warmup_all_models
+            warmup_result = asyncio.run(warmup_all_models())
+            logger.info(
+                f"Warmup complete: embedding={warmup_result['embedding_ms']:.1f}ms, "
+                f"reranker={warmup_result['reranker_ms']:.1f}ms, "
+                f"total={warmup_result['total_ms']:.1f}ms"
+            )
+            # Set env var to signal readiness
+            os.environ["SERVER_WARMED"] = "1"
+        except Exception as e:
+            logger.warning(f"Warmup failed (continuing anyway): {e}")
+    else:
+        logger.info("Model warmup disabled (SERVER_WARMUP_ENABLED=0)")
+
+    # Legacy warmup fallback (kept for backward compat)
     try:
         if str(os.environ.get("EMBEDDING_WARMUP", "")).strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
-        }:
+        } and not warmup_enabled:
             _ = _get_embedding_model(
                 os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
             )
-    except Exception:
-        pass
-    try:
-        if str(os.environ.get("RERANK_WARMUP", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        } and str(os.environ.get("RERANKER_ENABLED", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            if str(os.environ.get("RERANK_IN_PROCESS", "")).strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }:
-                try:
-                    from scripts.rerank_local import _get_rerank_session  # type: ignore
-
-                    _ = _get_rerank_session()
-                except Exception:
-                    pass
-            else:
-                # Fire a tiny warmup rerank once via subprocess; ignore failures
-                _env = os.environ.copy()
-                _env["QDRANT_URL"] = QDRANT_URL
-                _env["COLLECTION_NAME"] = _default_collection()
-                _cmd = [
-                    "python",
-                    "/work/scripts/rerank_local.py",
-                    "--query",
-                    "warmup",
-                    "--topk",
-                    "3",
-                    "--limit",
-                    "1",
-                ]
-                subprocess.run(
-                    _cmd, capture_output=True, text=True, env=_env, timeout=10
-                )
     except Exception:
         pass
 

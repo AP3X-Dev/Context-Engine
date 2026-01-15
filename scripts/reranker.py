@@ -137,10 +137,15 @@ def get_reranker_model(model_name: Optional[str] = None) -> Optional[Any]:
                 except Exception:
                     pass
 
-                sess = ort.InferenceSession(
-                    onnx_path,
-                    providers=["CPUExecutionProvider"]
-                )
+                # Default to CPU for production (Kubernetes).
+                # Set ONNX_PROVIDERS env var for local GPU acceleration.
+                providers_env = os.environ.get("ONNX_PROVIDERS", "").strip()
+                if providers_env:
+                    providers = [p.strip() for p in providers_env.split(",") if p.strip()]
+                else:
+                    providers = ["CPUExecutionProvider"]
+
+                sess = ort.InferenceSession(onnx_path, providers=providers)
                 result = (sess, tok)
                 _RERANKER_CACHE["onnx:manual"] = result
                 return result

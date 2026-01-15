@@ -20,6 +20,8 @@ from scripts.ingest.config import (
     LEX_VECTOR_DIM,
     LEX_SPARSE_NAME,
     LEX_SPARSE_MODE,
+    LEX_SPARSE_IDF,
+    LEX_SPLADE_MODE,
     MINI_VECTOR_NAME,
     MINI_VEC_DIM,
     logical_repo_reuse_enabled,
@@ -135,14 +137,32 @@ def _desired_vector_configs(
     except Exception:
         pass
 
-    sparse_cfg = None
-    if LEX_SPARSE_MODE:
-        sparse_cfg = {
-            LEX_SPARSE_NAME: models.SparseVectorParams(
-                index=models.SparseIndexParams(full_scan_threshold=5000)
-            )
-        }
+    sparse_cfg = _get_sparse_config()
     return vectors_cfg, sparse_cfg
+
+
+def _get_sparse_config() -> Optional[Dict[str, Any]]:
+    """Build sparse vector params with optional IDF modifier for BM25-style weighting.
+
+    Returns None if LEX_SPARSE_MODE is disabled.
+    When LEX_SPARSE_IDF is enabled (default), applies IDF modifier so that
+    Qdrant computes inverse document frequency at query time, making rare terms
+    score higher than common terms (BM25-style behavior).
+    """
+    if not LEX_SPARSE_MODE:
+        return None
+    sparse_params_kwargs = {
+        "index": models.SparseIndexParams(full_scan_threshold=5000)
+    }
+    # Enable IDF modifier for proper term importance weighting (like BM25)
+    # This makes rare terms score higher than common terms
+    if LEX_SPARSE_IDF:
+        try:
+            sparse_params_kwargs["modifier"] = models.Modifier.IDF
+        except AttributeError:
+            # Older qdrant-client versions may not have Modifier.IDF
+            pass
+    return {LEX_SPARSE_NAME: models.SparseVectorParams(**sparse_params_kwargs)}
 
 
 def _as_vector_params_diff(vec: models.VectorParams) -> Any:
@@ -346,6 +366,19 @@ def ensure_collection(
                         f"[COLLECTION_WARNING] Collection {name} lacks sparse vector '{LEX_SPARSE_NAME}'. "
                         "Sparse indexing will be skipped for this run."
                     )
+                elif has_sparse and LEX_SPARSE_IDF:
+                    # Check if existing sparse config has IDF modifier
+                    try:
+                        sparse_vec_cfg = sparse_cfg.get(LEX_SPARSE_NAME) if isinstance(sparse_cfg, dict) else None
+                        if sparse_vec_cfg:
+                            modifier = getattr(sparse_vec_cfg, "modifier", None)
+                            if modifier is None:
+                                print(
+                                    f"[COLLECTION_INFO] Collection {name} has sparse vectors but lacks IDF modifier. "
+                                    "Consider recreating with 'ctx index --recreate' for improved BM25-style term weighting."
+                                )
+                    except Exception:
+                        pass  # Ignore detection errors
 
                 missing = {}
                 if not has_lex:
@@ -425,13 +458,7 @@ def ensure_collection(
     except Exception:
         pass
 
-    sparse_cfg = None
-    if LEX_SPARSE_MODE:
-        sparse_cfg = {
-            LEX_SPARSE_NAME: models.SparseVectorParams(
-                index=models.SparseIndexParams(full_scan_threshold=5000)
-            )
-        }
+    sparse_cfg = _get_sparse_config()
     quant_cfg = _get_quantization_config()
     client.create_collection(
         collection_name=name,
@@ -561,13 +588,7 @@ def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: 
             )
     except Exception:
         pass
-    sparse_cfg = None
-    if LEX_SPARSE_MODE:
-        sparse_cfg = {
-            LEX_SPARSE_NAME: models.SparseVectorParams(
-                index=models.SparseIndexParams(full_scan_threshold=5000)
-            )
-        }
+    sparse_cfg = _get_sparse_config()
     quant_cfg = _get_quantization_config()
     client.create_collection(
         collection_name=name,
@@ -783,5 +804,21 @@ def hash_id(text: str, path: str, start: int, end: int) -> int:
 
 
 def embed_batch(model, texts: List[str]) -> List[List[float]]:
-    """Embed a batch of texts using the embedding model."""
-    return [vec.tolist() for vec in model.embed(texts)]
+    """Embed a batch of texts using the embedding model.
+
+    When ASYMMETRIC_EMBEDDING=1, uses passage_embed for documents (if available).
+    This enables asymmetric retrieval with models like Jina v3 that have
+    separate query/passage adapters.
+    """
+    # Check for asymmetric embedding mode
+    asymmetric = (
+        str(os.environ.get("ASYMMETRIC_EMBEDDING", "0")).strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+    if asymmetric and hasattr(model, "passage_embed"):
+        # Use passage_embed for documents (asymmetric models like Jina v3)
+        return [vec.tolist() for vec in model.passage_embed(texts)]
+    else:
+        # Standard symmetric embedding
+        return [vec.tolist() for vec in model.embed(texts)]

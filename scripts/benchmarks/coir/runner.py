@@ -50,6 +50,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Force-disable OpenLit/OTel for benchmarks so they never try to talk to openlit-dashboard
+os.environ["OPENLIT_ENABLED"] = "0"
+os.environ["OTEL_SDK_DISABLED"] = "true"
+
+# Suppress noisy httpx logs (show only WARNING+)
+import logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -87,7 +97,28 @@ class CoIRReport:
         }
 
 
-def _ensure_env_defaults() -> None:
+def _is_apple_silicon() -> bool:
+    """Detect Apple Silicon for GPU/memory optimizations."""
+    import platform
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def _get_onnx_providers() -> List[str]:
+    """Get optimal ONNX providers for current platform."""
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+        # Prefer CoreML on Apple Silicon (uses Neural Engine + GPU)
+        if "CoreMLExecutionProvider" in available:
+            return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in available:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    except Exception:
+        pass
+    return ["CPUExecutionProvider"]
+
+
+def _ensure_env_defaults(use_gpu: bool = False) -> None:
     # Align with other benchmark scripts: fix docker hostname and ensure non-empty URL.
     if "qdrant:" in (os.environ.get("QDRANT_URL", "") or ""):
         os.environ["QDRANT_URL"] = "http://localhost:6333"
@@ -95,6 +126,8 @@ def _ensure_env_defaults() -> None:
         os.environ["QDRANT_URL"] = "http://localhost:6333"
     # Enable in-process reranker for reliability
     os.environ.setdefault("RERANK_IN_PROCESS", "1")
+    # Disable learning reranker for benchmarks (prevents warning spam)
+    os.environ.setdefault("RERANK_LEARNING", "0")
     # Determinism defaults (best-effort; still recorded in runtime info)
     os.environ.setdefault("EMBEDDING_SEED", "42")
     os.environ.setdefault("PYTHONHASHSEED", "0")
@@ -105,6 +138,21 @@ def _ensure_env_defaults() -> None:
     _project_root = Path(__file__).parent.parent.parent.parent
     os.environ.setdefault("RERANKER_ONNX_PATH", str(_project_root / "models" / "model_qint8_avx512_vnni.onnx"))
     os.environ.setdefault("RERANKER_TOKENIZER_PATH", str(_project_root / "models" / "tokenizer.json"))
+
+    # GPU/CoreML acceleration for Apple Silicon
+    if use_gpu or os.environ.get("COIR_USE_GPU", "").lower() in ("1", "true", "yes"):
+        providers = _get_onnx_providers()
+        os.environ["ONNX_PROVIDERS"] = ",".join(providers)
+        # Signal to embedding/reranker code to use GPU providers
+        os.environ["COIR_USE_GPU"] = "1"
+        print(f"[coir] GPU mode enabled, ONNX providers: {providers}")
+
+        # Memory-optimized settings for unified memory (Apple Silicon)
+        if _is_apple_silicon():
+            os.environ.setdefault("COIR_PARALLEL_BATCH", "25")
+            os.environ.setdefault("COIR_RERANK_TOP_N", "30")
+            os.environ.setdefault("EMBED_BATCH_SIZE", "16")
+            print("[coir] Apple Silicon detected: batch_size=25")
 
     try:
         seed = int(os.environ.get("EMBEDDING_SEED", "42") or 42)
@@ -374,7 +422,8 @@ def _evaluate_with_custom_search(
 
         # CRITICAL: Call OUR search() method directly
         # This uses hybrid search + reranking - the full Context-Engine pipeline
-        print(f"[coir] Running Context-Engine search on {len(queries)} queries over {len(corpus)} docs...", flush=True)
+        print(f"[coir] Preparing Context-Engine search: {len(queries)} queries, {len(corpus)} docs (indexing first if needed)...", flush=True)
+        model.task_name = task_name  # Update task for language detection
         task_results = model.search(corpus, queries, top_k=top_k)
 
         # Use coir's evaluation metrics (NDCG, MAP, Recall, Precision)
@@ -388,18 +437,37 @@ def _evaluate_with_custom_search(
             qrels, task_results, k_values
         )
 
+        # Compute MRR (Mean Reciprocal Rank) at various k values
+        mrr_k_values = [1, 3, 5, 10, 100, 1000]
+        mrr = {}
+        for k in mrr_k_values:
+            mrr_sum = 0.0
+            num_queries = 0
+            for qid in qrels:
+                if qid not in task_results:
+                    continue
+                num_queries += 1
+                # Get ranked results sorted by score descending
+                ranked = sorted(task_results[qid].items(), key=lambda x: x[1], reverse=True)[:k]
+                for rank, (doc_id, _) in enumerate(ranked, 1):
+                    if doc_id in qrels[qid] and qrels[qid][doc_id] > 0:
+                        mrr_sum += 1.0 / rank
+                        break
+            mrr[f"MRR@{k}"] = round(mrr_sum / num_queries, 5) if num_queries > 0 else 0.0
+
         metrics = {
             "NDCG": ndcg,
             "MAP": map_score,
             "Recall": recall,
             "Precision": precision,
+            "MRR": mrr,
         }
 
         # Save results
         with open(output_file, "w") as f:
             json_mod.dump({"metrics": metrics, "pipeline": "context-engine-hybrid"}, f, indent=2)
 
-        print(f"[coir] {task_name}: NDCG@10={ndcg.get('NDCG@10', 'N/A')}", flush=True)
+        print(f"[coir] {task_name}: NDCG@10={ndcg.get('NDCG@10', 'N/A')}, MRR@1000={mrr.get('MRR@1000', 'N/A')}", flush=True)
         results[task_name] = metrics
 
     return results
@@ -413,6 +481,8 @@ def run_coir_benchmark_sync(
     top_k: int = 10,
     query_limit: Optional[int] = None,
     corpus_limit: Optional[int] = None,
+    mode: str = "hybrid",
+    skip_index: bool = False,
     **kwargs: Any,
 ) -> CoIRReport:
     """
@@ -426,6 +496,7 @@ def run_coir_benchmark_sync(
       top_k: number of results to retrieve per query
       query_limit: cap query count for faster smoke tests (reliable)
       corpus_limit: cap corpus size for faster smoke tests (reliable)
+      skip_index: skip indexing (use existing collection data)
     """
     _ensure_env_defaults()
 
@@ -456,6 +527,8 @@ def run_coir_benchmark_sync(
         use_hybrid_search=True,
         rerank_enabled=bool(rerank_enabled),
         batch_size=batch_size,
+        mode=mode,
+        skip_index=skip_index,
         **kwargs,
     )
 
@@ -483,6 +556,7 @@ async def run_coir_benchmark(
     top_k: int = 10,
     query_limit: Optional[int] = None,
     corpus_limit: Optional[int] = None,
+    mode: str = "hybrid",
     **kwargs: Any,
 ) -> CoIRReport:
     """Async wrapper for environments that already use asyncio."""
@@ -495,6 +569,7 @@ async def run_coir_benchmark(
         top_k=top_k,
         query_limit=query_limit,
         corpus_limit=corpus_limit,
+        mode=mode,
         **kwargs,
     )
 
@@ -513,20 +588,35 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=10, help="Number of results to retrieve per query")
     parser.add_argument("--no-rerank", action="store_true", help="Disable reranking")
     parser.add_argument("--no-expand", action="store_true", help="Disable query expansion")
+    parser.add_argument("--mode", type=str, default="hybrid", choices=["hybrid", "dense", "lexical"],
+                        help="Search mode: 'hybrid' (default), 'dense' (pure semantic), or 'lexical' (pure BM25-style)")
+    parser.add_argument("--enable-llm", action="store_true", help="Enable LLM query expansion (disabled by default)")
+    parser.add_argument("--skip-index", action="store_true", help="Skip indexing (use existing collection data)")
+    parser.add_argument("--gpu", action="store_true", help="Enable GPU/CoreML acceleration (Apple Silicon/CUDA)")
     parser.add_argument("--output-folder", type=str, default=None, help="Write coir-eval artifacts here")
     parser.add_argument("--output", type=str, default=None, help="Write JSON report to this file")
     parser.add_argument("--json", dest="json_out", action="store_true", help="Print JSON")
     args = parser.parse_args()
+
+    # Initialize env defaults (with GPU support if requested)
+    _ensure_env_defaults(use_gpu=args.gpu)
 
     # Enable Context-Engine features for accurate benchmarking
     if not args.no_expand:
         os.environ.setdefault("HYBRID_EXPAND", "1")
         os.environ.setdefault("SEMANTIC_EXPANSION_ENABLED", "1")
     os.environ.setdefault("HYBRID_IN_PROCESS", "1")
-    
-    
-    # Default: Enable LLM-based pseudo/tags generation
-    os.environ.setdefault("REFRAG_PSEUDO_DESCRIBE", "1")
+
+    # Disable all LLM calls by default for fast benchmarking
+    # Use --enable-llm to enable search-time LLM query expansion
+    if not args.enable_llm:
+        os.environ["LLM_EXPAND_MAX"] = "0"  # Disable LLM query expansion
+        os.environ["REFRAG_DECODER"] = "0"  # Disable decoder entirely
+        os.environ["REFRAG_PSEUDO_DESCRIBE"] = "0"  # Disable pseudo/tags generation
+    else:
+        os.environ.setdefault("LLM_EXPAND_MAX", "3")
+        os.environ.setdefault("REFRAG_PSEUDO_DESCRIBE", "1")
+        print("  [enable-llm] LLM features ENABLED (query expansion, pseudo/tags)")
 
     report = run_coir_benchmark_sync(
         tasks=args.tasks,
@@ -536,6 +626,8 @@ def main() -> None:
         rerank_enabled=not args.no_rerank,
         output_folder=args.output_folder,
         top_k=args.top_k,
+        mode=args.mode,
+        skip_index=args.skip_index,
     )
 
     # Auto-generate output filename if not specified

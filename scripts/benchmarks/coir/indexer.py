@@ -31,6 +31,26 @@ from scripts.benchmarks.qdrant_utils import (
 # Collection prefix for CoIR benchmarks
 COIR_COLLECTION_PREFIX = "coir-bench-"
 
+# Task name -> language mapping for CodeSearchNet datasets
+TASK_LANGUAGE_MAP = {
+    "codesearchnet-python": "python",
+    "codesearchnet-go": "go",
+    "codesearchnet-java": "java",
+    "codesearchnet-javascript": "javascript",
+    "codesearchnet-ruby": "ruby",
+    "codesearchnet-php": "php",
+    "cosqa": "python",
+    "apps": "python",
+    "stackoverflow-qa": "python",  # Mixed, but mostly Python
+    "codetrans-dl": "java",  # Java <-> C# translation
+    "codetrans-contest": "java",
+}
+
+
+def get_task_language(task_name: str) -> str:
+    """Get language for a task name."""
+    return TASK_LANGUAGE_MAP.get(task_name, "python")
+
 
 def get_temp_collection(task_name: str = "default") -> str:
     """Get collection name for a CoIR task."""
@@ -43,23 +63,57 @@ def get_corpus_collection(corpus: List[Dict[str, Any]]) -> str:
     return f"{COIR_COLLECTION_PREFIX}{fp}"
 
 
-def coir_entry_to_doc(entry: Dict[str, Any]) -> BenchmarkDoc:
-    """Convert CoIR entry to BenchmarkDoc."""
+def _infer_language(entry: Dict[str, Any]) -> str:
+    """Infer programming language from CoIR entry.
+
+    Priority:
+    1. Check the 'language' field in entry
+    2. Check the 'lang' field in entry
+    3. Fallback to 'python'
+
+    The function _infer_language only reads entry fields, specifically
+    checking the 'language' and 'lang' keys.
+    """
+    # Check explicit language field
+    lang = entry.get("language", "")
+    if lang:
+        return lang.lower()
+    
+    # Check 'lang' field (some datasets use this)
+    lang = entry.get("lang", "")
+    if lang:
+        return lang.lower()
+    
+    # Fallback to python (most common in CoIR)
+    return "python"
+
+
+def coir_entry_to_doc(entry: Dict[str, Any], task_language: str = "python") -> BenchmarkDoc:
+    """Convert CoIR entry to BenchmarkDoc.
+    
+    Args:
+        entry: CoIR entry dict with _id, text, title, etc.
+        task_language: Language hint from task name (e.g., 'go' for codesearchnet-go)
+    """
     doc_id = entry.get("_id", "")
     text = entry.get("text", "")
     title = entry.get("title", "")
 
     # Combine title + text for embedding (matches original indexer)
     full_text = f"{title}\n{text}".strip() if title else text
+    
+    # Get language: entry-level > task-level > fallback
+    language = _infer_language(entry) or task_language
 
     return BenchmarkDoc(
         doc_id=doc_id,
         text=full_text,
-        language="python",  # CoIR is code retrieval, assume Python
+        language=language,
         metadata={
             "_id": doc_id,
             "title": title,
             "source": "coir",
+            "language": language,
         },
     )
 
@@ -90,6 +144,7 @@ def collection_matches_corpus(
 def index_coir_corpus(
     corpus: List[Dict[str, Any]],
     collection: str,
+    task_name: str = "",
     batch_size: int = 100,
     recreate: bool = False,
     show_progress: bool = True,
@@ -100,6 +155,7 @@ def index_coir_corpus(
     Args:
         corpus: List of {"_id": str, "text": str, "title": str (optional)}
         collection: Qdrant collection name
+        task_name: Task name for language detection (e.g., 'codesearchnet-go')
         batch_size: Batch size for indexing
         recreate: Drop and recreate collection
         show_progress: Show progress (ignored, kept for API compatibility)
@@ -109,7 +165,8 @@ def index_coir_corpus(
         {"indexed": int, "collection": str, "time_s": float, "reused": bool}
     """
     # Convert CoIR entries to generic BenchmarkDoc format
-    docs = [coir_entry_to_doc(e) for e in corpus]
+    task_lang = get_task_language(task_name) if task_name else "python"
+    docs = [coir_entry_to_doc(e, task_language=task_lang) for e in corpus]
 
     # Get client and model
     client = get_qdrant_client()

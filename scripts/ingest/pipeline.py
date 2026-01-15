@@ -50,6 +50,7 @@ from scripts.ingest.symbols import (
     _extract_symbols,
     _choose_symbol_for_chunk,
     extract_symbols_with_tree_sitter,
+    _Sym,
 )
 from scripts.ingest.pseudo import (
     generate_pseudo_tags,
@@ -74,6 +75,14 @@ from scripts.ingest.qdrant import (
     embed_batch,
     PATTERN_VECTOR_NAME,
 )
+from scripts.ingest.graph_edges import (
+    ensure_graph_collection,
+    extract_call_edges,
+    extract_import_edges,
+    upsert_edges,
+    delete_edges_by_path,
+    get_graph_collection_name,
+)
 
 # Import utility functions
 from scripts.utils import sanitize_vector_name as _sanitize_vector_name
@@ -82,6 +91,12 @@ from scripts.utils import lex_sparse_vector_text as _lex_sparse_vector_text
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
+
+try:
+    from scripts.ast_analyzer import get_ast_analyzer
+    _AST_ANALYZER_AVAILABLE = True
+except ImportError:
+    _AST_ANALYZER_AVAILABLE = False
 
 
 def _detect_repo_name_from_path(path: Path) -> str:
@@ -113,6 +128,111 @@ def _is_text_like_language(language: str) -> bool:
     return str(language or "").strip().lower() in _TEXT_LIKE_LANGS
 
 
+def _dedupe_preserve(items: List[str]) -> List[str]:
+    """Deduplicate while preserving order."""
+    out: List[str] = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        out.append(item)
+        seen.add(item)
+    return out
+
+
+def _slice_calls_for_range(calls: List[Any], start: int, end: int) -> List[str]:
+    """Extract call names whose line is within the chunk range."""
+    matched: List[str] = []
+    for call in calls:
+        try:
+            line = int(getattr(call, "line", 0) or 0)
+        except Exception:
+            line = 0
+        if line < start or line > end:
+            continue
+        callee = str(getattr(call, "callee", "") or "")
+        if callee:
+            matched.append(callee)
+    return _dedupe_preserve(matched)
+
+
+def _slice_imports_for_range(imports: List[Any], start: int, end: int) -> List[str]:
+    """Extract import modules whose line is within the chunk range."""
+    matched: List[str] = []
+    for imp in imports:
+        try:
+            line = int(getattr(imp, "line", 0) or 0)
+        except Exception:
+            line = 0
+        if line < start or line > end:
+            continue
+        module = str(getattr(imp, "module", "") or "")
+        if module:
+            matched.append(module)
+    return _dedupe_preserve(matched)
+
+
+def _ast_analyze_file(file_path: Path, language: str, text: str) -> Dict[str, Any]:
+    """Run AST analyzer for richer symbol/call/import metadata when available."""
+    if not _AST_ANALYZER_AVAILABLE:
+        return {}
+    try:
+        analyzer = get_ast_analyzer()
+        analysis = analyzer.analyze_file(str(file_path), language, text)
+    except Exception:
+        return {}
+
+    symbols = analysis.get("symbols", []) or []
+    imports = analysis.get("imports", []) or []
+    calls = analysis.get("calls", []) or []
+
+    symbol_spans: List[Dict[str, Any]] = []
+    symbol_meta_by_path: Dict[str, Any] = {}
+    symbol_meta_by_name: Dict[str, Any] = {}
+    for sym in symbols:
+        name = str(getattr(sym, "name", "") or "")
+        kind = str(getattr(sym, "kind", "") or "")
+        start = int(getattr(sym, "start_line", 0) or 0)
+        end = int(getattr(sym, "end_line", 0) or 0)
+        path = str(getattr(sym, "path", "") or "") or name
+        if not name or not start or not end:
+            continue
+        symbol_spans.append(
+            _Sym(name=name, kind=kind, start=start, end=end, path=path)
+        )
+        symbol_meta_by_path[path] = sym
+        symbol_meta_by_name.setdefault(name, sym)
+
+    import_modules = _dedupe_preserve(
+        [str(getattr(imp, "module", "") or "") for imp in imports if getattr(imp, "module", None)]
+    )
+    call_names = _dedupe_preserve(
+        [str(getattr(call, "callee", "") or "") for call in calls if getattr(call, "callee", None)]
+    )
+
+    symbol_calls: Dict[str, List[str]] = {}
+    for call in calls:
+        caller = str(getattr(call, "caller", "") or "")
+        callee = str(getattr(call, "callee", "") or "")
+        if not caller or not callee:
+            continue
+        symbol_calls.setdefault(caller, [])
+        symbol_calls[caller].append(callee)
+    for caller, callees in list(symbol_calls.items()):
+        symbol_calls[caller] = _dedupe_preserve(callees)
+
+    return {
+        "symbol_spans": symbol_spans,
+        "symbol_meta_by_path": symbol_meta_by_path,
+        "symbol_meta_by_name": symbol_meta_by_name,
+        "imports": import_modules,
+        "calls": call_names,
+        "import_refs": imports,
+        "call_refs": calls,
+        "symbol_calls": symbol_calls,
+    }
+
+
 def _select_dense_text(
     *,
     info: str,
@@ -123,16 +243,16 @@ def _select_dense_text(
 ) -> str:
     """Choose the text used for dense embedding.
 
-    Default is code+info for semantic context plus a code snippet.
-    - info = "{language} code from {path} lines {start}-{end}. {first_line}" (baseline that worked)
+    Default is info+pseudo+tags to emphasize intent-rich context:
+    - info = "{language} code from {path} lines {start}-{end}. {first_line}"
     - pseudo/tags = semantic enrichment from LLM
     Dense captures the "what" (intent), lexical handles the "how" (code body).
     """
-    mode = (
-        (str(mode) if mode is not None else str(os.environ.get("INDEX_DENSE_MODE", "info+pseudo+tags") or ""))
-        .strip()
-        .lower()
-    )
+    if mode is None:
+        env_mode = str(os.environ.get("INDEX_DENSE_MODE", "") or "").strip().lower()
+        mode = env_mode or "info+pseudo+tags"
+    else:
+        mode = str(mode).strip().lower()
     # Default dense cap depends on embedding model context window.
     # bge-m3 supports ~8k tokens, so we allow a larger character budget to preserve code context.
     max_chars_env = os.environ.get("INDEX_DENSE_MAX_CHARS")
@@ -415,8 +535,21 @@ def _index_single_file_inner(
     if dedupe:
         delete_points_by_path(client, collection, str(file_path))
 
-    symbols = _extract_symbols(language, text)
-    imports, calls = _get_imports_calls(language, text)
+    ast_info = _ast_analyze_file(file_path, language, text)
+    symbols = ast_info.get("symbol_spans") or _extract_symbols(language, text)
+    imports = ast_info.get("imports")
+    calls = ast_info.get("calls")
+    if "imports" not in ast_info or "calls" not in ast_info:
+        base_imports, base_calls = _get_imports_calls(language, text)
+        if "imports" not in ast_info:
+            imports = base_imports
+        if "calls" not in ast_info:
+            calls = base_calls
+    symbol_meta_by_path = ast_info.get("symbol_meta_by_path", {})
+    symbol_meta_by_name = ast_info.get("symbol_meta_by_name", {})
+    ast_call_refs = ast_info.get("call_refs", [])
+    ast_import_refs = ast_info.get("import_refs", [])
+    symbol_calls = ast_info.get("symbol_calls", {})
     last_mod, churn_count, author_count = _git_metadata(file_path)
 
     CHUNK_LINES = int(os.environ.get("INDEX_CHUNK_LINES", "120") or 120)
@@ -521,6 +654,29 @@ def _index_single_file_inner(
         if not ch.get("symbol_path") and sym_path:
             ch["symbol_path"] = sym_path
 
+        if not ch.get("calls") and ast_call_refs:
+            ch["calls"] = _slice_calls_for_range(ast_call_refs, ch["start"], ch["end"])
+        if not ch.get("imports") and ast_import_refs:
+            ch["imports"] = _slice_imports_for_range(ast_import_refs, ch["start"], ch["end"])
+
+        symbol_info = None
+        if sym_path:
+            symbol_info = symbol_meta_by_path.get(sym_path)
+        if symbol_info is None and sym:
+            symbol_info = symbol_meta_by_name.get(sym)
+        if symbol_info is not None:
+            ch["symbol_start_line"] = int(getattr(symbol_info, "start_line", 0) or 0)
+            ch["symbol_end_line"] = int(getattr(symbol_info, "end_line", 0) or 0)
+            signature = str(getattr(symbol_info, "signature", "") or "")
+            docstring = str(getattr(symbol_info, "docstring", "") or "")
+            parent = str(getattr(symbol_info, "parent", "") or "")
+            if signature:
+                ch["symbol_signature"] = signature
+            if docstring:
+                ch["symbol_docstring"] = docstring
+            if parent:
+                ch["symbol_parent"] = parent
+
         _cur_path = str(file_path)
         _host_path, _container_path = _compute_host_and_container_paths(_cur_path)
 
@@ -540,8 +696,15 @@ def _index_single_file_inner(
                 "end_line": ch["end"],
                 "code": ch["text"],
                 "file_hash": file_hash,
-                "imports": imports,
-                "calls": calls,
+                # Use chunk-specific calls/imports when available (semantic chunks),
+                # otherwise fall back to file-level calls/imports
+                "imports": ch.get("imports") if ch.get("imports") else imports,
+                "calls": ch.get("calls") if ch.get("calls") else calls,
+                "symbol_start_line": ch.get("symbol_start_line"),
+                "symbol_end_line": ch.get("symbol_end_line"),
+                "symbol_signature": ch.get("symbol_signature"),
+                "symbol_docstring": ch.get("symbol_docstring"),
+                "symbol_parent": ch.get("symbol_parent"),
                 "ingested_at": int(time.time()),
                 "last_modified_at": int(last_mod),
                 "churn_count": int(churn_count),
@@ -652,6 +815,79 @@ def _index_single_file_inner(
             for i, v, lx, m, lt, ct in zip(batch_ids, vectors, batch_lex, batch_meta, batch_lex_text, batch_code)
         ]
         upsert_points(client, collection, points)
+
+        # Emit graph edges for symbol relationships
+        # Always try symbol-level edges first, fall back to file-level if no symbol_calls
+        try:
+            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+                graph_coll = ensure_graph_collection(client, collection)
+                # Delete old edges for this file before upserting new ones
+                delete_edges_by_path(client, graph_coll, str(file_path), repo=repo_tag)
+
+                all_edges = []
+                if symbol_calls:
+                    # Symbol-level edges: use AST-extracted caller→callee relationships
+                    for caller, callees in symbol_calls.items():
+                        if not caller or not callees:
+                            continue
+                        start_line = None
+                        end_line = None
+                        sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
+                        if sym_info is not None:
+                            try:
+                                start_line = int(getattr(sym_info, "start_line", 0) or 0)
+                                end_line = int(getattr(sym_info, "end_line", 0) or 0)
+                            except Exception:
+                                start_line = None
+                                end_line = None
+                        all_edges.extend(
+                            extract_call_edges(
+                                symbol_path=caller,
+                                calls=callees,
+                                path=str(file_path),
+                                repo=repo_tag,
+                                start_line=start_line,
+                                end_line=end_line,
+                                language=language,
+                            )
+                        )
+                    if imports:
+                        all_edges.extend(
+                            extract_import_edges(
+                                symbol_path=str(file_path),
+                                imports=imports,
+                                path=str(file_path),
+                                repo=repo_tag,
+                                language=language,
+                            )
+                        )
+                else:
+                    # File-level fallback: emit file→symbol edges
+                    source_file_path = str(file_path)
+                    if calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=source_file_path,
+                            calls=calls,
+                            path=source_file_path,
+                            repo=repo_tag,
+                        ))
+                    if imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=source_file_path,
+                            imports=imports,
+                            path=source_file_path,
+                            repo=repo_tag,
+                        ))
+
+                if all_edges:
+                    upsert_edges(client, graph_coll, all_edges)
+        except Exception as e:
+            # Don't fail indexing if graph edges fail
+            try:
+                print(f"[graph_edges] Warning: Failed to emit edges for {file_path}: {e}")
+            except Exception:
+                pass
+
         try:
             ws = os.environ.get("WATCH_ROOT") or os.environ.get("WORKSPACE_PATH") or "/work"
             if set_cached_file_hash:
@@ -1085,7 +1321,13 @@ def process_file_with_smart_reindexing(
         chunks = chunk_lines(text, CHUNK_LINES, CHUNK_OVERLAP)
 
     is_text_like = _is_text_like_language(language)
-    symbol_spans = _extract_symbols(language, text)
+    ast_info = _ast_analyze_file(file_path, language, text)
+    symbol_spans = ast_info.get("symbol_spans") or _extract_symbols(language, text)
+    symbol_meta_by_path = ast_info.get("symbol_meta_by_path", {})
+    symbol_meta_by_name = ast_info.get("symbol_meta_by_name", {})
+    ast_call_refs = ast_info.get("call_refs", [])
+    ast_import_refs = ast_info.get("import_refs", [])
+    symbol_calls = ast_info.get("symbol_calls", {})
 
     reused_points: list[models.PointStruct] = []
     embed_texts: list[str] = []
@@ -1095,7 +1337,14 @@ def process_file_with_smart_reindexing(
     embed_lex_text: list[str] = []
     embed_code: list[str] = []  # Raw code for pattern vectors
 
-    imports, calls = _get_imports_calls(language, text)
+    imports = ast_info.get("imports")
+    calls = ast_info.get("calls")
+    if "imports" not in ast_info or "calls" not in ast_info:
+        base_imports, base_calls = _get_imports_calls(language, text)
+        if "imports" not in ast_info:
+            imports = base_imports
+        if "calls" not in ast_info:
+            calls = base_calls
     last_mod, churn_count, author_count = _git_metadata(file_path)
 
     pseudo_batch_concurrency = int(os.environ.get("PSEUDO_BATCH_CONCURRENCY", "1") or 1)
@@ -1121,6 +1370,31 @@ def process_file_with_smart_reindexing(
         if not ch.get("symbol_path") and sym_path:
             ch["symbol_path"] = sym_path
 
+        # Slice chunk-specific calls/imports from AST refs
+        if not ch.get("calls") and ast_call_refs:
+            ch["calls"] = _slice_calls_for_range(ast_call_refs, ch["start"], ch["end"])
+        if not ch.get("imports") and ast_import_refs:
+            ch["imports"] = _slice_imports_for_range(ast_import_refs, ch["start"], ch["end"])
+
+        # Enrich chunk with symbol metadata
+        symbol_info = None
+        if sym_path:
+            symbol_info = symbol_meta_by_path.get(sym_path)
+        if symbol_info is None and sym:
+            symbol_info = symbol_meta_by_name.get(sym)
+        if symbol_info is not None:
+            ch["symbol_start_line"] = int(getattr(symbol_info, "start_line", 0) or 0)
+            ch["symbol_end_line"] = int(getattr(symbol_info, "end_line", 0) or 0)
+            signature = str(getattr(symbol_info, "signature", "") or "")
+            docstring = str(getattr(symbol_info, "docstring", "") or "")
+            parent = str(getattr(symbol_info, "parent", "") or "")
+            if signature:
+                ch["symbol_signature"] = signature
+            if docstring:
+                ch["symbol_docstring"] = docstring
+            if parent:
+                ch["symbol_parent"] = parent
+
         _cur_path = str(file_path)
         _host_path, _container_path = _compute_host_and_container_paths(_cur_path)
 
@@ -1140,8 +1414,15 @@ def process_file_with_smart_reindexing(
                 "end_line": ch["end"],
                 "code": ch["text"],
                 "file_hash": file_hash,
-                "imports": imports,
-                "calls": calls,
+                # Use chunk-specific calls/imports when available (semantic chunks),
+                # otherwise fall back to file-level calls/imports
+                "imports": ch.get("imports") if ch.get("imports") else imports,
+                "calls": ch.get("calls") if ch.get("calls") else calls,
+                "symbol_start_line": ch.get("symbol_start_line"),
+                "symbol_end_line": ch.get("symbol_end_line"),
+                "symbol_signature": ch.get("symbol_signature"),
+                "symbol_docstring": ch.get("symbol_docstring"),
+                "symbol_parent": ch.get("symbol_parent"),
                 "ingested_at": int(time.time()),
                 "last_modified_at": int(last_mod),
                 "churn_count": int(churn_count),
@@ -1367,6 +1648,79 @@ def process_file_with_smart_reindexing(
     if all_points:
         _upsert_points_fn(client, current_collection, all_points)
 
+        # Emit graph edges for symbol relationships
+        # Always try symbol-level edges first, fall back to file-level if no symbol_calls
+        try:
+            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+                graph_coll = ensure_graph_collection(client, current_collection)
+                delete_edges_by_path(client, graph_coll, fp, repo=per_file_repo)
+
+                all_edges = []
+                if symbol_calls:
+                    # Symbol-level edges: use AST-extracted caller→callee relationships
+                    for caller, callees in symbol_calls.items():
+                        if not caller or not callees:
+                            continue
+                        start_line = None
+                        sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
+                        if sym_info is not None:
+                            try:
+                                start_line = int(getattr(sym_info, "start_line", 0) or 0)
+                            except Exception:
+                                start_line = None
+                        all_edges.extend(
+                            extract_call_edges(
+                                symbol_path=caller,
+                                calls=callees,
+                                path=fp,
+                                repo=per_file_repo,
+                                start_line=start_line,
+                                language=language,
+                            )
+                        )
+                    if imports:
+                        all_edges.extend(
+                            extract_import_edges(
+                                symbol_path=fp,
+                                imports=imports,
+                                path=fp,
+                                repo=per_file_repo,
+                                language=language,
+                            )
+                        )
+                else:
+                    # File-level fallback: emit file→symbol edges
+                    meta0 = {}
+                    try:
+                        if all_points and hasattr(all_points[0], "payload"):
+                            meta0 = all_points[0].payload.get("metadata", {}) or {}
+                    except Exception:
+                        meta0 = {}
+                    file_calls = meta0.get("calls", []) or []
+                    file_imports = meta0.get("imports", []) or []
+                    if file_calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=fp,
+                            calls=file_calls,
+                            path=fp,
+                            repo=per_file_repo,
+                        ))
+                    if file_imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=fp,
+                            imports=file_imports,
+                            path=fp,
+                            repo=per_file_repo,
+                        ))
+
+                if all_edges:
+                    upsert_edges(client, graph_coll, all_edges)
+        except Exception as e:
+            try:
+                print(f"[graph_edges] Warning: Failed to emit edges for {fp}: {e}")
+            except Exception:
+                pass
+
     try:
         if set_cached_symbols:
             set_cached_symbols(fp, symbol_meta, file_hash)
@@ -1572,5 +1926,175 @@ def pseudo_backfill_tick(
 
         if next_offset is None:
             break
+
+    return processed
+
+
+def graph_backfill_tick(
+    client: QdrantClient,
+    collection: str,
+    repo_name: str | None = None,
+    *,
+    max_points: int = 256,
+) -> int:
+    """Backfill graph edges from existing indexed points that have calls/imports metadata.
+
+    This enables seamless graph collection population for legacy collections that were
+    indexed before graph edges were introduced. Runs incrementally, processing points
+    that have calls/imports but haven't been added to the graph collection yet.
+
+    Args:
+        client: Qdrant client
+        collection: Main collection name (graph collection is derived)
+        repo_name: Optional repo filter
+        max_points: Maximum points to process per tick
+
+    Returns:
+        Number of points processed
+    """
+    from qdrant_client import models as _models
+    # Use module-level imports for graph_edges functions (already imported at top)
+
+    if not collection or max_points <= 0:
+        return 0
+
+    # Ensure graph collection exists
+    graph_coll = ensure_graph_collection(client, collection)
+    if not graph_coll:
+        return 0
+
+    # Track which paths we've already backfilled in this session
+    # to avoid re-processing on subsequent ticks
+    backfill_marker_key = "metadata._graph_backfilled"
+
+    # Build filter: points with calls OR imports that haven't been backfilled
+    must_conditions: list[Any] = []
+    if repo_name:
+        must_conditions.append(
+            _models.FieldCondition(
+                key="metadata.repo",
+                match=_models.MatchValue(value=repo_name),
+            )
+        )
+
+    # Note: Qdrant doesn't have a simple "array not empty" filter, so we scroll
+    # all points and check calls/imports presence in code.
+
+    # Check if we should skip already-backfilled points
+    null_cond = getattr(_models, "IsNullCondition", None)
+    if null_cond:
+        try:
+            must_conditions.append(null_cond(is_null=backfill_marker_key))
+        except Exception:
+            pass
+
+    flt = _models.Filter(must=must_conditions or None) if must_conditions else None
+
+    processed = 0
+    next_offset = None
+    edges_created = 0
+    paths_cleaned: set[str] = set()  # Track paths where we've deleted old edges
+
+    while processed < max_points:
+        batch_limit = min(64, max_points - processed)
+        try:
+            points, next_offset = client.scroll(
+                collection_name=collection,
+                scroll_filter=flt,
+                limit=batch_limit,
+                with_payload=True,
+                with_vectors=False,
+                offset=next_offset,
+            )
+        except Exception as e:
+            print(f"[graph_backfill] Scroll error: {e}")
+            break
+
+        if not points:
+            break
+
+        all_edges: list[dict] = []
+        points_to_mark: list[Any] = []
+
+        for pt in points:
+            try:
+                payload = pt.payload or {}
+                md = payload.get("metadata", {})
+
+                path = md.get("path") or md.get("file_path") or ""
+                if not path:
+                    continue
+
+                calls = md.get("calls") or []
+                imports = md.get("imports") or []
+
+                repo = md.get("repo") or repo_name or ""
+                language = md.get("language")
+                symbol_path = md.get("symbol_path")  # No fallback to path - only use true symbol identifiers
+
+                # Delete old edges for this path ONCE before adding new ones
+                # This ensures we don't have stale edges from removed calls/imports
+                if path not in paths_cleaned:
+                    try:
+                        delete_edges_by_path(client, graph_coll, path, repo=repo)
+                    except Exception:
+                        pass  # Non-fatal: proceed with upsert
+                    paths_cleaned.add(path)
+
+                # Skip if no relationship data (but still mark as processed)
+                if not calls and not imports:
+                    pass  # Still mark point below
+                # Extract edges - only if we have a true symbol identifier
+                elif symbol_path:
+                    if calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=symbol_path,
+                            calls=calls,
+                            path=path,
+                            repo=repo,
+                            language=language,
+                        ))
+
+                    if imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=symbol_path,
+                            imports=imports,
+                            path=path,
+                            repo=repo,
+                            language=language,
+                        ))
+                points_to_mark.append(pt)
+                processed += 1
+
+            except Exception as e:
+                print(f"[graph_backfill] Point processing error: {e}")
+                continue
+
+        # Upsert edges in batch
+        if all_edges:
+            try:
+                count = upsert_edges(client, graph_coll, all_edges)
+                edges_created += count
+            except Exception as e:
+                print(f"[graph_backfill] Edge upsert error: {e}")
+
+        # Mark points as backfilled (optional - adds a marker to prevent re-processing)
+        # This is a lightweight update that just sets a flag
+        if points_to_mark and os.environ.get("GRAPH_BACKFILL_MARK", "0").lower() in {"1", "true"}:
+            for pt in points_to_mark:
+                try:
+                    client.set_payload(
+                        collection_name=collection,
+                        payload={"metadata": {"_graph_backfilled": True}},
+                        points=[pt.id],
+                    )
+                except Exception:
+                    pass
+
+        if next_offset is None:
+            break
+
+    if processed > 0:
+        print(f"[graph_backfill] Processed {processed} points, created {edges_created} edges for {len(paths_cleaned)} paths")
 
     return processed

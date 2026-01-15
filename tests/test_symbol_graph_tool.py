@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_symbol_graph_under_uses_path_prefix_matchvalue():
+async def test_symbol_graph_under_uses_path_prefix_matchtext():
     # Import internal helper to validate filter construction without needing a real Qdrant instance.
     from qdrant_client import models as qmodels
     from scripts.mcp_impl import symbol_graph as sg
@@ -31,9 +31,9 @@ async def test_symbol_graph_under_uses_path_prefix_matchvalue():
     keys = [getattr(c, "key", None) for c in must]
     assert "metadata.path_prefix" in keys
 
-    # Ensure it's an exact match (MatchValue), not substring (MatchText)
+    # Ensure it uses MatchText for prefix substring matching
     cond = next(c for c in must if getattr(c, "key", None) == "metadata.path_prefix")
-    assert isinstance(cond.match, qmodels.MatchValue)
-    assert cond.match.value == "/work/scripts"
+    assert isinstance(cond.match, qmodels.MatchText)
+    assert cond.match.text == "/scripts"
 
 

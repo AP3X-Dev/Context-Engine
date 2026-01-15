@@ -1180,9 +1180,14 @@ async def _repo_search_impl(
             _payload = obj.get("payload") if isinstance(obj, dict) else None
             if not isinstance(_payload, dict):
                 _payload = {}
-            # Prefer CoIR's "_id", else CoSQA's "code_id", else any generic "id".
-            _doc_id = _payload.get("_id") or _payload.get("code_id") or _payload.get("id")
-            _code_id = _payload.get("code_id")
+            # Extract doc_id: try result-level first (from run_pure_dense_search), then payload
+            # Priority: doc_id (core_indexer) > _id (CoIR) > code_id (CoSQA) > generic id
+            _doc_id = (
+                obj.get("doc_id")
+                or _payload.get("doc_id") or _payload.get("_id")
+                or _payload.get("code_id") or _payload.get("id")
+            )
+            _code_id = obj.get("code_id") or _payload.get("code_id")
             item = {
                 "score": float(obj.get("score", 0.0)),
                 "path": obj.get("path", ""),
@@ -1218,6 +1223,9 @@ async def _repo_search_impl(
                 item["pseudo"] = obj.get("pseudo")
             if obj.get("tags") is not None:
                 item["tags"] = obj.get("tags")
+            # Pass payload for benchmark consumers (doc_id extraction fallback)
+            if _payload:
+                item["payload"] = _payload
             results.append(item)
 
     # Mode-aware reordering: nudge core implementation code vs docs and non-core when requested

@@ -45,7 +45,7 @@ def test_index_and_search_minirepo(tmp_path, monkeypatch, qdrant_container):
     os.environ["COLLECTION_NAME"] = f"test-{uuid.uuid4().hex[:8]}"
     os.environ["USE_TREE_SITTER"] = "0"
     os.environ["HYBRID_IN_PROCESS"] = "1"
-    os.environ["EMBEDDING_MODEL"] = "fake"
+    monkeypatch.setenv("EMBEDDING_MODEL", "fake")
 
     # Stub embeddings everywhere (FakeEmbedder produces 32-dim vectors)
     monkeypatch.setattr(ing, "TextEmbedding", lambda *a, **k: FakeEmbedder("fake"))
@@ -96,7 +96,7 @@ def test_filters_language_and_path(tmp_path, monkeypatch, qdrant_container):
     os.environ.setdefault("COLLECTION_NAME", f"test-{uuid.uuid4().hex[:8]}")
     os.environ["USE_TREE_SITTER"] = "0"
     os.environ["HYBRID_IN_PROCESS"] = "1"
-    os.environ["EMBEDDING_MODEL"] = "fake"
+    monkeypatch.setenv("EMBEDDING_MODEL", "fake")
 
     # Stub embeddings (FakeEmbedder produces 32-dim vectors)
     monkeypatch.setattr(ing, "TextEmbedding", lambda *a, **k: FakeEmbedder("fake"))

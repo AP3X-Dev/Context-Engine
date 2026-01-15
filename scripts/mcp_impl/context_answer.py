@@ -27,6 +27,7 @@ __all__ = [
     # Pipeline helpers
     "_ca_unwrap_and_normalize",
     "_ca_prepare_filters_and_retrieve",
+    "_ca_inject_subgraph_context",
     "_ca_fallback_and_budget",
     "_ca_build_citations_and_context",
     "_ca_ident_supplement",
@@ -60,6 +61,21 @@ logger = logging.getLogger(__name__)
 # Module-level lock for environment variable manipulation in context_answer
 # Prevents concurrent requests from clobbering each other's env changes
 _CA_ENV_LOCK = threading.Lock()
+
+# Keys to strip from citations for slim MCP output (agents only need path + rel_path)
+_VERBOSE_PATH_KEYS = ("host_path", "container_path", "client_path")
+
+
+def _slim_citations(citations: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Strip verbose path fields from citations for cleaner MCP output.
+    
+    Keeps: id, path, rel_path, start_line, end_line, adaptive_expanded
+    Strips: host_path, container_path, client_path (redundant for agents)
+    """
+    return [
+        {k: v for k, v in cit.items() if k not in _VERBOSE_PATH_KEYS}
+        for cit in citations
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +473,150 @@ def _ca_unwrap_and_normalize(
             "not_": not_,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Subgraph Context Injection
+# ---------------------------------------------------------------------------
+def _extract_symbols_from_items(items: list[Dict[str, Any]]) -> list[str]:
+    """Extract symbol names from search result metadata (AST-extracted)."""
+    symbols = []
+    for item in items:
+        md = item.get("metadata") or item
+        symbol_path = md.get("symbol_path") or md.get("symbol") or ""
+        if symbol_path:
+            leaf = symbol_path.rsplit(".", 1)[-1] if "." in symbol_path else symbol_path
+            if leaf and len(leaf) >= 2:
+                symbols.append(leaf)
+            if "." in symbol_path:
+                symbols.append(symbol_path)
+    # Dedupe while preserving order
+    seen = set()
+    result = []
+    for s in symbols:
+        if s not in seen:
+            seen.add(s)
+            result.append(s)
+    return result[:5]  # Limit to top 5 symbols
+
+
+async def _ca_inject_subgraph_context(
+    items: list[Dict[str, Any]],
+    collection: str,
+    repo: Any = None,
+    max_neighbors: int = 5,
+) -> list[Dict[str, Any]]:
+    """Inject 1-hop graph neighbors into retrieval results.
+
+    Extracts symbols from search result metadata (AST-extracted during indexing),
+    then finds their graph neighbors. Uses ego-graph intersection to prioritize
+    code connected to MULTIPLE symbols over code connected to just one.
+
+    Args:
+        items: Existing retrieval results (with symbol_path metadata)
+        collection: Qdrant collection name
+        repo: Optional repo filter
+        max_neighbors: Max graph neighbors to add
+
+    Returns:
+        Enhanced items list with graph neighbors injected
+    """
+    if not items or not collection:
+        return items
+
+    # Check if subgraph injection is enabled
+    if not os.environ.get("CONTEXT_ANSWER_SUBGRAPH", "1").lower() in {"1", "true", "yes", "on"}:
+        return items
+
+    try:
+        from scripts.mcp_impl.symbol_graph import _symbol_graph_impl
+    except ImportError:
+        return items
+
+    # Extract symbols from search results (AST-extracted, reliable)
+    symbols = _extract_symbols_from_items(items)
+    if not symbols:
+        return items
+
+    # Track existing paths to avoid duplicates
+    existing_paths = {
+        (item.get("metadata", {}).get("path") or item.get("path", ""))
+        for item in items
+    }
+
+    # Ego-graph intersection: collect neighbors per symbol, then find intersection
+    # path -> {symbols that connect to it, result data}
+    path_to_info: Dict[str, Dict[str, Any]] = {}
+
+    for sym in symbols[:4]:  # Query up to 4 symbols
+        try:
+            result = await _symbol_graph_impl(
+                symbol=sym,
+                query_type="callers",
+                limit=max_neighbors * 2,  # Fetch more to find intersections
+                repo=str(repo) if repo else None,
+                collection=collection,
+                depth=1,
+            )
+            for r in result.get("results", []):
+                path = r.get("path", "")
+                if not path or path in existing_paths:
+                    continue
+
+                if path not in path_to_info:
+                    path_to_info[path] = {
+                        "symbols": set(),
+                        "result": r,
+                    }
+                path_to_info[path]["symbols"].add(sym)
+
+        except Exception as e:
+            logger.debug(f"Subgraph injection failed for symbol '{sym}': {e}")
+            continue
+
+    if not path_to_info:
+        return items
+
+    # Sort by intersection count (more symbols = higher priority)
+    sorted_paths = sorted(
+        path_to_info.items(),
+        key=lambda x: len(x[1]["symbols"]),
+        reverse=True,
+    )
+
+    neighbors = []
+    for path, info in sorted_paths[:max_neighbors]:
+        r = info["result"]
+        connected_symbols = info["symbols"]
+        intersection_count = len(connected_symbols)
+
+        # Score based on intersection: 0.7 for intersection, 0.5 for single
+        score = 0.7 if intersection_count > 1 else 0.5
+
+        neighbors.append({
+            "metadata": {
+                "path": path,
+                "start_line": r.get("start_line", 0),
+                "end_line": r.get("end_line", 0),
+                "symbol": r.get("symbol", ""),
+                "symbol_path": r.get("symbol_path", ""),
+                "language": r.get("language", ""),
+            },
+            "information": r.get("snippet", ""),
+            "_graph_injected": True,
+            "_graph_via": list(connected_symbols),
+            "_intersection_count": intersection_count,
+            "score": score,
+        })
+
+    if neighbors:
+        intersection_hits = sum(1 for n in neighbors if n.get("_intersection_count", 0) > 1)
+        logger.debug(
+            f"Injected {len(neighbors)} graph neighbors ({intersection_hits} intersections)"
+        )
+
+    # Append graph neighbors at the end (lower priority than direct hits)
+    return items + neighbors
 
 
 def _ca_prepare_filters_and_retrieve(
@@ -1827,25 +1987,37 @@ def _ca_build_citations_and_context(
         eline = int(it.get("end_line") or 0)
         _hostp = it.get("host_path")
         _contp = it.get("container_path")
-        # Provide both container-absolute and repo-relative forms for compatibility
-        def _norm(p: str) -> str:
+
+        # Compute repo-relative path from container_path (always /work/repo-name/...)
+        def _to_rel_path(container_path: str | None, fallback_path: str) -> str:
+            """Extract repo-relative path from container_path or fallback.
+
+            container_path format: /work/repo-name-hash/scripts/foo.py
+            Returns: scripts/foo.py
+            """
             try:
-                if p.startswith("/work/"):
-                    return p[len("/work/"):]
-                return p.lstrip("/") if p.startswith("/work") else p
+                # Prefer container_path - consistent /work/repo-name/... format
+                if container_path and container_path.startswith("/work/"):
+                    parts = container_path[6:].split("/", 1)  # Skip "/work/"
+                    return parts[1] if len(parts) > 1 else parts[0]
+                # Fallback: try to parse fallback_path if it's a /work path
+                if fallback_path.startswith("/work/"):
+                    parts = fallback_path[6:].split("/", 1)
+                    return parts[1] if len(parts) > 1 else parts[0]
+                # Already relative or unknown format - return as-is
+                if not fallback_path.startswith("/"):
+                    return fallback_path
+                return fallback_path
             except Exception:
-                return p
+                return fallback_path
+
         _cit = {
             "id": idx,
             "path": path,  # keep original for backward compatibility (tests expect /work/...)
-            "rel_path": _norm(path),
+            "rel_path": _to_rel_path(_contp, path),
             "start_line": sline,
             "end_line": eline,
         }
-        if _hostp:
-            _cit["host_path"] = _norm(str(_hostp))
-        if _contp:
-            _cit["container_path"] = str(_contp)
         # Expose adaptive span sizing flag if present
         if it.get("_adaptive_expanded"):
             _cit["adaptive_expanded"] = True
@@ -2733,6 +2905,17 @@ async def _context_answer_impl(
             case = _retr["case"]
             req_language = eff_language
 
+            # Inject subgraph context (1-hop neighbors from AST-extracted symbols)
+            try:
+                items = await _ca_inject_subgraph_context(
+                    items=items,
+                    collection=coll,
+                    repo=repo,
+                    max_neighbors=2,
+                )
+            except Exception as e:
+                logger.debug(f"Subgraph context injection failed: {e}")
+
             fallback_kwargs = dict(kwargs or {})
             for key in ("path_glob", "language", "under"):
                 fallback_kwargs.pop(key, None)
@@ -2967,7 +3150,7 @@ async def _context_answer_impl(
         return {
             "error": "decoder disabled: set REFRAG_RUNTIME or REFRAG_DECODER=1",
             "answer": _fallback_txt.strip(),
-            "citations": citations,
+            "citations": _slim_citations(citations),
             "query": original_queries,
             "used": {"decoder": False, "extractive_fallback": True},
         }
@@ -2992,7 +3175,7 @@ async def _context_answer_impl(
             )
             return {
                 "answer": _fallback_txt.strip(),
-                "citations": citations,
+                "citations": _slim_citations(citations),
                 "query": original_queries,
                 "used": {"gate_first": True, "refrag": True, "deadline_fallback": True},
             }
@@ -3039,7 +3222,7 @@ async def _context_answer_impl(
     except Exception as e:
         return {
             "error": f"decoder call failed: {e}",
-            "citations": citations,
+            "citations": _slim_citations(citations),
             "query": original_queries,
         }
 
@@ -3143,7 +3326,7 @@ async def _context_answer_impl(
 
     out = {
         "answer": answer.strip(),
-        "citations": citations,
+        "citations": _slim_citations(citations),
         "query": original_queries,
         "used": {"gate_first": True, "refrag": True},
     }

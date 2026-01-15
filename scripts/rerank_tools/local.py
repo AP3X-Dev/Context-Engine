@@ -110,12 +110,12 @@ def _get_rerank_session():
                     if "CUDAExecutionProvider" in avail:
                         providers.append("CUDAExecutionProvider")
                     providers.append("CPUExecutionProvider")
+                elif "CUDAExecutionProvider" in avail:
+                    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
                 else:
-                    providers = (
-                        ["CUDAExecutionProvider"]
-                        if "CUDAExecutionProvider" in avail
-                        else []
-                    ) + ["CPUExecutionProvider"]
+                    # Default to CPU for production Kubernetes.
+                    # Benchmarks set ONNX_PROVIDERS for local GPU (CoreML/CUDA).
+                    providers = ["CPUExecutionProvider"]
             # Session options with full graph optimizations
             so = ort.SessionOptions()
             try:

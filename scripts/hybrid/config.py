@@ -9,9 +9,10 @@ __all__ = [
     "_safe_int", "_safe_float", "_env_truthy", "_get_micro_defaults", "_collection",
     "MODEL_NAME", "QDRANT_URL", "API_KEY",
     "LEX_VECTOR_NAME", "LEX_VECTOR_DIM", "LEX_SPARSE_NAME", "LEX_SPARSE_MODE",
+    "LEX_SPARSE_IDF", "LEX_SPLADE_MODE",
     "MINI_VECTOR_NAME", "MINI_VEC_DIM", "HYBRID_MINI_WEIGHT",
     "RRF_K", "DENSE_WEIGHT", "LEXICAL_WEIGHT", "LEX_VECTOR_WEIGHT", "EF_SEARCH",
-    "SYMBOL_BOOST", "SYMBOL_EQUALITY_BOOST", "FNAME_BOOST", "RECENCY_WEIGHT", "CORE_FILE_BOOST",
+    "SYMBOL_BOOST", "SYMBOL_EQUALITY_BOOST", "GRAPH_CONNECTION_BOOST", "FNAME_BOOST", "RECENCY_WEIGHT", "CORE_FILE_BOOST",
     "VENDOR_PENALTY", "LANG_MATCH_BOOST", "CLUSTER_LINES", "TEST_FILE_PENALTY",
     "CONFIG_FILE_PENALTY", "IMPLEMENTATION_BOOST", "DOCUMENTATION_PENALTY",
     "PSEUDO_BOOST", "COMMENT_PENALTY", "COMMENT_RATIO_THRESHOLD", "INTENT_IMPL_BOOST",
@@ -71,13 +72,14 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 API_KEY = os.environ.get("QDRANT_API_KEY")
 
 # Lexical vector configuration
-# Lexical vector configuration
 # Imported from ingest config to ensure Single Source of Truth
 from scripts.ingest.config import (
     LEX_VECTOR_NAME,
     LEX_VECTOR_DIM,
     LEX_SPARSE_NAME,
     LEX_SPARSE_MODE,
+    LEX_SPARSE_IDF,
+    LEX_SPLADE_MODE,
     MINI_VECTOR_NAME,
     MINI_VEC_DIM,
 )
@@ -102,6 +104,9 @@ EF_SEARCH = _safe_int(os.environ.get("QDRANT_EF_SEARCH", "128"), 128)
 SYMBOL_BOOST = _safe_float(os.environ.get("HYBRID_SYMBOL_BOOST", "0.15"), 0.15)
 SYMBOL_EQUALITY_BOOST = _safe_float(
     os.environ.get("HYBRID_SYMBOL_EQUALITY_BOOST", "0.25"), 0.25
+)
+GRAPH_CONNECTION_BOOST = _safe_float(
+    os.environ.get("HYBRID_GRAPH_CONNECTION_BOOST", "0.2"), 0.2
 )
 FNAME_BOOST = _safe_float(
     os.environ.get("HYBRID_FNAME_BOOST", str(SYMBOL_EQUALITY_BOOST * 0.5)),

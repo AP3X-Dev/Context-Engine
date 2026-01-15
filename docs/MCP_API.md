@@ -797,6 +797,8 @@ Supports three query types:
 
 If there are no graph hits, `symbol_graph` falls back to semantic search and returns the same response shape.
 
+**Hydration:** Graph edges only store path/symbol references. The tool automatically fetches actual code snippets from the main collection, so results include `snippet` and accurate `start_line`/`end_line` fields.
+
 **Parameters:**
 - `symbol` (str, required): Symbol name (function/class/module) to navigate
 - `query_type` (str, default `"callers"`): One of `"callers"`, `"definition"`, `"importers"`
@@ -828,7 +830,8 @@ If there are no graph hits, `symbol_graph` falls back to semantic search and ret
       "start_line": 12,
       "end_line": 88,
       "symbol_path": "ASTAnalyzer",
-      "kind": "class"
+      "kind": "class",
+      "snippet": "class ASTAnalyzer:\n    \"\"\"Advanced AST-based code analyzer...\"\n    ..."
     }
   ],
   "symbol": "ASTAnalyzer",
