@@ -11,15 +11,7 @@ This module provides:
 - Lexical vector functions (lex_hash_vector, lex_sparse_vector)
 """
 
-__all__ = [
-    "_POOL_AVAILABLE", "get_qdrant_client", "return_qdrant_client", "pooled_qdrant_client",
-    "_QUERY_EXECUTOR", "_EXECUTOR_LOCK", "_get_query_executor",
-    "_coerce_points", "_legacy_vector_search",
-    "_ENSURED_COLLECTIONS", "_get_client_endpoint", "_ensure_collection",
-    "lex_hash_vector", "lex_sparse_vector",
-    "lex_query", "sparse_lex_query", "dense_query",
-    "_sanitize_filter_obj", "_sanitize_vector_name", "_ensure_payload_indexes",
-]
+# Note: __all__ is defined at the end of this file for clarity
 
 import os
 import logging
