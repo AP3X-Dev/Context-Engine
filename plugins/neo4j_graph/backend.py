@@ -42,6 +42,12 @@ __all__ = [
 # Track all driver instances for cleanup
 _DRIVER_INSTANCES: weakref.WeakSet = weakref.WeakSet()
 
+# Track collections that have been checked for auto-backfill (avoid repeated checks)
+_BACKFILL_CHECKED: set = set()
+
+# Environment variable to disable auto-backfill (enabled by default)
+AUTO_BACKFILL_DISABLED = os.environ.get("NEO4J_AUTO_BACKFILL_DISABLE", "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _cleanup_drivers():
     """Cleanup all Neo4j drivers on process exit."""
@@ -317,11 +323,167 @@ class Neo4jGraphBackend(GraphBackend):
 
             self._initialized_databases.add(db)
             logger.info(f"Neo4j graph store initialized: {db}")
+
+            # Trigger auto-backfill check after initialization
+            if base_collection:
+                self._check_auto_backfill(base_collection)
+
             return base_collection or db
 
         except Exception as e:
             logger.error(f"Failed to initialize Neo4j graph store: {e}")
             return None
+
+    def _count_edges_for_collection(self, collection: str) -> int:
+        """Count edges in Neo4j for a specific collection."""
+        try:
+            driver = self._get_driver()
+            db = self._get_database()
+            with driver.session(database=db) as session:
+                result = session.run("""
+                    MATCH ()-[r:CALLS|IMPORTS {collection: $coll}]->()
+                    RETURN count(r) AS cnt
+                """, coll=collection)
+                record = result.single()
+                return record["cnt"] if record else 0
+        except Exception as e:
+            logger.debug(f"Failed to count Neo4j edges: {e}")
+            return -1  # Return -1 to indicate error, not empty
+
+    def _check_auto_backfill(self, collection: str) -> None:
+        """Check if Neo4j needs backfill from Qdrant and perform it automatically.
+
+        This runs once per collection per process. If Neo4j has no edges but Qdrant
+        has data, edges are automatically backfilled.
+        """
+        global _BACKFILL_CHECKED
+
+        # Skip if disabled via env var
+        if AUTO_BACKFILL_DISABLED:
+            return
+
+        # Only check once per collection
+        if collection in _BACKFILL_CHECKED:
+            return
+        _BACKFILL_CHECKED.add(collection)
+
+        # Check if Neo4j already has edges for this collection
+        edge_count = self._count_edges_for_collection(collection)
+        if edge_count != 0:  # Has edges or error occurred
+            if edge_count > 0:
+                logger.debug(f"Neo4j already has {edge_count} edges for {collection}, skipping backfill")
+            return
+
+        # Check if Qdrant has data to backfill from
+        try:
+            from qdrant_client import QdrantClient
+            qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+            qdrant = QdrantClient(url=qdrant_url, timeout=5)
+
+            try:
+                info = qdrant.get_collection(collection)
+                if info.points_count == 0:
+                    logger.debug(f"Qdrant collection {collection} is empty, skipping backfill")
+                    return
+            except Exception:
+                logger.debug(f"Qdrant collection {collection} not found, skipping backfill")
+                return
+
+            logger.info(f"Neo4j empty for {collection}, starting auto-backfill from Qdrant ({info.points_count} points)...")
+            self._perform_backfill(collection, qdrant)
+
+        except ImportError:
+            logger.debug("qdrant_client not available, skipping auto-backfill")
+        except Exception as e:
+            logger.warning(f"Auto-backfill check failed: {e}")
+
+    def _perform_backfill(self, collection: str, qdrant_client) -> None:
+        """Perform backfill from Qdrant to Neo4j."""
+        try:
+            from scripts.graph_backends.ingest_adapter import extract_call_edges, extract_import_edges
+        except ImportError:
+            logger.warning("ingest_adapter not available, cannot perform auto-backfill")
+            return
+
+        edges = []
+        offset = None
+        total_edges = 0
+        total_points = 0
+
+        try:
+            while True:
+                result = qdrant_client.scroll(
+                    collection_name=collection,
+                    limit=500,
+                    offset=offset,
+                    with_payload=True,
+                )
+                points, offset = result
+                if not points:
+                    break
+
+                for p in points:
+                    payload = p.payload or {}
+                    meta = payload.get("metadata", {})
+
+                    path = meta.get("path", "")
+                    symbol_path = meta.get("symbol_path", "") or path
+                    repo = meta.get("repo", "")
+                    language = meta.get("language", "")
+                    start_line = meta.get("start_line")
+                    end_line = meta.get("end_line")
+
+                    calls = meta.get("calls", []) or []
+                    imports = meta.get("imports", []) or []
+
+                    # Extract edges using ingest_adapter for consistent resolution
+                    call_edges = extract_call_edges(
+                        symbol_path=symbol_path,
+                        calls=calls,
+                        path=path,
+                        repo=repo,
+                        start_line=start_line,
+                        end_line=end_line,
+                        language=language,
+                        caller_point_id=str(p.id),
+                        collection=collection,
+                        qdrant_client=qdrant_client,
+                    )
+                    edges.extend(call_edges)
+
+                    import_edges = extract_import_edges(
+                        symbol_path=symbol_path,
+                        imports=imports,
+                        path=path,
+                        repo=repo,
+                        language=language,
+                        caller_point_id=str(p.id),
+                        collection=collection,
+                        qdrant_client=qdrant_client,
+                    )
+                    edges.extend(import_edges)
+
+                    total_points += 1
+
+                    # Batch upsert
+                    if len(edges) >= 500:
+                        count = self.upsert_edges(collection, edges)
+                        total_edges += count
+                        edges = []
+                        logger.debug(f"Auto-backfill progress: {total_points} points, {total_edges} edges")
+
+                if offset is None:
+                    break
+
+            # Final batch
+            if edges:
+                count = self.upsert_edges(collection, edges)
+                total_edges += count
+
+            logger.info(f"Auto-backfill complete: {total_edges} edges from {total_points} points")
+
+        except Exception as e:
+            logger.error(f"Auto-backfill failed: {e}")
 
     def upsert_edges(
         self,
