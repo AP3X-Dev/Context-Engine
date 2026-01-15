@@ -22,8 +22,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    # Constants
+    "GRAPH_COLLECTION_SUFFIX",
+    "EDGE_TYPE_CALLS",
+    "EDGE_TYPE_IMPORTS",
+    "GRAPH_INDEX_FIELDS",
+    # Utility functions
+    "normalize_path",
+    "edge_id",
+    "get_graph_collection_name",
+    # Collection management
+    "ensure_graph_collection",
+    # Edge extraction
+    "extract_call_edges",
+    "extract_import_edges",
+    # Edge operations
+    "upsert_edges",
+    "delete_edges_by_path",
+    # Query functions
+    "get_callers",
+    "get_callees",
+    "get_importers",
+]
 
-def _normalize_path(path: str) -> str:
+
+def normalize_path(path: str) -> str:
     """Normalize path for consistent edge matching.
 
     Ensures paths are comparable across different call sites.
@@ -35,18 +59,24 @@ def _normalize_path(path: str) -> str:
     # Ensure consistent forward slashes on all platforms
     return normalized.replace("\\", "/")
 
+
+# Backward compatibility alias
+_normalize_path = normalize_path
+
 # Graph collection suffix
 GRAPH_COLLECTION_SUFFIX = "_graph"
 
-# Edge types
+# Edge types - use string values for backward compatibility
+# (EdgeType enum defined in scripts.graph_backends.base for type-safe usage)
 EDGE_TYPE_CALLS = "calls"
 EDGE_TYPE_IMPORTS = "imports"
 
 # Payload index fields for fast lookups
 GRAPH_INDEX_FIELDS = (
     "caller_symbol",
-    "callee_symbol", 
+    "callee_symbol",
     "caller_path",
+    "callee_path",  # For "find by target file" queries
     "edge_type",
     "repo",
 )
@@ -101,6 +131,8 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
         info = client.get_collection(graph_coll)
         _GRAPH_VECTOR_MODE[graph_coll] = _detect_vector_mode(info)
         _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
+        # Clear from missing set if it was previously marked missing
+        _MISSING_GRAPH_COLLECTIONS.discard(graph_coll)
         return graph_coll
     except Exception:
         pass  # Collection doesn't exist, create it
@@ -142,18 +174,21 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
                     logger.warning(f"Failed to create index on {field}: {e}")
 
         _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
+        # Clear from missing set now that it's confirmed to exist
+        _MISSING_GRAPH_COLLECTIONS.discard(graph_coll)
         return graph_coll
 
     except Exception as e:
         if "already exists" in str(e).lower():
             _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
+            _MISSING_GRAPH_COLLECTIONS.discard(graph_coll)
             return graph_coll
         else:
             logger.error(f"Failed to create graph collection {graph_coll}: {e}")
             return None  # Explicit failure
 
 
-def _edge_id(
+def edge_id(
     caller_symbol: str,
     callee_symbol: str,
     caller_path: str,
@@ -165,31 +200,34 @@ def _edge_id(
     Uses full 32-char hex (128 bits) to avoid collision risk at scale.
     Path is normalized before hashing for consistency.
     """
-    norm_path = _normalize_path(caller_path)
+    norm_path = normalize_path(caller_path)
     key = f"{edge_type}:{repo}:{caller_symbol}:{callee_symbol}:{norm_path}"
     return hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
+# Backward compatibility alias
+_edge_id = edge_id
 
 
 def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None) -> str:
     """Resolve a callee symbol to its definition file path.
 
     Resolution order:
-    1. Check if builtin for the given language (via AST analyzer's tree-sitter extraction)
+    1. Check if builtin for the given language (via tree-sitter based detection)
     2. Try symbol resolver cache (cross-file resolution via indexed symbols)
-    3. Check if stdlib module prefix
-    4. Fallback to <external>
+    3. Fallback to <external>
 
     Args:
         callee: The callee symbol name
         repo: Repository name
         language: Programming language for builtin detection (None = skip language-specific checks)
     """
-    # Use AST analyzer's tree-sitter based builtin detection (only if language known)
+    # Use tree-sitter based builtin detection (supports 16+ languages)
     if language:
         try:
             from scripts.ast_analyzer import is_builtin
 
-            # Extract base name for detection
+            # Extract base name for detection (handles qualified names)
             base_name = callee.split(".")[-1] if "." in callee else callee
             base_name = base_name.split("::")[-1] if "::" in base_name else base_name
 
@@ -210,17 +248,7 @@ def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None)
     except Exception:
         pass
 
-    # Check stdlib using AST analyzer (only if language known)
-    if language:
-        try:
-            from scripts.ast_analyzer import is_stdlib
-            if "." in callee:
-                module_prefix = callee.split(".")[0]
-                if is_stdlib(module_prefix, language):
-                    return f"<stdlib>/{callee}"
-        except ImportError:
-            pass
-
+    # Unresolved = external (no hardcoded stdlib lists)
     return f"<external>/{callee}"
 
 
@@ -228,26 +256,15 @@ def _resolve_import_path(imported: str, repo: str, language: Optional[str] = Non
     """Resolve an import to its source file path.
 
     Resolution order:
-    1. Check if stdlib for the given language
-    2. Try symbol resolver cache
-    3. Fallback to <external>
+    1. Try symbol resolver cache (cross-file resolution)
+    2. Fallback to <external>
 
     Args:
         imported: The imported module/symbol name
         repo: Repository name
-        language: Programming language (None = skip language-specific checks)
+        language: Programming language (unused, kept for API compatibility)
     """
-    # Check stdlib using AST analyzer (only if language known)
-    if language:
-        try:
-            from scripts.ast_analyzer import is_stdlib
-            module_base = imported.split(".")[0]
-            if is_stdlib(module_base, language):
-                return f"<stdlib>/{imported}"
-        except ImportError:
-            pass
-
-    # Try cross-file resolution (language-agnostic)
+    # Try cross-file resolution via symbol resolver
     try:
         from scripts.graph_backends.symbol_resolver import get_symbol_resolver
         collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
@@ -259,6 +276,7 @@ def _resolve_import_path(imported: str, repo: str, language: Optional[str] = Non
     except Exception:
         pass
 
+    # Unresolved = external (no hardcoded stdlib lists)
     return f"<external>/{imported}"
 
 

@@ -70,7 +70,7 @@ class KnowledgeGraphStats:
 class Neo4jKnowledgeGraph:
     """
     Production-ready Neo4j Knowledge Graph for Graph RAG.
-    
+
     Features:
     - Async batch operations with connection pooling
     - Rich node types and semantic relationships
@@ -78,12 +78,13 @@ class Neo4jKnowledgeGraph:
     - Embedding storage for semantic similarity
     - Subgraph extraction for RAG context
     """
-    
-    _driver = None
-    _initialized: Set[str] = set()
-    
+
+    # Class-level cache for initialized databases (shared across instances)
+    _initialized_databases: Set[str] = set()
+
     def __init__(self):
         """Initialize knowledge graph service."""
+        self._driver = None
         self._uri = NEO4J_URI
         self._user = NEO4J_USER
         self._password = NEO4J_PASSWORD
@@ -115,7 +116,7 @@ class Neo4jKnowledgeGraph:
     
     def initialize_schema(self) -> bool:
         """Initialize Neo4j schema with indexes and constraints."""
-        if self._database in self._initialized:
+        if self._database in self._initialized_databases:
             return True
         
         driver = self._get_driver()
@@ -157,7 +158,7 @@ class Neo4jKnowledgeGraph:
                 except Exception:
                     pass  # Fulltext may already exist
             
-            self._initialized.add(self._database)
+            self._initialized_databases.add(self._database)
             logger.info(f"Neo4j schema initialized for {self._database}")
             return True
 

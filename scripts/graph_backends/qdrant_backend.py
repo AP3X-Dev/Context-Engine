@@ -28,19 +28,21 @@ EDGE_TYPE_IMPORTS = "imports"
 
 class QdrantGraphBackend(GraphBackend):
     """Qdrant-based graph storage backend.
-    
+
     Uses Qdrant collections with payload-only points (no vectors)
     to store graph edges with indexed lookups.
     """
-    
-    _client: Optional["QdrantClient"] = None
-    
+
+    def __init__(self):
+        """Initialize the Qdrant graph backend."""
+        self._client: Optional["QdrantClient"] = None
+
     @property
     def backend_type(self) -> str:
         return "qdrant"
-    
+
     def _get_client(self) -> "QdrantClient":
-        """Get or create Qdrant client (lazy singleton)."""
+        """Get or create Qdrant client (lazy singleton per instance)."""
         if self._client is None:
             from qdrant_client import QdrantClient
             self._client = QdrantClient(
@@ -49,6 +51,15 @@ class QdrantGraphBackend(GraphBackend):
                 timeout=float(os.environ.get("QDRANT_TIMEOUT", "60") or 60),
             )
         return self._client
+
+    def close(self) -> None:
+        """Close the Qdrant client connection."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
     
     def ensure_graph_store(self, base_collection: str) -> Optional[str]:
         """Ensure graph collection exists in Qdrant."""

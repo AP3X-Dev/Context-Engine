@@ -40,7 +40,11 @@ _INITIALIZED_DATABASES: set[str] = set()
 
 
 def _normalize_path(path: str) -> str:
-    """Normalize path for consistent edge matching."""
+    """Normalize path for consistent edge matching.
+
+    Note: Standalone definition for plugin independence. Mirrors
+    scripts.ingest.graph_edges.normalize_path for consistency.
+    """
     if not path:
         return ""
     normalized = os.path.normpath(path)
@@ -49,46 +53,48 @@ def _normalize_path(path: str) -> str:
 
 class Neo4jGraphBackend(GraphBackend):
     """Neo4j-based graph storage backend.
-    
+
     Uses Neo4j's native graph storage with Cypher queries for:
     - Fast relationship traversals
     - Multi-hop path finding
     - Cross-repo dependency analysis
-    
+
     Schema:
     - (:Symbol {name, path, repo, collection, language})
     - (:File {path, repo, collection})
     - [:CALLS {edge_id, collection, caller_path, start_line, end_line, repo}]
     - [:IMPORTS {edge_id, collection, caller_path, repo}]
     """
-    
-    _driver = None
-    _driver_initialized = False
-    
+
+    def __init__(self):
+        """Initialize the Neo4j graph backend."""
+        self._driver = None
+        self._driver_initialized = False
+
     @property
     def backend_type(self) -> str:
         return "neo4j"
-    
+
     def _get_driver(self):
-        """Get or create Neo4j driver (lazy singleton with connection pooling)."""
+        """Get or create Neo4j driver (lazy singleton per instance with connection pooling)."""
         if self._driver is not None:
             return self._driver
-        
+
         try:
             from neo4j import GraphDatabase
         except ImportError:
             raise ImportError(
                 "neo4j package not installed. Install with: pip install neo4j"
             )
-        
+
         uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
         user = os.environ.get("NEO4J_USER", "neo4j")
         password = os.environ.get("NEO4J_PASSWORD", "")
         max_pool = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
-        
+
         if not password:
             logger.warning("NEO4J_PASSWORD not set - using empty password")
-        
+
         self._driver = GraphDatabase.driver(
             uri,
             auth=(user, password),

@@ -13,7 +13,6 @@ it delegates directly to the existing graph_edges.py functions.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -24,32 +23,36 @@ if TYPE_CHECKING:
 from . import GRAPH_BACKEND_TYPE, get_graph_backend
 from .base import GraphEdge
 
+# Import shared utilities from graph_edges (single source of truth)
+from scripts.ingest.graph_edges import (
+    normalize_path,
+    edge_id,
+    EDGE_TYPE_CALLS,
+    EDGE_TYPE_IMPORTS,
+    GRAPH_COLLECTION_SUFFIX,
+)
+
 logger = logging.getLogger(__name__)
 
-# Re-export constants for compatibility
-EDGE_TYPE_CALLS = "calls"
-EDGE_TYPE_IMPORTS = "imports"
-GRAPH_COLLECTION_SUFFIX = "_graph"
+# AST-based builtin detection using tree-sitter (supports 16+ languages)
+try:
+    from scripts.ast_analyzer import is_builtin
+    _AST_AVAILABLE = True
+except ImportError:
+    _AST_AVAILABLE = False
+
+    def is_builtin(name: str, language: str) -> bool:
+        """Fallback when ast_analyzer unavailable.
+
+        Returns False - without tree-sitter, we can't detect builtins.
+        Everything unresolved becomes <external>.
+        """
+        return False
 
 
-def _normalize_path(path: str) -> str:
-    """Normalize path for consistent edge matching."""
-    if not path:
-        return ""
-    return os.path.normpath(path).replace("\\", "/")
-
-
-def _edge_id(
-    caller_symbol: str,
-    callee_symbol: str,
-    caller_path: str,
-    edge_type: str,
-    repo: str,
-) -> str:
-    """Generate deterministic edge ID."""
-    norm_path = _normalize_path(caller_path)
-    key = f"{edge_type}:{repo}:{caller_symbol}:{callee_symbol}:{norm_path}"
-    return hashlib.sha256(key.encode()).hexdigest()[:32]
+# Backward compatibility aliases
+_normalize_path = normalize_path
+_edge_id = edge_id
 
 
 def extract_call_edges(
@@ -98,8 +101,8 @@ def extract_call_edges(
         try:
             from .symbol_resolver import get_symbol_resolver
             resolver = get_symbol_resolver(collection)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not get symbol resolver for {collection}: {e}")
 
     for callee in calls:
         if not callee:
@@ -128,32 +131,20 @@ def extract_call_edges(
                 resolved = resolver.resolve_symbol(callee, repo)
                 if resolved:
                     callee_path = resolved
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to resolve symbol {callee}: {e}")
 
         # 4. For unresolved callees, use a deterministic stub path
         # This ensures all references to "print" go to the same "<builtin>/print" node
         if not callee_path:
-            # Categorize: builtins vs external vs unknown
-            python_builtins = {
-                "print", "len", "range", "str", "int", "float", "bool", "list", "dict",
-                "set", "tuple", "open", "type", "isinstance", "getattr", "setattr",
-                "hasattr", "super", "property", "classmethod", "staticmethod", "enumerate",
-                "zip", "map", "filter", "sorted", "reversed", "min", "max", "sum", "abs",
-                "all", "any", "repr", "format", "input", "id", "hash", "iter", "next",
-                "callable", "vars", "dir", "globals", "locals", "eval", "exec", "compile",
-            }
-            js_builtins = {
-                "console", "log", "warn", "error", "setTimeout", "setInterval",
-                "fetch", "Promise", "JSON", "Array", "Object", "String", "Number",
-                "Boolean", "Date", "Math", "RegExp", "Error", "Map", "Set",
-            }
-
             base_callee = callee.split(".")[-1] if "." in callee else callee
-            if base_callee in python_builtins or base_callee in js_builtins:
+            lang = language or "python"
+
+            # Use tree-sitter based builtin detection (supports 16+ languages)
+            if is_builtin(base_callee, lang):
                 callee_path = f"<builtin>/{base_callee}"
             else:
-                # External or unresolved - use module prefix if available
+                # External or unresolved - symbol resolver will handle cross-file resolution
                 callee_path = f"<external>/{callee}"
 
         edge_id = _edge_id(symbol_path, callee, norm_path, EDGE_TYPE_CALLS, repo)
@@ -198,24 +189,25 @@ def extract_import_edges(
         try:
             from .symbol_resolver import get_symbol_resolver
             resolver = get_symbol_resolver(collection)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not get symbol resolver for {collection}: {e}")
 
     for imported in imports:
         if not imported:
             continue
 
-        # Try to resolve import to actual file path
+        # Try to resolve import to actual file path via symbol resolver
         callee_path = None
         if resolver:
             try:
                 callee_path = resolver.resolve_import(imported, repo)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to resolve import {imported}: {e}")
 
-        # Fall back to module stub if not resolved
+        # Fall back to external stub if not resolved
+        # Symbol resolver handles cross-file resolution; unresolved = external
         if not callee_path:
-            callee_path = f"<module>/{imported}"
+            callee_path = f"<external>/{imported}"
 
         edge_id = _edge_id(caller, imported, norm_path, EDGE_TYPE_IMPORTS, repo)
         edges.append(GraphEdge(
