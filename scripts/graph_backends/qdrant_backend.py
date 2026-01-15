@@ -114,3 +114,99 @@ class QdrantGraphBackend(GraphBackend):
         from scripts.ingest.graph_edges import get_importers as qdrant_get_importers
         return qdrant_get_importers(self._get_client(), graph_store, module, repo, limit)
 
+    def resolve_symbol(
+        self,
+        graph_store: str,
+        symbol_name: str,
+        repo: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve a symbol name to its definition file path via Qdrant.
+        
+        Queries the main collection (not graph store) for chunks with
+        matching symbol_path metadata.
+        """
+        # Extract base collection name from graph store
+        collection = graph_store
+        if collection.endswith(GRAPH_COLLECTION_SUFFIX):
+            collection = collection[:-len(GRAPH_COLLECTION_SUFFIX)]
+
+        try:
+            from qdrant_client import models as qmodels
+
+            must = [
+                qmodels.FieldCondition(
+                    key="symbol_path",
+                    match=qmodels.MatchValue(value=symbol_name),
+                )
+            ]
+            if repo:
+                must.append(
+                    qmodels.FieldCondition(
+                        key="repo",
+                        match=qmodels.MatchValue(value=repo),
+                    )
+                )
+
+            result, _ = self._get_client().scroll(
+                collection_name=collection,
+                scroll_filter=qmodels.Filter(must=must),
+                limit=1,
+                with_payload=["path"],
+                with_vectors=False,
+            )
+            if result:
+                return result[0].payload.get("path")
+        except Exception as e:
+            logger.debug(f"Qdrant symbol lookup failed: {e}")
+        return None
+
+    def resolve_import(
+        self,
+        graph_store: str,
+        import_name: str,
+        repo: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve an import to its source file path via Qdrant.
+        
+        Converts dotted import names to file path patterns and searches
+        the main collection.
+        """
+        # Extract base collection name from graph store
+        collection = graph_store
+        if collection.endswith(GRAPH_COLLECTION_SUFFIX):
+            collection = collection[:-len(GRAPH_COLLECTION_SUFFIX)]
+
+        # Convert dotted import to file path suffix
+        module_path = import_name.replace(".", "/")
+
+        try:
+            from qdrant_client import models as qmodels
+
+            # Search for files ending with the module path
+            must = [
+                qmodels.FieldCondition(
+                    key="path",
+                    match=qmodels.MatchText(text=f"/{module_path}.py"),
+                )
+            ]
+            if repo:
+                must.append(
+                    qmodels.FieldCondition(
+                        key="repo",
+                        match=qmodels.MatchValue(value=repo),
+                    )
+                )
+
+            result, _ = self._get_client().scroll(
+                collection_name=collection,
+                scroll_filter=qmodels.Filter(must=must),
+                limit=1,
+                with_payload=["path"],
+                with_vectors=False,
+            )
+            if result:
+                return result[0].payload.get("path")
+        except Exception as e:
+            logger.debug(f"Qdrant import lookup failed: {e}")
+        return None
+

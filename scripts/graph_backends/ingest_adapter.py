@@ -97,7 +97,7 @@ def extract_call_edges(
     if collection and os.environ.get("RESOLVE_CROSS_FILE_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
         try:
             from .symbol_resolver import get_symbol_resolver
-            resolver = get_symbol_resolver(collection, qdrant_client)
+            resolver = get_symbol_resolver(collection)
         except Exception:
             pass
 
@@ -197,7 +197,7 @@ def extract_import_edges(
     if collection and os.environ.get("RESOLVE_CROSS_FILE_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
         try:
             from .symbol_resolver import get_symbol_resolver
-            resolver = get_symbol_resolver(collection, qdrant_client)
+            resolver = get_symbol_resolver(collection)
         except Exception:
             pass
 
