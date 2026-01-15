@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -51,12 +52,27 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")
 NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
 NEO4J_MAX_POOL_SIZE = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
 
+# Fail fast on empty password when Neo4j is explicitly enabled
+_NEO4J_GRAPH_ENABLED = os.environ.get("NEO4J_GRAPH", "").strip().lower() in {"1", "true", "yes", "on"}
+if _NEO4J_GRAPH_ENABLED and not NEO4J_PASSWORD:
+    logger.warning(
+        "NEO4J_GRAPH=1 but NEO4J_PASSWORD is empty. "
+        "Set NEO4J_PASSWORD environment variable for production use."
+    )
+
+# Allowlist of valid node type labels for Cypher queries (security)
+_VALID_NODE_LABELS: frozenset[str] = frozenset(nt.value for nt in NodeType)
+
 # Batch sizes for production
 BATCH_SIZE_NODES = int(os.environ.get("NEO4J_BATCH_NODES", "500") or 500)
 BATCH_SIZE_RELS = int(os.environ.get("NEO4J_BATCH_RELS", "1000") or 1000)
 
 # Maximum allowed depth for graph traversals (security limit)
 MAX_GRAPH_DEPTH = 10
+
+# Transaction timeout in seconds (default: 30s, long queries like PageRank: 120s)
+DEFAULT_TX_TIMEOUT = int(os.environ.get("NEO4J_TX_TIMEOUT", "30") or 30)
+LONG_TX_TIMEOUT = int(os.environ.get("NEO4J_LONG_TX_TIMEOUT", "120") or 120)
 
 
 def _sanitize_depth(depth: int, default: int = 2, max_depth: int = MAX_GRAPH_DEPTH) -> int:
@@ -113,91 +129,121 @@ class Neo4jKnowledgeGraph:
     """
 
     # Class-level cache for initialized databases (shared across instances)
+    # Protected by _db_init_lock for thread safety
     _initialized_databases: Set[str] = set()
+    _db_init_lock: threading.Lock = threading.Lock()
 
     def __init__(self):
         """Initialize knowledge graph service."""
         self._driver = None
+        self._driver_lock = threading.Lock()
         self._uri = NEO4J_URI
         self._user = NEO4J_USER
         self._password = NEO4J_PASSWORD
         self._database = NEO4J_DATABASE
-    
+
     def _get_driver(self):
-        """Get Neo4j driver with connection pooling."""
+        """Get Neo4j driver with connection pooling and health check."""
         if self._driver is not None:
             return self._driver
-        
-        try:
-            from neo4j import GraphDatabase
-        except ImportError:
-            raise ImportError("neo4j package required: pip install neo4j")
-        
-        self._driver = GraphDatabase.driver(
-            self._uri,
-            auth=(self._user, self._password),
-            max_connection_pool_size=NEO4J_MAX_POOL_SIZE,
-        )
-        logger.info(f"Neo4j knowledge graph connected: {self._uri}")
-        return self._driver
-    
+
+        with self._driver_lock:
+            # Double-check after acquiring lock
+            if self._driver is not None:
+                return self._driver
+
+            try:
+                from neo4j import GraphDatabase
+            except ImportError:
+                raise ImportError("neo4j package required: pip install neo4j")
+
+            self._driver = GraphDatabase.driver(
+                self._uri,
+                auth=(self._user, self._password),
+                max_connection_pool_size=NEO4J_MAX_POOL_SIZE,
+            )
+
+            # Verify connectivity before returning
+            try:
+                self._driver.verify_connectivity()
+                logger.info(f"Neo4j knowledge graph connected: {self._uri}")
+            except Exception as e:
+                logger.error(f"Neo4j connectivity check failed: {e}")
+                self._driver.close()
+                self._driver = None
+                raise
+
+            return self._driver
+
     def close(self):
         """Close driver connection."""
-        if self._driver:
-            self._driver.close()
-            self._driver = None
-    
+        with self._driver_lock:
+            if self._driver:
+                self._driver.close()
+                self._driver = None
+
+
+
     def initialize_schema(self) -> bool:
         """Initialize Neo4j schema with indexes and constraints."""
-        if self._database in self._initialized_databases:
-            return True
-        
-        driver = self._get_driver()
-        
-        try:
-            with driver.session(database=self._database) as session:
-                # Node indexes for each type
-                for node_type in NodeType:
-                    session.run(f"""
-                        CREATE INDEX {node_type.value.lower()}_id_idx IF NOT EXISTS
-                        FOR (n:{node_type.value}) ON (n.id)
-                    """)
-                    session.run(f"""
-                        CREATE INDEX {node_type.value.lower()}_name_idx IF NOT EXISTS
-                        FOR (n:{node_type.value}) ON (n.name)
-                    """)
-                    session.run(f"""
-                        CREATE INDEX {node_type.value.lower()}_repo_idx IF NOT EXISTS
-                        FOR (n:{node_type.value}) ON (n.repo)
-                    """)
-                
-                # Composite indexes for common queries
-                session.run("""
-                    CREATE INDEX function_path_idx IF NOT EXISTS
-                    FOR (n:Function) ON (n.path, n.name)
-                """)
-                session.run("""
-                    CREATE INDEX class_path_idx IF NOT EXISTS
-                    FOR (n:Class) ON (n.path, n.name)
-                """)
-                
-                # Full-text search index for docstrings
-                try:
-                    session.run("""
-                        CREATE FULLTEXT INDEX docstring_search IF NOT EXISTS
-                        FOR (n:Function|Class|Method)
-                        ON EACH [n.docstring, n.name]
-                    """)
-                except Exception:
-                    pass  # Fulltext may already exist
-            
-            self._initialized_databases.add(self._database)
-            logger.info(f"Neo4j schema initialized for {self._database}")
-            return True
+        with self._db_init_lock:
+            if self._database in self._initialized_databases:
+                return True
 
-        except Exception as e:
-            logger.error(f"Failed to initialize Neo4j schema: {e}")
-            return False
+            driver = self._get_driver()
+
+            try:
+                with driver.session(database=self._database) as session:
+                    # Node indexes for each type - validate against allowlist
+                    for node_type in NodeType:
+                        label = node_type.value
+                        # Security: Validate label is in allowlist before using in Cypher
+                        if label not in _VALID_NODE_LABELS:
+                            logger.warning(f"Skipping unknown node type: {label}")
+                            continue
+
+                        # Use validated label in index creation
+                        idx_prefix = label.lower()
+                        session.run(f"""
+                            CREATE INDEX {idx_prefix}_id_idx IF NOT EXISTS
+                            FOR (n:{label}) ON (n.id)
+                        """)
+                        session.run(f"""
+                            CREATE INDEX {idx_prefix}_name_idx IF NOT EXISTS
+                            FOR (n:{label}) ON (n.name)
+                        """)
+                        session.run(f"""
+                            CREATE INDEX {idx_prefix}_repo_idx IF NOT EXISTS
+                            FOR (n:{label}) ON (n.repo)
+                        """)
+
+                    # Composite indexes for common queries
+                    session.run("""
+                        CREATE INDEX function_path_idx IF NOT EXISTS
+                        FOR (n:Function) ON (n.path, n.name)
+                    """)
+                    session.run("""
+                        CREATE INDEX class_path_idx IF NOT EXISTS
+                        FOR (n:Class) ON (n.path, n.name)
+                    """)
+
+                    # Full-text search index for docstrings
+                    try:
+                        session.run("""
+                            CREATE FULLTEXT INDEX docstring_search IF NOT EXISTS
+                            FOR (n:Function|Class|Method)
+                            ON EACH [n.docstring, n.name]
+                        """)
+                    except Exception:
+                        pass  # Fulltext may already exist
+
+                self._initialized_databases.add(self._database)
+                logger.info(f"Neo4j schema initialized for {self._database}")
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to initialize Neo4j schema: {e}")
+                return False
 
     # =========================================================================
     # Batch Node Operations
@@ -322,14 +368,22 @@ class Neo4jKnowledgeGraph:
         repo: Optional[str] = None,
         iterations: int = 20,
         damping: float = 0.85,
+        timeout: int = LONG_TX_TIMEOUT,
     ) -> int:
-        """Compute PageRank for code symbols (importance scoring)."""
+        """Compute PageRank for code symbols (importance scoring).
+
+        Args:
+            repo: Optional repository filter
+            iterations: Number of PageRank iterations
+            damping: PageRank damping factor
+            timeout: Transaction timeout in seconds (default: LONG_TX_TIMEOUT)
+        """
         driver = self._get_driver()
 
         with driver.session(database=self._database) as session:
             # Use GDS if available, otherwise simple approximation
             try:
-                # Check if GDS is available
+                # Check if GDS is available (use auto-commit, not long running)
                 session.run("CALL gds.version()")
 
                 # Build node and relationship queries with proper parameterization
@@ -343,52 +397,64 @@ class Neo4jKnowledgeGraph:
                     rel_query = """MATCH (a)-[r:CALLS|IMPORTS]->(b)
                                    RETURN id(a) AS source, id(b) AS target, r.weight AS weight"""
 
-                # Project graph with parameterized queries
-                session.run("""
-                    CALL gds.graph.project.cypher(
-                        'code_graph',
-                        $nodeQuery,
-                        $relQuery,
-                        {parameters: {repo: $repo}}
-                    )
-                """, nodeQuery=node_query, relQuery=rel_query, repo=repo)
+                # Use explicit transaction with timeout for expensive GDS operations
+                with session.begin_transaction(timeout=timeout) as tx:
+                    # Project graph with parameterized queries
+                    tx.run("""
+                        CALL gds.graph.project.cypher(
+                            'code_graph',
+                            $nodeQuery,
+                            $relQuery,
+                            {parameters: {repo: $repo}}
+                        )
+                    """, nodeQuery=node_query, relQuery=rel_query, repo=repo)
 
-                session.run("""
-                    CALL gds.pageRank.write('code_graph', {
-                        maxIterations: $iterations,
-                        dampingFactor: $damping,
-                        writeProperty: 'pagerank'
-                    })
-                """, iterations=iterations, damping=damping)
+                    tx.run("""
+                        CALL gds.pageRank.write('code_graph', {
+                            maxIterations: $iterations,
+                            dampingFactor: $damping,
+                            writeProperty: 'pagerank'
+                        })
+                    """, iterations=iterations, damping=damping)
 
-                session.run("CALL gds.graph.drop('code_graph')")
+                    tx.run("CALL gds.graph.drop('code_graph')")
+                    tx.commit()
 
             except Exception:
-                # Fallback: simple in-degree approximation with proper parameterization
-                if repo:
-                    result = session.run("""
-                        MATCH (n)<-[r:CALLS|IMPORTS]-()
-                        WHERE n.repo = $repo
-                        WITH n, count(r) AS in_degree
-                        SET n.pagerank = toFloat(in_degree) / 100.0
-                        RETURN count(n) AS cnt
-                    """, repo=repo)
-                else:
-                    result = session.run("""
-                        MATCH (n)<-[r:CALLS|IMPORTS]-()
-                        WITH n, count(r) AS in_degree
-                        SET n.pagerank = toFloat(in_degree) / 100.0
-                        RETURN count(n) AS cnt
-                    """)
-                return result.single()["cnt"]
+                # Fallback: simple in-degree approximation with timeout
+                with session.begin_transaction(timeout=timeout) as tx:
+                    if repo:
+                        result = tx.run("""
+                            MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            WHERE n.repo = $repo
+                            WITH n, count(r) AS in_degree
+                            SET n.pagerank = toFloat(in_degree) / 100.0
+                            RETURN count(n) AS cnt
+                        """, repo=repo)
+                    else:
+                        result = tx.run("""
+                            MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            WITH n, count(r) AS in_degree
+                            SET n.pagerank = toFloat(in_degree) / 100.0
+                            RETURN count(n) AS cnt
+                        """)
+                    cnt = result.single()["cnt"]
+                    tx.commit()
+                    return cnt
 
         return 0
 
     def detect_communities(
         self,
         repo: Optional[str] = None,
+        timeout: int = LONG_TX_TIMEOUT,
     ) -> int:
-        """Detect code communities using label propagation."""
+        """Detect code communities using label propagation.
+
+        Args:
+            repo: Optional repository filter
+            timeout: Transaction timeout in seconds (default: LONG_TX_TIMEOUT)
+        """
         driver = self._get_driver()
 
         with driver.session(database=self._database) as session:
@@ -407,49 +473,55 @@ class Neo4jKnowledgeGraph:
                     rel_query = """MATCH (a)-[r:CALLS|IMPORTS|INHERITS_FROM]->(b)
                                    RETURN id(a) AS source, id(b) AS target"""
 
-                session.run("""
-                    CALL gds.graph.project.cypher(
-                        'community_graph',
-                        $nodeQuery,
-                        $relQuery,
-                        {parameters: {repo: $repo}}
-                    )
-                """, nodeQuery=node_query, relQuery=rel_query, repo=repo)
+                # Use explicit transaction with timeout for expensive GDS operations
+                with session.begin_transaction(timeout=timeout) as tx:
+                    tx.run("""
+                        CALL gds.graph.project.cypher(
+                            'community_graph',
+                            $nodeQuery,
+                            $relQuery,
+                            {parameters: {repo: $repo}}
+                        )
+                    """, nodeQuery=node_query, relQuery=rel_query, repo=repo)
 
-                session.run("""
-                    CALL gds.louvain.write('community_graph', {
-                        writeProperty: 'community_id'
-                    })
-                """)
+                    tx.run("""
+                        CALL gds.louvain.write('community_graph', {
+                            writeProperty: 'community_id'
+                        })
+                    """)
 
-                session.run("CALL gds.graph.drop('community_graph')")
+                    tx.run("CALL gds.graph.drop('community_graph')")
+                    tx.commit()
 
             except Exception:
-                # Fallback: assign community by file path with proper parameterization
-                if repo:
-                    result = session.run("""
-                        MATCH (n)
-                        WHERE n.repo = $repo
-                        WITH n, CASE
-                            WHEN n.path IS NOT NULL
-                            THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
-                            ELSE 0
-                        END AS community
-                        SET n.community_id = community
-                        RETURN count(n) AS cnt
-                    """, repo=repo)
-                else:
-                    result = session.run("""
-                        MATCH (n)
-                        WITH n, CASE
-                            WHEN n.path IS NOT NULL
-                            THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
-                            ELSE 0
-                        END AS community
-                        SET n.community_id = community
-                        RETURN count(n) AS cnt
-                    """)
-                return result.single()["cnt"]
+                # Fallback: assign community by file path with timeout
+                with session.begin_transaction(timeout=timeout) as tx:
+                    if repo:
+                        result = tx.run("""
+                            MATCH (n)
+                            WHERE n.repo = $repo
+                            WITH n, CASE
+                                WHEN n.path IS NOT NULL
+                                THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
+                                ELSE 0
+                            END AS community
+                            SET n.community_id = community
+                            RETURN count(n) AS cnt
+                        """, repo=repo)
+                    else:
+                        result = tx.run("""
+                            MATCH (n)
+                            WITH n, CASE
+                                WHEN n.path IS NOT NULL
+                                THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
+                                ELSE 0
+                            END AS community
+                            SET n.community_id = community
+                            RETURN count(n) AS cnt
+                        """)
+                    cnt = result.single()["cnt"]
+                    tx.commit()
+                    return cnt
 
         return 0
 

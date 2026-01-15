@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional, Set
 
 from . import ensure_plugins_path, is_neo4j_enabled
@@ -37,30 +38,41 @@ __all__ = [
 # Internal flag - use shared utility
 _ENHANCED_GRAPH_AVAILABLE = is_neo4j_enabled()
 
-# Lazy-loaded knowledge graph instance
+# Lazy-loaded knowledge graph instance (thread-safe)
 _KNOWLEDGE_GRAPH = None
+_KNOWLEDGE_GRAPH_LOCK = threading.Lock()
 
 
 def _get_knowledge_graph():
-    """Get enhanced knowledge graph if available (internal only)."""
+    """Get enhanced knowledge graph if available (internal only).
+
+    Thread-safe lazy initialization using double-checked locking pattern.
+    """
     global _KNOWLEDGE_GRAPH
 
     if not _ENHANCED_GRAPH_AVAILABLE:
         return None
 
+    # Fast path: already initialized
     if _KNOWLEDGE_GRAPH is not None:
         return _KNOWLEDGE_GRAPH
 
-    try:
-        ensure_plugins_path()
-        from neo4j_graph.knowledge_graph import get_knowledge_graph
-        _KNOWLEDGE_GRAPH = get_knowledge_graph()
-        return _KNOWLEDGE_GRAPH
-    except ImportError:
-        return None
-    except Exception as e:
-        logger.debug(f"Enhanced graph not available: {e}")
-        return None
+    # Slow path: acquire lock and initialize
+    with _KNOWLEDGE_GRAPH_LOCK:
+        # Double-check after acquiring lock
+        if _KNOWLEDGE_GRAPH is not None:
+            return _KNOWLEDGE_GRAPH
+
+        try:
+            ensure_plugins_path()
+            from neo4j_graph.knowledge_graph import get_knowledge_graph
+            _KNOWLEDGE_GRAPH = get_knowledge_graph()
+            return _KNOWLEDGE_GRAPH
+        except ImportError:
+            return None
+        except Exception as e:
+            logger.debug(f"Enhanced graph not available: {e}")
+            return None
 
 
 def get_subgraph_context(
