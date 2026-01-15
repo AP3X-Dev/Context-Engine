@@ -92,6 +92,30 @@ def _sanitize_depth(depth: int, default: int = 2, max_depth: int = MAX_GRAPH_DEP
     except (TypeError, ValueError):
         return default
 
+
+# Regex metacharacters that need escaping for Cypher regex patterns
+_REGEX_METACHARACTERS = r'\.+*?^$()[]{}|\\-'
+
+
+def _escape_regex(pattern: str) -> str:
+    """Escape regex metacharacters in user input to prevent injection.
+
+    This ensures user input is treated as literal text in Cypher regex patterns.
+
+    Args:
+        pattern: User-provided search pattern
+
+    Returns:
+        Pattern with regex metacharacters escaped
+    """
+    result = []
+    for char in pattern:
+        if char in _REGEX_METACHARACTERS:
+            result.append('\\')
+        result.append(char)
+    return ''.join(result)
+
+
 # Thread pool for async operations
 _EXECUTOR: Optional[ThreadPoolExecutor] = None
 
@@ -565,13 +589,16 @@ class Neo4jKnowledgeGraph:
         driver = self._get_driver()
         safe_depth = _sanitize_depth(depth, default=1)
 
-        repo_filter = "AND n.repo = $repo" if repo else ""
+        # Apply repo filter to both target and caller to prevent cross-repo contamination
+        target_repo_filter = "WHERE target.repo = $repo" if repo else ""
+        caller_repo_filter = "AND caller.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
             result = session.run(f"""
                 MATCH (target {{name: $name}})
+                {target_repo_filter}
                 MATCH (caller)-[:CALLS*1..{safe_depth}]->(target)
-                WHERE caller <> target {repo_filter.replace('n', 'caller')}
+                WHERE caller <> target {caller_repo_filter}
                 RETURN DISTINCT
                     caller.id AS id, caller.name AS name, labels(caller)[0] AS type,
                     caller.path AS path, caller.start_line AS start_line,
@@ -593,13 +620,16 @@ class Neo4jKnowledgeGraph:
         driver = self._get_driver()
         safe_depth = _sanitize_depth(depth, default=1)
 
-        repo_filter = "AND n.repo = $repo" if repo else ""
+        # Apply repo filter to both source and callee to prevent cross-repo contamination
+        source_repo_filter = "WHERE source.repo = $repo" if repo else ""
+        callee_repo_filter = "AND callee.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
             result = session.run(f"""
                 MATCH (source {{name: $name}})
+                {source_repo_filter}
                 MATCH (source)-[:CALLS*1..{safe_depth}]->(callee)
-                WHERE source <> callee {repo_filter.replace('n', 'callee')}
+                WHERE source <> callee {callee_repo_filter}
                 RETURN DISTINCT
                     callee.id AS id, callee.name AS name, labels(callee)[0] AS type,
                     callee.path AS path, callee.start_line AS start_line,

@@ -139,7 +139,7 @@ class QdrantGraphBackend(GraphBackend):
         repo: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve a symbol name to its definition file path via Qdrant.
-        
+
         Queries the main collection (not graph store) for chunks with
         matching symbol_path metadata.
         """
@@ -151,16 +151,17 @@ class QdrantGraphBackend(GraphBackend):
         try:
             from qdrant_client import models as qmodels
 
+            # Data is stored under metadata.* in the payload
             must = [
                 qmodels.FieldCondition(
-                    key="symbol_path",
+                    key="metadata.symbol_path",
                     match=qmodels.MatchValue(value=symbol_name),
                 )
             ]
             if repo:
                 must.append(
                     qmodels.FieldCondition(
-                        key="repo",
+                        key="metadata.repo",
                         match=qmodels.MatchValue(value=repo),
                     )
                 )
@@ -169,11 +170,14 @@ class QdrantGraphBackend(GraphBackend):
                 collection_name=collection,
                 scroll_filter=qmodels.Filter(must=must),
                 limit=1,
-                with_payload=["path"],
+                with_payload=["metadata.path"],
                 with_vectors=False,
             )
             if result:
-                return result[0].payload.get("path")
+                # Path is nested under metadata
+                payload = result[0].payload
+                metadata = payload.get("metadata", {})
+                return metadata.get("path") or payload.get("path")
         except Exception as e:
             logger.debug(f"Qdrant symbol lookup failed: {e}")
         return None
@@ -225,21 +229,27 @@ class QdrantGraphBackend(GraphBackend):
         else:
             extensions = [".py", ".ts", ".js", ".go", ".rs"]
 
+        def _extract_path(payload: Dict[str, Any]) -> Optional[str]:
+            """Extract path from payload, handling metadata nesting."""
+            metadata = payload.get("metadata", {})
+            return metadata.get("path") or payload.get("path")
+
         try:
             from qdrant_client import models as qmodels
 
             # Try each extension until we find a match
+            # Data is stored under metadata.* in the payload
             for ext in extensions:
                 must = [
                     qmodels.FieldCondition(
-                        key="path",
+                        key="metadata.path",
                         match=qmodels.MatchText(text=f"/{module_path}{ext}"),
                     )
                 ]
                 if repo:
                     must.append(
                         qmodels.FieldCondition(
-                            key="repo",
+                            key="metadata.repo",
                             match=qmodels.MatchValue(value=repo),
                         )
                     )
@@ -248,25 +258,25 @@ class QdrantGraphBackend(GraphBackend):
                     collection_name=collection,
                     scroll_filter=qmodels.Filter(must=must),
                     limit=1,
-                    with_payload=["path"],
+                    with_payload=["metadata.path"],
                     with_vectors=False,
                 )
                 if result:
-                    return result[0].payload.get("path")
+                    return _extract_path(result[0].payload)
 
             # Try index file patterns
             index_patterns = ["/__init__.py", "/index.ts", "/index.js", "/mod.rs"]
             for pattern in index_patterns:
                 must = [
                     qmodels.FieldCondition(
-                        key="path",
+                        key="metadata.path",
                         match=qmodels.MatchText(text=f"/{module_path}{pattern}"),
                     )
                 ]
                 if repo:
                     must.append(
                         qmodels.FieldCondition(
-                            key="repo",
+                            key="metadata.repo",
                             match=qmodels.MatchValue(value=repo),
                         )
                     )
@@ -275,11 +285,11 @@ class QdrantGraphBackend(GraphBackend):
                     collection_name=collection,
                     scroll_filter=qmodels.Filter(must=must),
                     limit=1,
-                    with_payload=["path"],
+                    with_payload=["metadata.path"],
                     with_vectors=False,
                 )
                 if result:
-                    return result[0].payload.get("path")
+                    return _extract_path(result[0].payload)
 
         except Exception as e:
             logger.debug(f"Qdrant import lookup failed: {e}")
