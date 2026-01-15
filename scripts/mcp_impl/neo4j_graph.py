@@ -390,7 +390,7 @@ def _query_cycles(
         result = session.run("""
             MATCH path = (s:Symbol {name: $symbol, collection: $collection})-[:CALLS*2..10]->(s)
             WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
-            WITH path, length(path) as cycle_length
+            WITH s, path, length(path) as cycle_length
             RETURN [n in nodes(path) | n.name] as cycle_path,
                    cycle_length,
                    s.repo as repo
@@ -401,7 +401,7 @@ def _query_cycles(
         result = session.run("""
             MATCH path = (s:Symbol {name: $symbol, collection: $collection})-[:CALLS*2..10]->(s)
             WHERE all(r IN relationships(path) WHERE r.collection = $collection)
-            WITH path, length(path) as cycle_length
+            WITH s, path, length(path) as cycle_length
             RETURN [n in nodes(path) | n.name] as cycle_path,
                    cycle_length,
                    s.repo as repo
