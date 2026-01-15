@@ -18,9 +18,11 @@ Configuration:
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import os
+import weakref
 from typing import Any, Dict, List, Optional
 
 # Support both package and standalone imports
@@ -36,6 +38,24 @@ __all__ = [
     "EDGE_TYPE_CALLS",
     "EDGE_TYPE_IMPORTS",
 ]
+
+# Track all driver instances for cleanup
+_DRIVER_INSTANCES: weakref.WeakSet = weakref.WeakSet()
+
+
+def _cleanup_drivers():
+    """Cleanup all Neo4j drivers on process exit."""
+    for backend in list(_DRIVER_INSTANCES):
+        try:
+            if backend._driver is not None:
+                backend._driver.close()
+                logger.debug("Neo4j driver closed on shutdown")
+        except Exception:
+            pass
+
+
+# Register cleanup on process exit
+atexit.register(_cleanup_drivers)
 
 # Edge types (match Qdrant backend)
 EDGE_TYPE_CALLS = "calls"
@@ -73,10 +93,19 @@ class Neo4jGraphBackend(GraphBackend):
     # This is intentional - we only need to create indexes once per database
     _initialized_databases: set[str] = set()
 
+    # Circuit breaker state (class-level, shared)
+    _circuit_open: bool = False
+    _circuit_failures: int = 0
+    _circuit_last_failure: float = 0.0
+    _CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("NEO4J_CIRCUIT_FAILURE_THRESHOLD", "3") or 3)
+    _CIRCUIT_RESET_TIMEOUT = float(os.environ.get("NEO4J_CIRCUIT_RESET_TIMEOUT", "30.0") or 30.0)
+
     def __init__(self):
         """Initialize the Neo4j graph backend."""
         self._driver = None
         self._driver_initialized = False
+        # Register for cleanup on process exit
+        _DRIVER_INSTANCES.add(self)
 
     @classmethod
     def clear_initialized_cache(cls) -> None:
@@ -86,12 +115,74 @@ class Neo4jGraphBackend(GraphBackend):
         """
         cls._initialized_databases.clear()
 
+    @classmethod
+    def reset_circuit_breaker(cls) -> None:
+        """Reset the circuit breaker state.
+
+        Useful for testing or manual recovery.
+        """
+        cls._circuit_open = False
+        cls._circuit_failures = 0
+        cls._circuit_last_failure = 0.0
+
+    @classmethod
+    def _check_circuit(cls) -> bool:
+        """Check if circuit breaker allows requests.
+
+        Returns True if requests are allowed, False if circuit is open.
+        """
+        import time
+
+        if not cls._circuit_open:
+            return True
+
+        # Check if enough time has passed to try again (half-open state)
+        if time.time() - cls._circuit_last_failure > cls._CIRCUIT_RESET_TIMEOUT:
+            logger.info("Neo4j circuit breaker entering half-open state")
+            return True
+
+        return False
+
+    @classmethod
+    def _record_success(cls) -> None:
+        """Record a successful connection/operation."""
+        if cls._circuit_open:
+            logger.info("Neo4j circuit breaker closed after successful operation")
+        cls._circuit_open = False
+        cls._circuit_failures = 0
+
+    @classmethod
+    def _record_failure(cls) -> None:
+        """Record a connection/operation failure."""
+        import time
+
+        cls._circuit_failures += 1
+        cls._circuit_last_failure = time.time()
+
+        if cls._circuit_failures >= cls._CIRCUIT_FAILURE_THRESHOLD:
+            if not cls._circuit_open:
+                logger.warning(
+                    f"Neo4j circuit breaker OPEN after {cls._circuit_failures} failures. "
+                    f"Will retry after {cls._CIRCUIT_RESET_TIMEOUT}s"
+                )
+            cls._circuit_open = True
+
     @property
     def backend_type(self) -> str:
         return "neo4j"
 
     def _get_driver(self):
-        """Get or create Neo4j driver (lazy singleton per instance with connection pooling)."""
+        """Get or create Neo4j driver (lazy singleton per instance with connection pooling).
+
+        Uses circuit breaker pattern to avoid repeated timeouts when Neo4j is down.
+        """
+        # Check circuit breaker first
+        if not self._check_circuit():
+            raise ConnectionError(
+                f"Neo4j circuit breaker is OPEN. Too many failures. "
+                f"Will retry after {self._CIRCUIT_RESET_TIMEOUT}s"
+            )
+
         if self._driver is not None:
             return self._driver
 
@@ -110,14 +201,22 @@ class Neo4jGraphBackend(GraphBackend):
         if not password:
             logger.warning("NEO4J_PASSWORD not set - using empty password")
 
-        self._driver = GraphDatabase.driver(
-            uri,
-            auth=(user, password),
-            max_connection_pool_size=max_pool,
-        )
-        self._driver_initialized = True
-        logger.info(f"Neo4j driver initialized: {uri}")
-        return self._driver
+        try:
+            self._driver = GraphDatabase.driver(
+                uri,
+                auth=(user, password),
+                max_connection_pool_size=max_pool,
+            )
+            # Verify connection works
+            self._driver.verify_connectivity()
+            self._driver_initialized = True
+            self._record_success()
+            logger.info(f"Neo4j driver initialized: {uri}")
+            return self._driver
+        except Exception as e:
+            self._record_failure()
+            logger.error(f"Neo4j connection failed: {e}")
+            raise
     
     def _get_database(self) -> str:
         """Get configured database name."""
