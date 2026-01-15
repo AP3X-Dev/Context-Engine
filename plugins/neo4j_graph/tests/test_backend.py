@@ -28,14 +28,15 @@ class TestNeo4jGraphBackend:
     @pytest.mark.neo4j
     def test_ensure_graph_store(self, mock_neo4j_driver, neo4j_env):
         """Test ensure_graph_store creates indexes."""
-        from backend import Neo4jGraphBackend, _INITIALIZED_DATABASES
-        
-        _INITIALIZED_DATABASES.clear()
-        
+        from backend import Neo4jGraphBackend
+
+        # Clear the class-level initialized databases cache
+        Neo4jGraphBackend.clear_initialized_cache()
+
         with patch.object(Neo4jGraphBackend, "_get_driver", return_value=mock_neo4j_driver):
             backend = Neo4jGraphBackend()
             result = backend.ensure_graph_store("test-collection")
-        
+
         assert result is not None
         session = mock_neo4j_driver.session.return_value.__enter__.return_value
         assert session.run.called

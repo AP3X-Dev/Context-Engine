@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -25,6 +26,8 @@ __all__ = [
     "_symbol_graph_impl",
     "_format_symbol_graph_toon",
     "_compute_called_by",
+    "clear_graph_collection_cache",
+    "clear_symbol_suggestions_cache",
 ]
 
 
@@ -56,7 +59,35 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 # Graph collection suffix (matches graph_edges.py)
 GRAPH_COLLECTION_SUFFIX = "_graph"
 
-_GRAPH_COLLECTION_EXISTS: Dict[str, bool] = {}
+# Cache for graph collection existence checks
+# Key: collection name, Value: (exists: bool, timestamp: float)
+_GRAPH_COLLECTION_EXISTS: Dict[str, Tuple[bool, float]] = {}
+_GRAPH_COLLECTION_CACHE_TTL = 300  # 5 minutes
+
+
+def _check_graph_collection_exists(collection: str) -> Optional[bool]:
+    """Check if graph collection exists (with TTL cache).
+
+    Returns:
+        True/False if cached and valid, None if cache miss/expired.
+    """
+    if collection not in _GRAPH_COLLECTION_EXISTS:
+        return None
+    exists, timestamp = _GRAPH_COLLECTION_EXISTS[collection]
+    if time.time() - timestamp > _GRAPH_COLLECTION_CACHE_TTL:
+        del _GRAPH_COLLECTION_EXISTS[collection]
+        return None
+    return exists
+
+
+def _set_graph_collection_exists(collection: str, exists: bool) -> None:
+    """Cache graph collection existence status."""
+    _GRAPH_COLLECTION_EXISTS[collection] = (exists, time.time())
+
+
+def clear_graph_collection_cache() -> None:
+    """Clear the graph collection existence cache (useful for testing)."""
+    _GRAPH_COLLECTION_EXISTS.clear()
 
 
 def _get_graph_backend():
@@ -189,10 +220,26 @@ def _similarity_score(query: str, candidate: str) -> float:
     return 0.0
 
 
-# Cache for symbol suggestions: {(collection, symbol): [(symbol, score), ...]}
+# Cache for symbol suggestions: {(collection, symbol): (timestamp, [(symbol, score), ...])}
 _SYMBOL_SUGGESTIONS_CACHE: Dict[Tuple[str, str], Tuple[float, List[Tuple[str, float]]]] = {}
-_SYMBOL_SUGGESTIONS_CACHE_MAX = 100
-_SYMBOL_SUGGESTIONS_CACHE_TTL = 60  # seconds
+_SYMBOL_SUGGESTIONS_CACHE_MAX = int(os.environ.get("SYMBOL_SUGGESTIONS_CACHE_MAX", "100") or 100)
+_SYMBOL_SUGGESTIONS_CACHE_TTL = int(os.environ.get("SYMBOL_SUGGESTIONS_CACHE_TTL", "60") or 60)
+
+
+def clear_symbol_suggestions_cache() -> None:
+    """Clear the symbol suggestions cache (useful for testing)."""
+    _SYMBOL_SUGGESTIONS_CACHE.clear()
+
+
+def _evict_expired_suggestions() -> None:
+    """Remove expired entries from the suggestions cache."""
+    now = time.time()
+    expired = [
+        k for k, (ts, _) in _SYMBOL_SUGGESTIONS_CACHE.items()
+        if now - ts > _SYMBOL_SUGGESTIONS_CACHE_TTL
+    ]
+    for k in expired:
+        _SYMBOL_SUGGESTIONS_CACHE.pop(k, None)
 
 
 def _get_symbol_suggestions(
@@ -311,11 +358,18 @@ def _get_symbol_suggestions(
         # Sort by score and return top N
         suggestions = sorted(candidates.items(), key=lambda x: x[1], reverse=True)[:limit]
 
-        # Cache results
+        # Cache results with proper eviction
+        # First, evict expired entries
+        _evict_expired_suggestions()
+
+        # If still at capacity, evict oldest 10%
         if len(_SYMBOL_SUGGESTIONS_CACHE) >= _SYMBOL_SUGGESTIONS_CACHE_MAX:
-            # Simple FIFO eviction
-            keys_to_remove = list(_SYMBOL_SUGGESTIONS_CACHE.keys())[:20]
-            for k in keys_to_remove:
+            evict_count = max(1, _SYMBOL_SUGGESTIONS_CACHE_MAX // 10)
+            sorted_keys = sorted(
+                _SYMBOL_SUGGESTIONS_CACHE.keys(),
+                key=lambda k: _SYMBOL_SUGGESTIONS_CACHE[k][0]  # Sort by timestamp
+            )
+            for k in sorted_keys[:evict_count]:
                 _SYMBOL_SUGGESTIONS_CACHE.pop(k, None)
 
         _SYMBOL_SUGGESTIONS_CACHE[cache_key] = (now, suggestions)
@@ -614,7 +668,8 @@ async def _query_graph_collection(
     from qdrant_client import models as qmodels
 
     graph_coll = collection + GRAPH_COLLECTION_SUFFIX
-    if _GRAPH_COLLECTION_EXISTS.get(graph_coll) is False:
+    cached_exists = _check_graph_collection_exists(graph_coll)
+    if cached_exists is False:
         return None
 
     def _is_missing_collection_error(err: Exception) -> bool:
@@ -681,7 +736,7 @@ async def _query_graph_collection(
                 scroll_result = await asyncio.to_thread(do_scroll)
             except Exception as e:
                 if _is_missing_collection_error(e):
-                    _GRAPH_COLLECTION_EXISTS[graph_coll] = False
+                    _set_graph_collection_exists(graph_coll, False)
                     return None
                 logger.debug(f"Graph scroll failed for variant '{variant}': {e}")
                 continue
@@ -694,7 +749,7 @@ async def _query_graph_collection(
                 seen.add(edge_id)
                 edges_all.append(edge)
 
-        _GRAPH_COLLECTION_EXISTS[graph_coll] = True
+        _set_graph_collection_exists(graph_coll, True)
         if not edges_all:
             return []
 
