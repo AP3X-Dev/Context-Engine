@@ -383,7 +383,13 @@ _TS_IMPORT_CONFIG = {
 def _ts_extract_imports(language: str, text: str) -> List[str]:
     """Extract imports using tree-sitter AST traversal.
 
-    Uses proper AST node structure instead of regex.
+    Extracts BOTH module/package names AND specific imported symbols.
+    For example:
+    - 'from qdrant_client import QdrantClient' -> ['qdrant_client', 'QdrantClient']
+    - 'import { Foo, Bar } from "pkg"' -> ['pkg', 'Foo', 'Bar']
+    - 'use std::collections::HashMap' -> ['std::collections::HashMap', 'HashMap']
+
+    This enables symbol_graph importers queries to find both module and class/function names.
     """
     from scripts.ingest.tree_sitter import _ts_parser
 
@@ -409,18 +415,23 @@ def _ts_extract_imports(language: str, text: str) -> List[str]:
     def node_text(n):
         return data[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
 
+    def is_valid_identifier(name: str) -> bool:
+        """Check if name is a valid identifier (not a keyword, operator, etc.)."""
+        if not name or len(name) > 100:
+            return False
+        first = name[0]
+        if not (first.isalpha() or first == "_"):
+            return False
+        return all(c.isalnum() or c == "_" for c in name)
+
     def find_string_content(node) -> str:
         """Find string literal content from a node."""
-        # Try to find string/string_literal child
         for child in node.children:
             if child.type in ("string", "string_literal", "interpreted_string_literal"):
-                # Get the content without quotes
-                text = node_text(child)
-                # Strip quotes
-                if len(text) >= 2 and text[0] in ('"', "'", "`"):
-                    return text[1:-1]
-                return text
-            # Recurse for nested structures
+                txt = node_text(child)
+                if len(txt) >= 2 and txt[0] in ('"', "'", "`"):
+                    return txt[1:-1]
+                return txt
             if child.type in ("import_spec", "import_clause"):
                 result = find_string_content(child)
                 if result:
@@ -441,153 +452,191 @@ def _ts_extract_imports(language: str, text: str) -> List[str]:
         collect(node)
         return "::".join(parts) if parts else node_text(node)
 
+    def extract_leaf_symbol(name: str, sep: str = "::") -> str:
+        """Extract the final symbol from a path (e.g., 'std::HashMap' -> 'HashMap')."""
+        if sep in name:
+            return name.rsplit(sep, 1)[-1]
+        if "." in name:
+            return name.rsplit(".", 1)[-1]
+        return name
+
     imports: List[str] = []
+
+    def add_import(name: str, also_add_leaf: bool = False, sep: str = "::"):
+        """Add import, optionally also adding the leaf symbol."""
+        if name and name not in imports:
+            imports.append(name)
+        if also_add_leaf:
+            leaf = extract_leaf_symbol(name, sep)
+            if leaf and leaf != name and is_valid_identifier(leaf) and leaf not in imports:
+                imports.append(leaf)
 
     def walk(n):
         ntype = n.type
 
         if ntype in import_nodes:
             if language == "python":
-                # Python: import X or from X import Y
+                # Python handled by _ts_extract_imports_calls_python
+                # But keep basic fallback for consistency
                 if ntype == "import_statement":
-                    # Look for dotted_name
                     for child in n.children:
                         if child.type == "dotted_name":
-                            imports.append(node_text(child))
+                            add_import(node_text(child), also_add_leaf=True, sep=".")
                         elif child.type == "aliased_import":
                             name = child.child_by_field_name("name")
                             if name:
-                                imports.append(node_text(name))
+                                add_import(node_text(name), also_add_leaf=True, sep=".")
                 elif ntype == "import_from_statement":
+                    # Get module name
                     module = n.child_by_field_name("module_name")
                     if module:
-                        imports.append(node_text(module))
-                    else:
-                        for child in n.children:
-                            if child.type == "dotted_name":
-                                imports.append(node_text(child))
-                                break
+                        add_import(node_text(module))
+                    # Get imported symbols
+                    seen_import = False
+                    for child in n.children:
+                        if child.type == "import":
+                            seen_import = True
+                        elif seen_import and child.type in ("dotted_name", "identifier"):
+                            sym = node_text(child)
+                            if sym and is_valid_identifier(sym.split(".")[-1]):
+                                add_import(sym)
+                        elif child.type == "aliased_import":
+                            name_node = child.child_by_field_name("name")
+                            if name_node:
+                                sym = node_text(name_node)
+                                if sym and is_valid_identifier(sym.split(".")[-1]):
+                                    add_import(sym)
 
             elif language in ("javascript", "typescript", "tsx"):
-                # JS/TS: import ... from "source"
+                # JS/TS: import { Foo, Bar } from "pkg" or import Foo from "pkg"
+                # Get module path
                 source = n.child_by_field_name("source")
                 if source:
-                    text = node_text(source)
-                    # Strip quotes
-                    if len(text) >= 2:
-                        imports.append(text[1:-1])
+                    txt = node_text(source)
+                    if len(txt) >= 2:
+                        add_import(txt[1:-1])
                 else:
-                    # Fallback: find string child
                     result = find_string_content(n)
                     if result:
-                        imports.append(result)
+                        add_import(result)
+
+                # Get imported symbols from import_clause
+                for child in n.children:
+                    if child.type == "import_clause":
+                        _extract_js_import_symbols(child, imports, node_text)
 
             elif language == "go":
-                # Go: import "path" or import ( "path1" "path2" )
+                # Go: import "path" - no named imports, but add package basename
                 for child in n.children:
                     if child.type == "import_spec":
                         result = find_string_content(child)
                         if result:
-                            imports.append(result)
+                            add_import(result, also_add_leaf=True, sep="/")
                     elif child.type == "import_spec_list":
                         for spec in child.children:
                             if spec.type == "import_spec":
                                 result = find_string_content(spec)
                                 if result:
-                                    imports.append(result)
+                                    add_import(result, also_add_leaf=True, sep="/")
                     elif child.type == "interpreted_string_literal":
-                        text = node_text(child)
-                        if len(text) >= 2:
-                            imports.append(text[1:-1])
+                        txt = node_text(child)
+                        if len(txt) >= 2:
+                            add_import(txt[1:-1], also_add_leaf=True, sep="/")
 
             elif language == "rust":
-                # Rust: use std::io;
-                for child in n.children:
-                    if child.type in ("scoped_identifier", "identifier", "use_wildcard"):
-                        imports.append(extract_scoped_path(child))
-                    elif child.type == "use_list":
-                        # use std::{io, fs}
-                        imports.append(node_text(child))
-
-            elif language == "java":
-                # Java: import java.util.List;
+                # Rust: use std::collections::HashMap or use pkg::{Foo, Bar}
                 for child in n.children:
                     if child.type == "scoped_identifier":
-                        imports.append(node_text(child).replace(" ", ""))
+                        path = extract_scoped_path(child)
+                        add_import(path, also_add_leaf=True)
+                    elif child.type == "identifier":
+                        add_import(node_text(child))
+                    elif child.type == "use_wildcard":
+                        path = extract_scoped_path(child)
+                        add_import(path)
+                    elif child.type == "scoped_use_list":
+                        # use pkg::{Foo, Bar}
+                        _extract_rust_use_list(child, imports, node_text, extract_scoped_path)
+                    elif child.type == "use_list":
+                        # Bare use list
+                        _extract_rust_use_list_items(child, imports, node_text)
+
+            elif language == "java":
+                # Java: import java.util.List - add full path and class name
+                for child in n.children:
+                    if child.type == "scoped_identifier":
+                        path = node_text(child).replace(" ", "")
+                        add_import(path, also_add_leaf=True, sep=".")
 
             elif language in ("c", "cpp"):
-                # C/C++: #include <file> or #include "file"
+                # C/C++: #include <file> - add header name
                 path = n.child_by_field_name("path")
                 if path:
-                    text = node_text(path)
-                    # Strip < > or " "
-                    if len(text) >= 2:
-                        imports.append(text[1:-1])
+                    txt = node_text(path)
+                    if len(txt) >= 2:
+                        header = txt[1:-1]
+                        add_import(header)
+                        # Also add base name without extension
+                        if "/" in header:
+                            add_import(header.rsplit("/", 1)[-1])
                 else:
-                    # Find string_literal or system_lib_string
                     for child in n.children:
                         if child.type in ("string_literal", "system_lib_string"):
-                            text = node_text(child)
-                            if len(text) >= 2:
-                                imports.append(text[1:-1])
+                            txt = node_text(child)
+                            if len(txt) >= 2:
+                                header = txt[1:-1]
+                                add_import(header)
 
             elif language in ("c_sharp", "csharp"):
-                # C#: using System.Text;
+                # C#: using System.Text - add full namespace and last part
                 for child in n.children:
                     if child.type in ("identifier", "qualified_name"):
-                        imports.append(node_text(child))
+                        path = node_text(child)
+                        add_import(path, also_add_leaf=True, sep=".")
 
             elif language == "ruby":
                 # Ruby: require is a method call
                 if ntype == "call":
-                    # Check if it's require/require_relative
                     method = n.child_by_field_name("method")
                     if method and node_text(method) in ("require", "require_relative", "load"):
                         args = n.child_by_field_name("arguments")
                         if args:
                             result = find_string_content(args)
                             if result:
-                                imports.append(result)
+                                add_import(result)
 
             elif language == "kotlin":
-                # Kotlin: import java.util.List
-                for child in n.children:
-                    if child.type == "identifier":
-                        imports.append(node_text(child))
-                    elif child.type == "import_alias":
-                        # import foo.Bar as Baz - get foo.Bar
-                        continue
-                # Try to get the full path from the node text
+                # Kotlin: import java.util.List - add full path and class
                 full = node_text(n).replace("import ", "").strip()
                 if full and not full.startswith("import"):
-                    imports.append(full.split(" as ")[0].strip())
+                    path = full.split(" as ")[0].strip()
+                    add_import(path, also_add_leaf=True, sep=".")
 
             elif language == "swift":
                 # Swift: import Foundation
                 for child in n.children:
                     if child.type == "identifier":
-                        imports.append(node_text(child))
+                        add_import(node_text(child))
 
             elif language == "scala":
                 # Scala: import java.util.List or import java.util._
                 full = node_text(n).replace("import ", "").strip()
                 if full:
-                    imports.append(full)
+                    add_import(full, also_add_leaf=True, sep=".")
 
             elif language == "php":
-                # PHP: use Namespace\ClassName;
+                # PHP: use Namespace\ClassName - add full and class name
                 for child in n.children:
-                    if child.type == "namespace_name":
-                        imports.append(node_text(child).replace("\\\\", "\\"))
-                    elif child.type == "qualified_name":
-                        imports.append(node_text(child).replace("\\\\", "\\"))
+                    if child.type in ("namespace_name", "qualified_name"):
+                        path = node_text(child).replace("\\\\", "\\")
+                        add_import(path, also_add_leaf=True, sep="\\")
 
         for c in n.children:
             walk(c)
 
     walk(root)
 
-    # Deduplicate
+    # Deduplicate preserving order
     seen = set()
     result = []
     for x in imports:
@@ -595,6 +644,86 @@ def _ts_extract_imports(language: str, text: str) -> List[str]:
             seen.add(x)
             result.append(x)
     return result[:200]
+
+
+def _extract_js_import_symbols(clause_node, imports: List[str], node_text) -> None:
+    """Extract imported symbol names from JS/TS import_clause."""
+    for child in clause_node.children:
+        if child.type == "identifier":
+            # Default import: import Foo from "pkg"
+            sym = node_text(child)
+            if sym and sym not in imports:
+                imports.append(sym)
+        elif child.type == "named_imports":
+            # Named imports: import { Foo, Bar } from "pkg"
+            for spec in child.children:
+                if spec.type == "import_specifier":
+                    # Get the imported name (or alias)
+                    name = spec.child_by_field_name("name")
+                    if name:
+                        sym = node_text(name)
+                        if sym and sym not in imports:
+                            imports.append(sym)
+                    else:
+                        # Fallback: first identifier child
+                        for c in spec.children:
+                            if c.type == "identifier":
+                                sym = node_text(c)
+                                if sym and sym not in imports:
+                                    imports.append(sym)
+                                break
+        elif child.type == "namespace_import":
+            # Namespace import: import * as utils from "pkg"
+            alias = child.child_by_field_name("alias")
+            if alias:
+                sym = node_text(alias)
+                if sym and sym not in imports:
+                    imports.append(sym)
+
+
+def _extract_rust_use_list(scoped_node, imports: List[str], node_text, extract_scoped) -> None:
+    """Extract symbols from Rust scoped_use_list: use pkg::{Foo, Bar}."""
+    # Get the base path (identifier before ::)
+    base_parts = []
+    for child in scoped_node.children:
+        if child.type == "identifier":
+            base_parts.append(node_text(child))
+        elif child.type == "scoped_identifier":
+            base_parts.append(extract_scoped(child))
+        elif child.type == "use_list":
+            base = "::".join(base_parts) if base_parts else ""
+            if base and base not in imports:
+                imports.append(base)
+            # Extract items from use_list
+            _extract_rust_use_list_items(child, imports, node_text, base)
+            break
+
+
+def _extract_rust_use_list_items(list_node, imports: List[str], node_text, base: str = "") -> None:
+    """Extract individual items from a Rust use_list: {Foo, Bar, baz::*}."""
+    for child in list_node.children:
+        if child.type == "identifier":
+            sym = node_text(child)
+            if sym and sym not in imports:
+                imports.append(sym)
+            if base:
+                full = f"{base}::{sym}"
+                if full not in imports:
+                    imports.append(full)
+        elif child.type == "scoped_identifier":
+            # Nested: baz::Qux
+            path = node_text(child).replace(" ", "")
+            if path and path not in imports:
+                imports.append(path)
+            # Also add leaf
+            if "::" in path:
+                leaf = path.rsplit("::", 1)[-1]
+                if leaf and leaf not in imports:
+                    imports.append(leaf)
+        elif child.type == "use_wildcard":
+            path = node_text(child).replace(" ", "")
+            if path and path not in imports:
+                imports.append(path)
 
 
 def _ts_extract_calls_generic(language: str, text: str) -> List[str]:
@@ -942,6 +1071,49 @@ def _ts_extract_imports_calls_python(text: str) -> Tuple[List[str], List[str]]:
                     return node_text(name_child)
         return ""
 
+    def extract_from_import_symbols(node) -> Tuple[str, List[str]]:
+        """Extract module and imported symbols from import_from_statement.
+
+        For 'from X import Y, Z' returns ('X', ['Y', 'Z']).
+        This enables importers queries to find both module and symbol names.
+        """
+        module_name = ""
+        imported_symbols = []
+        seen_import_keyword = False
+
+        for child in node.children:
+            if child.type == "from":
+                continue
+            elif child.type == "import":
+                seen_import_keyword = True
+                continue
+            elif child.type == ",":
+                continue
+            elif child.type in ("dotted_name", "identifier"):
+                name = node_text(child)
+                if not seen_import_keyword:
+                    # Before 'import' keyword = module name
+                    module_name = name
+                else:
+                    # After 'import' keyword = imported symbol
+                    if name and is_valid_identifier(name.split(".")[-1]):
+                        imported_symbols.append(name)
+            elif child.type == "relative_import":
+                # Handle relative imports: from . import X or from ..parent import X
+                for rel_child in child.children:
+                    if rel_child.type == "dotted_name":
+                        module_name = node_text(rel_child)
+                        break
+            elif child.type == "aliased_import":
+                # from X import Y as Z -> get Y (the original name)
+                name_node = child.child_by_field_name("name")
+                if name_node:
+                    name = node_text(name_node)
+                    if name and is_valid_identifier(name.split(".")[-1]):
+                        imported_symbols.append(name)
+
+        return module_name, imported_symbols
+
     def walk(n):
         t = n.type
         if t == "import_statement":
@@ -949,16 +1121,14 @@ def _ts_extract_imports_calls_python(text: str) -> Tuple[List[str], List[str]]:
             if mod:
                 imports.append(mod)
         elif t == "import_from_statement":
-            # from X import Y -> get X
-            module_node = n.child_by_field_name("module_name")
-            if module_node:
-                imports.append(node_text(module_node))
-            else:
-                # Fallback: look for dotted_name
-                for child in n.children:
-                    if child.type == "dotted_name":
-                        imports.append(node_text(child))
-                        break
+            # from X import Y, Z -> store both X (module) and Y, Z (symbols)
+            module_name, imported_syms = extract_from_import_symbols(n)
+            if module_name:
+                imports.append(module_name)
+            # Also add imported symbols for direct lookups (e.g., "QdrantClient")
+            for sym in imported_syms:
+                if sym and sym not in imports:
+                    imports.append(sym)
         elif t == "call":
             func = n.child_by_field_name("function")
             if func:
