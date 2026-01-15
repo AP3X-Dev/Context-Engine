@@ -71,6 +71,13 @@ services:
       - RERANKER_WEIGHTS_DIR=/tmp/rerank_weights
       - RERANK_EVENTS_DIR=/tmp/rerank_events
       - RERANK_EVENTS_ENABLED=${RERANK_EVENTS_ENABLED:-1}
+      # Lexical sparse vectors for lossless term matching
+      - LEX_SPARSE_MODE=${LEX_SPARSE_MODE:-}
+      - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
+      - LEX_SPARSE_IDF=${LEX_SPARSE_IDF:-1}
+      # Pattern vectors for structural code similarity
+      - PATTERN_VECTORS=${PATTERN_VECTORS:-}
+      - PATTERN_VECTOR_DIM=${PATTERN_VECTOR_DIM:-64}
     ports:
       - "18000:18000"
       - "8000:8000"
