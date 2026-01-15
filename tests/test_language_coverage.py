@@ -785,8 +785,156 @@ class TestEdgeCases:
         imports = "\n".join([f"import module{i}" for i in range(300)])
         result = extract_imports("python", imports)
         assert len(result) <= 200
-        
+
         # Generate code with many calls
         calls = " ".join([f"func{i}()" for i in range(300)])
         result = extract_calls("python", calls)
         assert len(result) <= 200
+
+
+# ==============================================================================
+# Enhanced Import Symbol Extraction Tests (for symbol_graph importers)
+# ==============================================================================
+
+class TestEnhancedImportSymbolExtraction:
+    """Test that import extraction captures BOTH module names AND imported symbols.
+
+    This enables symbol_graph importers queries to find both:
+    - 'from qdrant_client import QdrantClient' -> finds 'qdrant_client' AND 'QdrantClient'
+    - 'import { Foo } from "pkg"' -> finds 'pkg' AND 'Foo'
+    """
+
+    @pytest.fixture
+    def ts_extract_imports(self):
+        """Return the tree-sitter import extraction function."""
+        from scripts.ingest.metadata import _ts_extract_imports
+        return _ts_extract_imports
+
+    @pytest.fixture
+    def python_extract(self):
+        """Return the Python-specific extraction function."""
+        from scripts.ingest.metadata import _ts_extract_imports_calls_python
+        return _ts_extract_imports_calls_python
+
+    def test_python_from_import_symbols(self, python_extract):
+        """Test that Python 'from X import Y' extracts both X and Y."""
+        code = '''
+from qdrant_client import QdrantClient, models
+from typing import List, Dict, Optional
+from os.path import join, exists
+'''
+        imports, _ = python_extract(code)
+        # Module names
+        assert "qdrant_client" in imports
+        assert "typing" in imports
+        assert "os.path" in imports
+        # Imported symbols
+        assert "QdrantClient" in imports
+        assert "models" in imports
+        assert "List" in imports
+        assert "Dict" in imports
+        assert "Optional" in imports
+        assert "join" in imports
+        assert "exists" in imports
+
+    def test_python_aliased_import(self, python_extract):
+        """Test Python aliased imports: from X import Y as Z."""
+        code = "from scripts.ingest import metadata as meta"
+        imports, _ = python_extract(code)
+        assert "scripts.ingest" in imports
+        assert "metadata" in imports  # The original name, not the alias
+
+    def test_javascript_named_imports(self, ts_extract_imports):
+        """Test JavaScript named imports: import { Foo, Bar } from 'pkg'."""
+        code = '''
+import { QdrantClient, models } from 'qdrant-client';
+import { useState, useEffect } from 'react';
+'''
+        imports = ts_extract_imports("javascript", code)
+        # Module names
+        assert "qdrant-client" in imports
+        assert "react" in imports
+        # Imported symbols
+        assert "QdrantClient" in imports
+        assert "models" in imports
+        assert "useState" in imports
+        assert "useEffect" in imports
+
+    def test_javascript_default_import(self, ts_extract_imports):
+        """Test JavaScript default imports: import Foo from 'pkg'."""
+        code = "import React from 'react';"
+        imports = ts_extract_imports("javascript", code)
+        assert "react" in imports
+        assert "React" in imports
+
+    def test_javascript_namespace_import(self, ts_extract_imports):
+        """Test JavaScript namespace imports: import * as utils from 'pkg'."""
+        code = "import * as utils from './utils';"
+        imports = ts_extract_imports("javascript", code)
+        assert "./utils" in imports
+        # Note: we don't extract 'utils' as it's an alias, not an imported symbol
+
+    def test_typescript_imports(self, ts_extract_imports):
+        """Test TypeScript imports work the same as JavaScript."""
+        code = "import { Component, OnInit } from '@angular/core';"
+        imports = ts_extract_imports("typescript", code)
+        assert "@angular/core" in imports
+        assert "Component" in imports
+        assert "OnInit" in imports
+
+    def test_rust_use_symbols(self, ts_extract_imports):
+        """Test Rust use declarations extract both path and symbol."""
+        code = '''
+use std::collections::HashMap;
+use qdrant_client::{QdrantClient, prelude::*};
+'''
+        imports = ts_extract_imports("rust", code)
+        # Full paths
+        assert "std::collections::HashMap" in imports
+        # Leaf symbols
+        assert "HashMap" in imports
+        assert "QdrantClient" in imports
+        # Base module for scoped use
+        assert "qdrant_client" in imports
+
+    def test_java_import_class_name(self, ts_extract_imports):
+        """Test Java imports extract both package path and class name."""
+        code = '''
+import java.util.List;
+import com.qdrant.client.QdrantClient;
+'''
+        imports = ts_extract_imports("java", code)
+        # Full paths
+        assert "java.util.List" in imports
+        assert "com.qdrant.client.QdrantClient" in imports
+        # Class names
+        assert "List" in imports
+        assert "QdrantClient" in imports
+
+    def test_go_package_basename(self, ts_extract_imports):
+        """Test Go imports extract package basename for common lookups."""
+        code = '''
+package main
+import (
+    "fmt"
+    "github.com/qdrant/go-client/qdrant"
+)
+'''
+        imports = ts_extract_imports("go", code)
+        # Full paths
+        assert "fmt" in imports
+        assert "github.com/qdrant/go-client/qdrant" in imports
+        # Basename (package name)
+        assert "qdrant" in imports
+
+    def test_csharp_namespace_and_type(self, ts_extract_imports):
+        """Test C# using directives extract namespace and type names."""
+        code = '''
+using System.Collections.Generic;
+using Qdrant.Client;
+'''
+        imports = ts_extract_imports("csharp", code)
+        assert "System.Collections.Generic" in imports
+        assert "Generic" in imports
+        assert "Qdrant.Client" in imports
+        assert "Client" in imports

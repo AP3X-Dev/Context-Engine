@@ -157,7 +157,13 @@ def _extract_imports(language: str, text: str) -> List[str]:
         for ln in lines:
             m = re.match(r"^\s*import\s+([\w\.\*]+)", ln)
             if m:
-                imps.append(m.group(1))
+                full_path = m.group(1)
+                imps.append(full_path)
+                # Also add leaf symbol (class/function name)
+                if "." in full_path and not full_path.endswith("*"):
+                    leaf = full_path.rsplit(".", 1)[-1]
+                    if leaf and leaf not in imps:
+                        imps.append(leaf)
                 continue
     elif language == "swift":
         for ln in lines:
@@ -169,7 +175,13 @@ def _extract_imports(language: str, text: str) -> List[str]:
         for ln in lines:
             m = re.match(r"^\s*import\s+([\w\.\{\}\,\s_]+)", ln)
             if m:
-                imps.append(m.group(1).strip())
+                full_path = m.group(1).strip()
+                imps.append(full_path)
+                # Also add leaf symbol (class/function name)
+                if "." in full_path and not full_path.endswith("_"):
+                    leaf = full_path.rsplit(".", 1)[-1]
+                    if leaf and leaf not in imps and not any(c in leaf for c in "{},"):
+                        imps.append(leaf)
                 continue
     elif language == "terraform":
         for ln in lines:
