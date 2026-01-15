@@ -805,6 +805,15 @@ class TestEnhancedImportSymbolExtraction:
     """
 
     @pytest.fixture
+    def ts_languages(self):
+        """Return dict of available tree-sitter languages."""
+        try:
+            from scripts.ingest.tree_sitter import _TS_LANGUAGES, _TS_AVAILABLE
+            return _TS_LANGUAGES if _TS_AVAILABLE else {}
+        except ImportError:
+            return {}
+
+    @pytest.fixture
     def ts_extract_imports(self):
         """Return the tree-sitter import extraction function."""
         from scripts.ingest.metadata import _ts_extract_imports
@@ -816,8 +825,10 @@ class TestEnhancedImportSymbolExtraction:
         from scripts.ingest.metadata import _ts_extract_imports_calls_python
         return _ts_extract_imports_calls_python
 
-    def test_python_from_import_symbols(self, python_extract):
+    def test_python_from_import_symbols(self, python_extract, ts_languages):
         """Test that Python 'from X import Y' extracts both X and Y."""
+        if "python" not in ts_languages:
+            pytest.skip("tree-sitter python parser not available")
         code = '''
 from qdrant_client import QdrantClient, models
 from typing import List, Dict, Optional
@@ -837,15 +848,19 @@ from os.path import join, exists
         assert "join" in imports
         assert "exists" in imports
 
-    def test_python_aliased_import(self, python_extract):
+    def test_python_aliased_import(self, python_extract, ts_languages):
         """Test Python aliased imports: from X import Y as Z."""
+        if "python" not in ts_languages:
+            pytest.skip("tree-sitter python parser not available")
         code = "from scripts.ingest import metadata as meta"
         imports, _ = python_extract(code)
         assert "scripts.ingest" in imports
         assert "metadata" in imports  # The original name, not the alias
 
-    def test_javascript_named_imports(self, ts_extract_imports):
+    def test_javascript_named_imports(self, ts_extract_imports, ts_languages):
         """Test JavaScript named imports: import { Foo, Bar } from 'pkg'."""
+        if "javascript" not in ts_languages:
+            pytest.skip("tree-sitter javascript parser not available")
         code = '''
 import { QdrantClient, models } from 'qdrant-client';
 import { useState, useEffect } from 'react';
@@ -860,30 +875,38 @@ import { useState, useEffect } from 'react';
         assert "useState" in imports
         assert "useEffect" in imports
 
-    def test_javascript_default_import(self, ts_extract_imports):
+    def test_javascript_default_import(self, ts_extract_imports, ts_languages):
         """Test JavaScript default imports: import Foo from 'pkg'."""
+        if "javascript" not in ts_languages:
+            pytest.skip("tree-sitter javascript parser not available")
         code = "import React from 'react';"
         imports = ts_extract_imports("javascript", code)
         assert "react" in imports
         assert "React" in imports
 
-    def test_javascript_namespace_import(self, ts_extract_imports):
+    def test_javascript_namespace_import(self, ts_extract_imports, ts_languages):
         """Test JavaScript namespace imports: import * as utils from 'pkg'."""
+        if "javascript" not in ts_languages:
+            pytest.skip("tree-sitter javascript parser not available")
         code = "import * as utils from './utils';"
         imports = ts_extract_imports("javascript", code)
         assert "./utils" in imports
         # Note: we don't extract 'utils' as it's an alias, not an imported symbol
 
-    def test_typescript_imports(self, ts_extract_imports):
+    def test_typescript_imports(self, ts_extract_imports, ts_languages):
         """Test TypeScript imports work the same as JavaScript."""
+        if "typescript" not in ts_languages:
+            pytest.skip("tree-sitter typescript parser not available")
         code = "import { Component, OnInit } from '@angular/core';"
         imports = ts_extract_imports("typescript", code)
         assert "@angular/core" in imports
         assert "Component" in imports
         assert "OnInit" in imports
 
-    def test_rust_use_symbols(self, ts_extract_imports):
+    def test_rust_use_symbols(self, ts_extract_imports, ts_languages):
         """Test Rust use declarations extract both path and symbol."""
+        if "rust" not in ts_languages:
+            pytest.skip("tree-sitter rust parser not available")
         code = '''
 use std::collections::HashMap;
 use qdrant_client::{QdrantClient, prelude::*};
@@ -897,8 +920,10 @@ use qdrant_client::{QdrantClient, prelude::*};
         # Base module for scoped use
         assert "qdrant_client" in imports
 
-    def test_java_import_class_name(self, ts_extract_imports):
+    def test_java_import_class_name(self, ts_extract_imports, ts_languages):
         """Test Java imports extract both package path and class name."""
+        if "java" not in ts_languages:
+            pytest.skip("tree-sitter java parser not available")
         code = '''
 import java.util.List;
 import com.qdrant.client.QdrantClient;
@@ -911,8 +936,10 @@ import com.qdrant.client.QdrantClient;
         assert "List" in imports
         assert "QdrantClient" in imports
 
-    def test_go_package_basename(self, ts_extract_imports):
+    def test_go_package_basename(self, ts_extract_imports, ts_languages):
         """Test Go imports extract package basename for common lookups."""
+        if "go" not in ts_languages:
+            pytest.skip("tree-sitter go parser not available")
         code = '''
 package main
 import (
@@ -927,8 +954,10 @@ import (
         # Basename (package name)
         assert "qdrant" in imports
 
-    def test_csharp_namespace_and_type(self, ts_extract_imports):
+    def test_csharp_namespace_and_type(self, ts_extract_imports, ts_languages):
         """Test C# using directives extract namespace and type names."""
+        if "csharp" not in ts_languages:
+            pytest.skip("tree-sitter csharp parser not available")
         code = '''
 using System.Collections.Generic;
 using Qdrant.Client;
