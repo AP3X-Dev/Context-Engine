@@ -163,14 +163,14 @@ def hash_id(text: str, path: str, start: int, end: int) -> str:
     return h[:16]
 
 def get_collection_name(repo_name: Optional[str] = None) -> str:
-    """Generate collection name with 16-char hash for collision avoidance.
+    """Generate collection name with 8-char hash for local workspaces.
 
     Simplified version from workspace_state.py.
     """
     if not repo_name:
         return "default-collection"
     hash_obj = hashlib.sha256(repo_name.encode())
-    short_hash = hash_obj.hexdigest()[:16]
+    short_hash = hash_obj.hexdigest()[:8]
     return f"{repo_name}-{short_hash}"
 
 def _extract_repo_name_from_path(workspace_path: str) -> str:
