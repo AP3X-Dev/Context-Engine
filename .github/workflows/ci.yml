@@ -62,7 +62,24 @@ jobs:
 
     - name: Verify tree-sitter packages
       run: |
-        python -c "from scripts.ingest.tree_sitter import _TS_LANGUAGES, _TS_AVAILABLE; print(f'Tree-sitter available: {_TS_AVAILABLE}'); print(f'Languages: {list(_TS_LANGUAGES.keys())}')"
+        python << 'EOF'
+        from scripts.ingest.tree_sitter import _TS_LANGUAGES, _TS_AVAILABLE, _ts_parser
+        print(f'Tree-sitter available: {_TS_AVAILABLE}')
+        print(f'Languages: {list(_TS_LANGUAGES.keys())}')
+
+        # Test actual parsing works
+        from scripts.ingest.metadata import _ts_extract_imports_calls_python, _ts_extract_imports
+        code = 'from qdrant_client import QdrantClient'
+        imports, calls = _ts_extract_imports_calls_python(code)
+        print(f'Python imports test: {imports}')
+        assert 'qdrant_client' in imports, f'Python import extraction failed: {imports}'
+        assert 'QdrantClient' in imports, f'Python symbol extraction failed: {imports}'
+
+        js_imports = _ts_extract_imports('javascript', "import { Foo } from 'bar';")
+        print(f'JS imports test: {js_imports}')
+        assert 'bar' in js_imports, f'JS module extraction failed: {js_imports}'
+        print('Tree-sitter parsing verification: PASSED')
+        EOF
 
     - name: Pre-download embedding model
       run: |
