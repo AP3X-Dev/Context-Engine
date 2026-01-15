@@ -15,6 +15,7 @@ The knowledge graph is the "brain" that understands code relationships.
 """
 from __future__ import annotations
 
+import atexit
 import asyncio
 import hashlib
 import logging
@@ -53,6 +54,27 @@ NEO4J_MAX_POOL_SIZE = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
 # Batch sizes for production
 BATCH_SIZE_NODES = int(os.environ.get("NEO4J_BATCH_NODES", "500") or 500)
 BATCH_SIZE_RELS = int(os.environ.get("NEO4J_BATCH_RELS", "1000") or 1000)
+
+# Maximum allowed depth for graph traversals (security limit)
+MAX_GRAPH_DEPTH = 10
+
+
+def _sanitize_depth(depth: int, default: int = 2, max_depth: int = MAX_GRAPH_DEPTH) -> int:
+    """Sanitize depth parameter for Cypher queries to prevent injection.
+
+    Args:
+        depth: User-provided depth value
+        default: Default value if depth is invalid
+        max_depth: Maximum allowed depth
+
+    Returns:
+        Sanitized integer depth between 1 and max_depth
+    """
+    try:
+        d = int(depth)
+        return max(1, min(d, max_depth))
+    except (TypeError, ValueError):
+        return default
 
 # Thread pool for async operations
 _EXECUTOR: Optional[ThreadPoolExecutor] = None
@@ -469,13 +491,14 @@ class Neo4jKnowledgeGraph:
     ) -> List[Dict[str, Any]]:
         """Get all callers of a symbol (with depth for transitive)."""
         driver = self._get_driver()
+        safe_depth = _sanitize_depth(depth, default=1)
 
         repo_filter = "AND n.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
             result = session.run(f"""
                 MATCH (target {{name: $name}})
-                MATCH (caller)-[:CALLS*1..{depth}]->(target)
+                MATCH (caller)-[:CALLS*1..{safe_depth}]->(target)
                 WHERE caller <> target {repo_filter.replace('n', 'caller')}
                 RETURN DISTINCT
                     caller.id AS id, caller.name AS name, labels(caller)[0] AS type,
@@ -496,13 +519,14 @@ class Neo4jKnowledgeGraph:
     ) -> List[Dict[str, Any]]:
         """Get all symbols called by a symbol (with depth for transitive)."""
         driver = self._get_driver()
+        safe_depth = _sanitize_depth(depth, default=1)
 
         repo_filter = "AND n.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
             result = session.run(f"""
                 MATCH (source {{name: $name}})
-                MATCH (source)-[:CALLS*1..{depth}]->(callee)
+                MATCH (source)-[:CALLS*1..{safe_depth}]->(callee)
                 WHERE source <> callee {repo_filter.replace('n', 'callee')}
                 RETURN DISTINCT
                     callee.id AS id, callee.name AS name, labels(callee)[0] AS type,
@@ -562,6 +586,7 @@ class Neo4jKnowledgeGraph:
     ) -> Dict[str, Any]:
         """Analyze impact of changing a symbol."""
         driver = self._get_driver()
+        safe_depth = _sanitize_depth(max_depth, default=3)
 
         with driver.session(database=self._database) as session:
             # Get direct and transitive callers with proper parameterized query
@@ -569,7 +594,7 @@ class Neo4jKnowledgeGraph:
                 callers = session.run(f"""
                     MATCH (target {{name: $name}})
                     WHERE target.repo = $repo
-                    MATCH path = (caller)-[:CALLS*1..{max_depth}]->(target)
+                    MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
                     WHERE caller <> target
                     RETURN caller.name AS name, caller.path AS path,
                            labels(caller)[0] AS type, length(path) AS depth
@@ -578,7 +603,7 @@ class Neo4jKnowledgeGraph:
             else:
                 callers = session.run(f"""
                     MATCH (target {{name: $name}})
-                    MATCH path = (caller)-[:CALLS*1..{max_depth}]->(target)
+                    MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
                     WHERE caller <> target
                     RETURN caller.name AS name, caller.path AS path,
                            labels(caller)[0] AS type, length(path) AS depth
@@ -674,6 +699,7 @@ class Neo4jKnowledgeGraph:
         useful for providing context to the LLM.
         """
         driver = self._get_driver()
+        safe_radius = _sanitize_depth(radius, default=2, max_depth=5)
 
         with driver.session(database=self._database) as session:
             # Try APOC first with proper parameterization
@@ -688,7 +714,7 @@ class Neo4jKnowledgeGraph:
                         })
                         YIELD nodes, relationships
                         RETURN nodes, relationships
-                    """, name=symbol_name, repo=repo, radius=radius)
+                    """, name=symbol_name, repo=repo, radius=safe_radius)
                 else:
                     result = session.run("""
                         MATCH (center {name: $name})
@@ -698,7 +724,7 @@ class Neo4jKnowledgeGraph:
                         })
                         YIELD nodes, relationships
                         RETURN nodes, relationships
-                    """, name=symbol_name, radius=radius)
+                    """, name=symbol_name, radius=safe_radius)
 
                 record = result.single()
                 if record:
@@ -733,7 +759,7 @@ class Neo4jKnowledgeGraph:
                 result = session.run(f"""
                     MATCH (center {{name: $name}})
                     WHERE center.repo = $repo
-                    MATCH path = (center)-[*1..{radius}]-(related)
+                    MATCH path = (center)-[*1..{safe_radius}]-(related)
                     WITH center, collect(DISTINCT related) AS nodes,
                          collect(DISTINCT relationships(path)) AS all_rels
                     UNWIND all_rels AS rel_list
@@ -744,7 +770,7 @@ class Neo4jKnowledgeGraph:
             else:
                 result = session.run(f"""
                     MATCH (center {{name: $name}})
-                    MATCH path = (center)-[*1..{radius}]-(related)
+                    MATCH path = (center)-[*1..{safe_radius}]-(related)
                     WITH center, collect(DISTINCT related) AS nodes,
                          collect(DISTINCT relationships(path)) AS all_rels
                     UNWIND all_rels AS rel_list
@@ -783,7 +809,7 @@ class Neo4jKnowledgeGraph:
 
             return {
                 "center": symbol_name,
-                "radius": radius,
+                "radius": safe_radius,
                 "nodes": nodes,
                 "relationships": rels,
             }
@@ -841,6 +867,7 @@ class Neo4jKnowledgeGraph:
             Path length (number of hops), or None if no path exists.
         """
         driver = self._get_driver()
+        safe_depth = _sanitize_depth(max_depth, default=4, max_depth=8)
 
         with driver.session(database=self._database) as session:
             # Use shortestPath with depth limit and proper parameterization
@@ -849,7 +876,7 @@ class Neo4jKnowledgeGraph:
                     MATCH (source {{name: $source}})
                     MATCH (target {{name: $target}})
                     WHERE source.repo = $repo AND target.repo = $repo
-                    MATCH path = shortestPath((source)-[*1..{max_depth}]-(target))
+                    MATCH path = shortestPath((source)-[*1..{safe_depth}]-(target))
                     RETURN length(path) AS distance
                     LIMIT 1
                 """, source=source_symbol, target=target_symbol, repo=repo)
@@ -857,7 +884,7 @@ class Neo4jKnowledgeGraph:
                 result = session.run(f"""
                     MATCH (source {{name: $source}})
                     MATCH (target {{name: $target}})
-                    MATCH path = shortestPath((source)-[*1..{max_depth}]-(target))
+                    MATCH path = shortestPath((source)-[*1..{safe_depth}]-(target))
                     RETURN length(path) AS distance
                     LIMIT 1
                 """, source=source_symbol, target=target_symbol)
