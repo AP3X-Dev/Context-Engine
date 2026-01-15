@@ -21,7 +21,7 @@ tests = {
     'csharp': ('using System.Text;', ['System.Text', 'Text']),
     'kotlin': ('import com.pkg.Foo', ['com.pkg.Foo', 'Foo']),
     'scala': ('import java.util.List', ['java.util.List', 'List']),
-    'php': ('use Namespace\\Foo;', ['Namespace\\Foo']),
+    'php': ('<?php use Namespace\\Foo;', ['Namespace\\Foo', 'Foo']),
     'swift': ('import Foundation', ['Foundation']),
     'ruby': ('require "json"', ['json']),
 }

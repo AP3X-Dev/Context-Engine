@@ -378,7 +378,7 @@ _TS_IMPORT_CONFIG = {
         "nodes": ["call"],  # require/require_relative are method calls
     },
     "kotlin": {
-        "nodes": ["import_header"],
+        "nodes": ["import"],  # Kotlin uses 'import' node, not 'import_header'
     },
     "swift": {
         "nodes": ["import_declaration"],
@@ -618,11 +618,14 @@ def _ts_extract_imports(language: str, text: str) -> List[str]:
                                 add_import(result)
 
             elif language == "kotlin":
-                # Kotlin: import java.util.List - add full path and class
-                full = node_text(n).replace("import ", "").strip()
-                if full and not full.startswith("import"):
-                    path = full.split(" as ")[0].strip()
-                    add_import(path, also_add_leaf=True, sep=".")
+                # Kotlin: import com.pkg.Foo - get qualified_identifier child
+                for child in n.children:
+                    if child.type == "qualified_identifier":
+                        path = node_text(child).replace(" ", "")
+                        add_import(path, also_add_leaf=True, sep=".")
+                        break
+                    elif child.type == "identifier":
+                        add_import(node_text(child))
 
             elif language == "swift":
                 # Swift: import Foundation
@@ -637,9 +640,15 @@ def _ts_extract_imports(language: str, text: str) -> List[str]:
                     add_import(full, also_add_leaf=True, sep=".")
 
             elif language == "php":
-                # PHP: use Namespace\ClassName - add full and class name
+                # PHP: use Namespace\ClassName - traverse namespace_use_clause -> qualified_name
                 for child in n.children:
-                    if child.type in ("namespace_name", "qualified_name"):
+                    if child.type == "namespace_use_clause":
+                        for subchild in child.children:
+                            if subchild.type == "qualified_name":
+                                path = node_text(subchild).replace("\\\\", "\\")
+                                add_import(path, also_add_leaf=True, sep="\\")
+                                break
+                    elif child.type in ("namespace_name", "qualified_name"):
                         path = node_text(child).replace("\\\\", "\\")
                         add_import(path, also_add_leaf=True, sep="\\")
 
