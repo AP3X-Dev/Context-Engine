@@ -278,7 +278,7 @@ def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None)
     return f"<external>/{callee}"
 
 
-def _resolve_import_path(imported: str, repo: str, language: Optional[str] = None) -> str:
+def _resolve_import_path(imported: str, repo: str) -> str:
     """Resolve an import to its source file path.
 
     Resolution order:
@@ -288,7 +288,6 @@ def _resolve_import_path(imported: str, repo: str, language: Optional[str] = Non
     Args:
         imported: The imported module/symbol name
         repo: Repository name
-        language: Programming language (unused, kept for API compatibility)
     """
     # Try cross-file resolution via symbol resolver
     try:
@@ -400,8 +399,8 @@ def extract_import_edges(
         if not imported:
             continue
 
-        # Resolve import to its source file path (language-aware for stdlib detection)
-        callee_path = _resolve_import_path(imported, repo, language=language)
+        # Resolve import to its source file path
+        callee_path = _resolve_import_path(imported, repo)
 
         edge_id = _edge_id(caller, imported, norm_path, EDGE_TYPE_IMPORTS, repo)
         payload = {
@@ -573,8 +572,8 @@ def get_callers(
             )
         )
 
-    # Skip if we already know this collection doesn't exist
-    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+    # Skip if we already know this collection doesn't exist (with TTL expiry)
+    if _is_collection_missing(graph_collection):
         return []
 
     try:
@@ -590,7 +589,7 @@ def get_callers(
         # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
         err_str = str(e).lower()
         if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
-            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            _mark_collection_missing(graph_collection)
             return []
         logger.error(f"Failed to get callers for {symbol}: {e}")
         return []
@@ -635,8 +634,8 @@ def get_callees(
             )
         )
 
-    # Skip if we already know this collection doesn't exist
-    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+    # Skip if we already know this collection doesn't exist (with TTL expiry)
+    if _is_collection_missing(graph_collection):
         return []
 
     try:
@@ -652,7 +651,7 @@ def get_callees(
         # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
         err_str = str(e).lower()
         if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
-            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            _mark_collection_missing(graph_collection)
             return []
         logger.error(f"Failed to get callees for {symbol}: {e}")
         return []
@@ -697,8 +696,8 @@ def get_importers(
             )
         )
 
-    # Skip if we already know this collection doesn't exist
-    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+    # Skip if we already know this collection doesn't exist (with TTL expiry)
+    if _is_collection_missing(graph_collection):
         return []
 
     try:
@@ -714,7 +713,7 @@ def get_importers(
         # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
         err_str = str(e).lower()
         if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
-            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            _mark_collection_missing(graph_collection)
             return []
         logger.error(f"Failed to get importers for {module}: {e}")
         return []
