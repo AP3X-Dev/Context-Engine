@@ -512,6 +512,8 @@ services:
       - INDEX_GRAPH_EDGES=${INDEX_GRAPH_EDGES:-1}
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
       - GRAPH_BACKFILL_ENABLED=${GRAPH_BACKFILL_ENABLED:-1}
+      # Neo4j graph backend (when set, edges go to Neo4j instead of Qdrant _graph collection)
+      - NEO4J_GRAPH=${NEO4J_GRAPH:-}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
