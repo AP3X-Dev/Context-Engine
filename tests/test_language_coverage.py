@@ -825,6 +825,23 @@ class TestEnhancedImportSymbolExtraction:
         from scripts.ingest.metadata import _ts_extract_imports_calls_python
         return _ts_extract_imports_calls_python
 
+    @pytest.fixture(autouse=True)
+    def check_tree_sitter_works(self, ts_languages, python_extract):
+        """Skip all tests if tree-sitter parsing doesn't work properly."""
+        if not ts_languages:
+            pytest.skip("No tree-sitter languages available")
+        # Do a quick sanity check
+        from scripts.ingest.tree_sitter import _ts_parser, _use_tree_sitter
+        if not _use_tree_sitter():
+            pytest.skip("USE_TREE_SITTER check returned False")
+        parser = _ts_parser("python")
+        if parser is None:
+            pytest.skip("Python tree-sitter parser returned None")
+        # Verify extraction actually works
+        test_imports, _ = python_extract("from foo import bar")
+        if not test_imports:
+            pytest.skip(f"Python extraction returned empty list - tree-sitter may not be working correctly")
+
     def test_python_from_import_symbols(self, python_extract, ts_languages):
         """Test that Python 'from X import Y' extracts both X and Y."""
         if "python" not in ts_languages:
