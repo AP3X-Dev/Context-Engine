@@ -207,6 +207,7 @@ class GraphBackend(ABC):
         graph_store: str,
         import_name: str,
         repo: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve an import to its source file path.
 
@@ -214,6 +215,7 @@ class GraphBackend(ABC):
             graph_store: Graph store identifier
             import_name: The imported module name
             repo: Optional repo filter
+            language: Programming language for extension detection
 
         Returns:
             File path of the module, or None if external/not found.

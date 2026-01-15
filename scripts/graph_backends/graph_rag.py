@@ -16,6 +16,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set
 
+from . import ensure_plugins_path
+
 logger = logging.getLogger(__name__)
 
 # Internal flag - do not expose
@@ -30,20 +32,15 @@ _KNOWLEDGE_GRAPH = None
 def _get_knowledge_graph():
     """Get enhanced knowledge graph if available (internal only)."""
     global _KNOWLEDGE_GRAPH
-    
+
     if not _ENHANCED_GRAPH_AVAILABLE:
         return None
-    
+
     if _KNOWLEDGE_GRAPH is not None:
         return _KNOWLEDGE_GRAPH
-    
+
     try:
-        import sys
-        from pathlib import Path
-        plugins_dir = Path(__file__).parent.parent.parent / "plugins"
-        if str(plugins_dir) not in sys.path:
-            sys.path.insert(0, str(plugins_dir))
-        
+        ensure_plugins_path()
         from neo4j_graph.knowledge_graph import get_knowledge_graph
         _KNOWLEDGE_GRAPH = get_knowledge_graph()
         return _KNOWLEDGE_GRAPH

@@ -32,6 +32,17 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    # Main class
+    "Neo4jKnowledgeGraph",
+    "get_knowledge_graph",
+    # Stats
+    "KnowledgeGraphStats",
+    # Configuration
+    "BATCH_SIZE_NODES",
+    "BATCH_SIZE_RELS",
+]
+
 # Configuration
 NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
@@ -293,24 +304,32 @@ class Neo4jKnowledgeGraph:
         """Compute PageRank for code symbols (importance scoring)."""
         driver = self._get_driver()
 
-        repo_filter = "WHERE n.repo = $repo" if repo else ""
-
         with driver.session(database=self._database) as session:
             # Use GDS if available, otherwise simple approximation
             try:
                 # Check if GDS is available
                 session.run("CALL gds.version()")
 
-                # Project graph and run PageRank
-                session.run(f"""
+                # Build node and relationship queries with proper parameterization
+                if repo:
+                    node_query = "MATCH (n) WHERE n.repo = $repo RETURN id(n) AS id"
+                    rel_query = """MATCH (a)-[r:CALLS|IMPORTS]->(b)
+                                   WHERE a.repo = $repo
+                                   RETURN id(a) AS source, id(b) AS target, r.weight AS weight"""
+                else:
+                    node_query = "MATCH (n) RETURN id(n) AS id"
+                    rel_query = """MATCH (a)-[r:CALLS|IMPORTS]->(b)
+                                   RETURN id(a) AS source, id(b) AS target, r.weight AS weight"""
+
+                # Project graph with parameterized queries
+                session.run("""
                     CALL gds.graph.project.cypher(
                         'code_graph',
-                        'MATCH (n) {repo_filter} RETURN id(n) AS id',
-                        'MATCH (a)-[r:CALLS|IMPORTS]->(b)
-                         {repo_filter.replace('n', 'a')}
-                         RETURN id(a) AS source, id(b) AS target, r.weight AS weight'
+                        $nodeQuery,
+                        $relQuery,
+                        {parameters: {repo: $repo}}
                     )
-                """, repo=repo)
+                """, nodeQuery=node_query, relQuery=rel_query, repo=repo)
 
                 session.run("""
                     CALL gds.pageRank.write('code_graph', {
@@ -323,14 +342,22 @@ class Neo4jKnowledgeGraph:
                 session.run("CALL gds.graph.drop('code_graph')")
 
             except Exception:
-                # Fallback: simple in-degree approximation
-                result = session.run(f"""
-                    MATCH (n)<-[r:CALLS|IMPORTS]-()
-                    {repo_filter}
-                    WITH n, count(r) AS in_degree
-                    SET n.pagerank = toFloat(in_degree) / 100.0
-                    RETURN count(n) AS cnt
-                """, repo=repo)
+                # Fallback: simple in-degree approximation with proper parameterization
+                if repo:
+                    result = session.run("""
+                        MATCH (n)<-[r:CALLS|IMPORTS]-()
+                        WHERE n.repo = $repo
+                        WITH n, count(r) AS in_degree
+                        SET n.pagerank = toFloat(in_degree) / 100.0
+                        RETURN count(n) AS cnt
+                    """, repo=repo)
+                else:
+                    result = session.run("""
+                        MATCH (n)<-[r:CALLS|IMPORTS]-()
+                        WITH n, count(r) AS in_degree
+                        SET n.pagerank = toFloat(in_degree) / 100.0
+                        RETURN count(n) AS cnt
+                    """)
                 return result.single()["cnt"]
 
         return 0
@@ -342,22 +369,30 @@ class Neo4jKnowledgeGraph:
         """Detect code communities using label propagation."""
         driver = self._get_driver()
 
-        repo_filter = "WHERE n.repo = $repo" if repo else ""
-
         with driver.session(database=self._database) as session:
             try:
                 # Check if GDS available
                 session.run("CALL gds.version()")
 
-                session.run(f"""
+                # Build queries with proper parameterization
+                if repo:
+                    node_query = "MATCH (n) WHERE n.repo = $repo RETURN id(n) AS id"
+                    rel_query = """MATCH (a)-[r:CALLS|IMPORTS|INHERITS_FROM]->(b)
+                                   WHERE a.repo = $repo
+                                   RETURN id(a) AS source, id(b) AS target"""
+                else:
+                    node_query = "MATCH (n) RETURN id(n) AS id"
+                    rel_query = """MATCH (a)-[r:CALLS|IMPORTS|INHERITS_FROM]->(b)
+                                   RETURN id(a) AS source, id(b) AS target"""
+
+                session.run("""
                     CALL gds.graph.project.cypher(
                         'community_graph',
-                        'MATCH (n) {repo_filter} RETURN id(n) AS id',
-                        'MATCH (a)-[r:CALLS|IMPORTS|INHERITS_FROM]->(b)
-                         {repo_filter.replace('n', 'a')}
-                         RETURN id(a) AS source, id(b) AS target'
+                        $nodeQuery,
+                        $relQuery,
+                        {parameters: {repo: $repo}}
                     )
-                """, repo=repo)
+                """, nodeQuery=node_query, relQuery=rel_query, repo=repo)
 
                 session.run("""
                     CALL gds.louvain.write('community_graph', {
@@ -368,18 +403,30 @@ class Neo4jKnowledgeGraph:
                 session.run("CALL gds.graph.drop('community_graph')")
 
             except Exception:
-                # Fallback: assign community by file path
-                result = session.run(f"""
-                    MATCH (n)
-                    {repo_filter}
-                    WITH n, CASE
-                        WHEN n.path IS NOT NULL
-                        THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
-                        ELSE 0
-                    END AS community
-                    SET n.community_id = community
-                    RETURN count(n) AS cnt
-                """, repo=repo)
+                # Fallback: assign community by file path with proper parameterization
+                if repo:
+                    result = session.run("""
+                        MATCH (n)
+                        WHERE n.repo = $repo
+                        WITH n, CASE
+                            WHEN n.path IS NOT NULL
+                            THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
+                            ELSE 0
+                        END AS community
+                        SET n.community_id = community
+                        RETURN count(n) AS cnt
+                    """, repo=repo)
+                else:
+                    result = session.run("""
+                        MATCH (n)
+                        WITH n, CASE
+                            WHEN n.path IS NOT NULL
+                            THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
+                            ELSE 0
+                        END AS community
+                        SET n.community_id = community
+                        RETURN count(n) AS cnt
+                    """)
                 return result.single()["cnt"]
 
         return 0
@@ -516,20 +563,27 @@ class Neo4jKnowledgeGraph:
         """Analyze impact of changing a symbol."""
         driver = self._get_driver()
 
-        # Add repo filter when specified to avoid cross-repo collisions
-        repo_filter = "AND target.repo = $repo" if repo else ""
-
         with driver.session(database=self._database) as session:
-            # Get direct and transitive callers
-            callers = session.run(f"""
-                MATCH (target {{name: $name}})
-                WHERE true {repo_filter}
-                MATCH path = (caller)-[:CALLS*1..{max_depth}]->(target)
-                WHERE caller <> target
-                RETURN caller.name AS name, caller.path AS path,
-                       labels(caller)[0] AS type, length(path) AS depth
-                ORDER BY depth
-            """, name=symbol_name, repo=repo)
+            # Get direct and transitive callers with proper parameterized query
+            if repo:
+                callers = session.run(f"""
+                    MATCH (target {{name: $name}})
+                    WHERE target.repo = $repo
+                    MATCH path = (caller)-[:CALLS*1..{max_depth}]->(target)
+                    WHERE caller <> target
+                    RETURN caller.name AS name, caller.path AS path,
+                           labels(caller)[0] AS type, length(path) AS depth
+                    ORDER BY depth
+                """, name=symbol_name, repo=repo)
+            else:
+                callers = session.run(f"""
+                    MATCH (target {{name: $name}})
+                    MATCH path = (caller)-[:CALLS*1..{max_depth}]->(target)
+                    WHERE caller <> target
+                    RETURN caller.name AS name, caller.path AS path,
+                           labels(caller)[0] AS type, length(path) AS depth
+                    ORDER BY depth
+                """, name=symbol_name)
 
             caller_list = [dict(r) for r in callers]
 
@@ -563,30 +617,47 @@ class Neo4jKnowledgeGraph:
         """Find similar symbols based on call patterns."""
         driver = self._get_driver()
 
-        # Add repo filter when specified to avoid cross-repo collisions
-        repo_filter = "AND target.repo = $repo" if repo else ""
-
         with driver.session(database=self._database) as session:
-            # Jaccard similarity on callees
-            result = session.run(f"""
-                MATCH (target {{name: $name}})
-                WHERE true {repo_filter}
-                MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
-                WHERE similar <> target
-                WITH target, similar, count(shared) AS shared_calls
-                MATCH (target)-[:CALLS]->(t_calls)
-                WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
-                MATCH (similar)-[:CALLS]->(s_calls)
-                WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
-                WITH similar,
-                     toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
-                WHERE jaccard > 0.1
-                RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
-                       similar.path AS path, similar.signature AS signature,
-                       jaccard AS similarity
-                ORDER BY jaccard DESC
-                LIMIT $limit
-            """, name=symbol_name, repo=repo, limit=limit)
+            # Jaccard similarity on callees with proper parameterization
+            if repo:
+                result = session.run("""
+                    MATCH (target {name: $name})
+                    WHERE target.repo = $repo
+                    MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
+                    WHERE similar <> target
+                    WITH target, similar, count(shared) AS shared_calls
+                    MATCH (target)-[:CALLS]->(t_calls)
+                    WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
+                    MATCH (similar)-[:CALLS]->(s_calls)
+                    WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                    WITH similar,
+                         toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
+                    WHERE jaccard > 0.1
+                    RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
+                           similar.path AS path, similar.signature AS signature,
+                           jaccard AS similarity
+                    ORDER BY jaccard DESC
+                    LIMIT $limit
+                """, name=symbol_name, repo=repo, limit=limit)
+            else:
+                result = session.run("""
+                    MATCH (target {name: $name})
+                    MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
+                    WHERE similar <> target
+                    WITH target, similar, count(shared) AS shared_calls
+                    MATCH (target)-[:CALLS]->(t_calls)
+                    WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
+                    MATCH (similar)-[:CALLS]->(s_calls)
+                    WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                    WITH similar,
+                         toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
+                    WHERE jaccard > 0.1
+                    RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
+                           similar.path AS path, similar.signature AS signature,
+                           jaccard AS similarity
+                    ORDER BY jaccard DESC
+                    LIMIT $limit
+                """, name=symbol_name, limit=limit)
             return [dict(r) for r in result]
 
     def get_subgraph_context(
@@ -604,22 +675,31 @@ class Neo4jKnowledgeGraph:
         """
         driver = self._get_driver()
 
-        # Add repo filter when specified to avoid cross-repo collisions
-        repo_filter = "AND center.repo = $repo" if repo else ""
-
         with driver.session(database=self._database) as session:
-            result = session.run(f"""
-                MATCH (center {{name: $name}})
-                WHERE true {repo_filter}
-                CALL apoc.path.subgraphAll(center, {{
-                    maxLevel: $radius,
-                    relationshipFilter: 'CALLS|IMPORTS|INHERITS_FROM|CONTAINS'
-                }})
-                YIELD nodes, relationships
-                RETURN nodes, relationships
-            """, name=symbol_name, repo=repo, radius=radius)
-
+            # Try APOC first with proper parameterization
             try:
+                if repo:
+                    result = session.run("""
+                        MATCH (center {name: $name})
+                        WHERE center.repo = $repo
+                        CALL apoc.path.subgraphAll(center, {
+                            maxLevel: $radius,
+                            relationshipFilter: 'CALLS|IMPORTS|INHERITS_FROM|CONTAINS'
+                        })
+                        YIELD nodes, relationships
+                        RETURN nodes, relationships
+                    """, name=symbol_name, repo=repo, radius=radius)
+                else:
+                    result = session.run("""
+                        MATCH (center {name: $name})
+                        CALL apoc.path.subgraphAll(center, {
+                            maxLevel: $radius,
+                            relationshipFilter: 'CALLS|IMPORTS|INHERITS_FROM|CONTAINS'
+                        })
+                        YIELD nodes, relationships
+                        RETURN nodes, relationships
+                    """, name=symbol_name, radius=radius)
+
                 record = result.single()
                 if record:
                     nodes = []
@@ -648,28 +728,64 @@ class Neo4jKnowledgeGraph:
             except Exception as e:
                 logger.debug(f"APOC subgraph query failed, falling back: {e}")
 
-            # Fallback without APOC (also with repo filter)
-            result = session.run(f"""
-                MATCH (center {{name: $name}})
-                WHERE true {repo_filter}
-                MATCH path = (center)-[*1..{radius}]-(related)
-                WITH center, collect(DISTINCT related) AS nodes,
-                     collect(DISTINCT relationships(path)) AS all_rels
-                UNWIND all_rels AS rel_list
-                UNWIND rel_list AS rel
-                WITH center, nodes, collect(DISTINCT rel) AS rels
-                RETURN center, nodes, rels
-            """, name=symbol_name, repo=repo)
+            # Fallback without APOC - proper parameterization
+            if repo:
+                result = session.run(f"""
+                    MATCH (center {{name: $name}})
+                    WHERE center.repo = $repo
+                    MATCH path = (center)-[*1..{radius}]-(related)
+                    WITH center, collect(DISTINCT related) AS nodes,
+                         collect(DISTINCT relationships(path)) AS all_rels
+                    UNWIND all_rels AS rel_list
+                    UNWIND rel_list AS rel
+                    WITH center, nodes, collect(DISTINCT rel) AS rels
+                    RETURN center, nodes, rels
+                """, name=symbol_name, repo=repo)
+            else:
+                result = session.run(f"""
+                    MATCH (center {{name: $name}})
+                    MATCH path = (center)-[*1..{radius}]-(related)
+                    WITH center, collect(DISTINCT related) AS nodes,
+                         collect(DISTINCT relationships(path)) AS all_rels
+                    UNWIND all_rels AS rel_list
+                    UNWIND rel_list AS rel
+                    WITH center, nodes, collect(DISTINCT rel) AS rels
+                    RETURN center, nodes, rels
+                """, name=symbol_name)
 
             record = result.single()
             if not record:
                 return {"center": symbol_name, "nodes": [], "relationships": []}
 
+            # Extract actual node data from the fallback query
+            nodes = []
+            if record["nodes"]:
+                for n in record["nodes"]:
+                    node_data = dict(n)
+                    node_data["labels"] = list(n.labels) if hasattr(n, "labels") else []
+                    if not include_code and "docstring" in node_data:
+                        node_data["docstring"] = node_data["docstring"][:200] + "..."
+                    nodes.append(node_data)
+
+            # Extract actual relationship data
+            rels = []
+            if record["rels"]:
+                for r in record["rels"]:
+                    try:
+                        rels.append({
+                            "source": r.start_node.get("name", "") if hasattr(r, "start_node") else "",
+                            "target": r.end_node.get("name", "") if hasattr(r, "end_node") else "",
+                            "type": r.type if hasattr(r, "type") else "",
+                        })
+                    except Exception:
+                        # Handle neo4j relationship object variations
+                        pass
+
             return {
                 "center": symbol_name,
                 "radius": radius,
-                "node_count": len(record["nodes"]) if record["nodes"] else 0,
-                "rel_count": len(record["rels"]) if record["rels"] else 0,
+                "nodes": nodes,
+                "relationships": rels,
             }
 
     def get_stats(self, repo: Optional[str] = None) -> KnowledgeGraphStats:
@@ -726,19 +842,25 @@ class Neo4jKnowledgeGraph:
         """
         driver = self._get_driver()
 
-        # Add repo filter when specified to avoid cross-repo collisions
-        repo_filter = "AND source.repo = $repo AND target.repo = $repo" if repo else ""
-
         with driver.session(database=self._database) as session:
-            # Use shortestPath with depth limit
-            result = session.run(f"""
-                MATCH (source {{name: $source}})
-                MATCH (target {{name: $target}})
-                WHERE true {repo_filter}
-                MATCH path = shortestPath((source)-[*1..{max_depth}]-(target))
-                RETURN length(path) AS distance
-                LIMIT 1
-            """, source=source_symbol, target=target_symbol, repo=repo)
+            # Use shortestPath with depth limit and proper parameterization
+            if repo:
+                result = session.run(f"""
+                    MATCH (source {{name: $source}})
+                    MATCH (target {{name: $target}})
+                    WHERE source.repo = $repo AND target.repo = $repo
+                    MATCH path = shortestPath((source)-[*1..{max_depth}]-(target))
+                    RETURN length(path) AS distance
+                    LIMIT 1
+                """, source=source_symbol, target=target_symbol, repo=repo)
+            else:
+                result = session.run(f"""
+                    MATCH (source {{name: $source}})
+                    MATCH (target {{name: $target}})
+                    MATCH path = shortestPath((source)-[*1..{max_depth}]-(target))
+                    RETURN length(path) AS distance
+                    LIMIT 1
+                """, source=source_symbol, target=target_symbol)
 
             record = result.single()
             if record:

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,6 +31,7 @@ __all__ = [
     "GraphQueryResult",
     "QdrantGraphBackend",
     "get_graph_backend",
+    "ensure_plugins_path",
     "GRAPH_BACKEND_TYPE",
 ]
 
@@ -42,6 +45,27 @@ GRAPH_BACKEND_TYPE = "neo4j" if _NEO4J_ENABLED else "qdrant"
 
 # Lazy-loaded singleton backend instance
 _BACKEND_INSTANCE: "GraphBackend | None" = None
+
+# Track if plugins path has been added
+_PLUGINS_PATH_ADDED = False
+
+
+def ensure_plugins_path() -> Path:
+    """Ensure the plugins directory is in sys.path.
+
+    Call this before importing from plugin modules.
+    Returns the plugins directory path.
+    """
+    global _PLUGINS_PATH_ADDED
+    plugins_dir = Path(__file__).parent.parent.parent / "plugins"
+
+    if not _PLUGINS_PATH_ADDED:
+        plugins_str = str(plugins_dir)
+        if plugins_str not in sys.path:
+            sys.path.insert(0, plugins_str)
+        _PLUGINS_PATH_ADDED = True
+
+    return plugins_dir
 
 
 def get_graph_backend() -> "GraphBackend":
@@ -60,13 +84,7 @@ def get_graph_backend() -> "GraphBackend":
     if _NEO4J_ENABLED:
         # Try to load Neo4j plugin from plugins/ directory
         try:
-            # Plugin lives in plugins/neo4j_graph/
-            import sys
-            from pathlib import Path
-            plugins_dir = Path(__file__).parent.parent.parent / "plugins"
-            if str(plugins_dir) not in sys.path:
-                sys.path.insert(0, str(plugins_dir))
-
+            ensure_plugins_path()
             from neo4j_graph import Neo4jGraphBackend
             _BACKEND_INSTANCE = Neo4jGraphBackend()
             logger.info("Loaded Neo4j graph backend from plugin")

@@ -176,11 +176,18 @@ class QdrantGraphBackend(GraphBackend):
         graph_store: str,
         import_name: str,
         repo: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve an import to its source file path via Qdrant.
-        
+
         Converts dotted import names to file path patterns and searches
         the main collection.
+
+        Args:
+            graph_store: Graph store identifier
+            import_name: Dotted import name (e.g., "scripts.utils")
+            repo: Optional repo filter
+            language: Programming language for extension detection
         """
         # Extract base collection name from graph store
         collection = graph_store
@@ -190,33 +197,83 @@ class QdrantGraphBackend(GraphBackend):
         # Convert dotted import to file path suffix
         module_path = import_name.replace(".", "/")
 
+        # Language-specific file extensions
+        extensions_by_language = {
+            "python": [".py", ".pyi"],
+            "javascript": [".js", ".mjs"],
+            "typescript": [".ts", ".tsx"],
+            "go": [".go"],
+            "rust": [".rs"],
+            "java": [".java"],
+            "kotlin": [".kt"],
+            "c": [".c", ".h"],
+            "cpp": [".cpp", ".hpp", ".h"],
+            "csharp": [".cs"],
+            "ruby": [".rb"],
+        }
+
+        # Get extensions to try
+        if language and language.lower() in extensions_by_language:
+            extensions = extensions_by_language[language.lower()]
+        else:
+            extensions = [".py", ".ts", ".js", ".go", ".rs"]
+
         try:
             from qdrant_client import models as qmodels
 
-            # Search for files ending with the module path
-            must = [
-                qmodels.FieldCondition(
-                    key="path",
-                    match=qmodels.MatchText(text=f"/{module_path}.py"),
-                )
-            ]
-            if repo:
-                must.append(
+            # Try each extension until we find a match
+            for ext in extensions:
+                must = [
                     qmodels.FieldCondition(
-                        key="repo",
-                        match=qmodels.MatchValue(value=repo),
+                        key="path",
+                        match=qmodels.MatchText(text=f"/{module_path}{ext}"),
                     )
-                )
+                ]
+                if repo:
+                    must.append(
+                        qmodels.FieldCondition(
+                            key="repo",
+                            match=qmodels.MatchValue(value=repo),
+                        )
+                    )
 
-            result, _ = self._get_client().scroll(
-                collection_name=collection,
-                scroll_filter=qmodels.Filter(must=must),
-                limit=1,
-                with_payload=["path"],
-                with_vectors=False,
-            )
-            if result:
-                return result[0].payload.get("path")
+                result, _ = self._get_client().scroll(
+                    collection_name=collection,
+                    scroll_filter=qmodels.Filter(must=must),
+                    limit=1,
+                    with_payload=["path"],
+                    with_vectors=False,
+                )
+                if result:
+                    return result[0].payload.get("path")
+
+            # Try index file patterns
+            index_patterns = ["/__init__.py", "/index.ts", "/index.js", "/mod.rs"]
+            for pattern in index_patterns:
+                must = [
+                    qmodels.FieldCondition(
+                        key="path",
+                        match=qmodels.MatchText(text=f"/{module_path}{pattern}"),
+                    )
+                ]
+                if repo:
+                    must.append(
+                        qmodels.FieldCondition(
+                            key="repo",
+                            match=qmodels.MatchValue(value=repo),
+                        )
+                    )
+
+                result, _ = self._get_client().scroll(
+                    collection_name=collection,
+                    scroll_filter=qmodels.Filter(must=must),
+                    limit=1,
+                    with_payload=["path"],
+                    with_vectors=False,
+                )
+                if result:
+                    return result[0].payload.get("path")
+
         except Exception as e:
             logger.debug(f"Qdrant import lookup failed: {e}")
         return None

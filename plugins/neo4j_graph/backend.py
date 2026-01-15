@@ -31,12 +31,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "Neo4jGraphBackend",
+    "EDGE_TYPE_CALLS",
+    "EDGE_TYPE_IMPORTS",
+]
+
 # Edge types (match Qdrant backend)
 EDGE_TYPE_CALLS = "calls"
 EDGE_TYPE_IMPORTS = "imports"
-
-# Track initialized databases
-_INITIALIZED_DATABASES: set[str] = set()
 
 
 def _normalize_path(path: str) -> str:
@@ -66,10 +69,22 @@ class Neo4jGraphBackend(GraphBackend):
     - [:IMPORTS {edge_id, collection, caller_path, repo}]
     """
 
+    # Class-level cache for initialized databases (shared across instances)
+    # This is intentional - we only need to create indexes once per database
+    _initialized_databases: set[str] = set()
+
     def __init__(self):
         """Initialize the Neo4j graph backend."""
         self._driver = None
         self._driver_initialized = False
+
+    @classmethod
+    def clear_initialized_cache(cls) -> None:
+        """Clear the initialized databases cache.
+
+        Useful for testing or when database schema needs to be re-initialized.
+        """
+        cls._initialized_databases.clear()
 
     @property
     def backend_type(self) -> str:
@@ -129,8 +144,8 @@ class Neo4jGraphBackend(GraphBackend):
         Indexes are created on first use for efficient lookups.
         """
         db = self._get_database()
-        
-        if db in _INITIALIZED_DATABASES:
+
+        if db in self._initialized_databases:
             return base_collection or db
         
         try:
@@ -165,6 +180,11 @@ class Neo4jGraphBackend(GraphBackend):
                     CREATE INDEX file_collection_idx IF NOT EXISTS
                     FOR (f:File) ON (f.collection)
                 """)
+                # Language index for language-specific queries
+                session.run("""
+                    CREATE INDEX symbol_language_idx IF NOT EXISTS
+                    FOR (s:Symbol) ON (s.language)
+                """)
                 # Relationship property indexes (Neo4j 5.x)
                 session.run("""
                     CREATE INDEX calls_edge_id_idx IF NOT EXISTS
@@ -182,8 +202,12 @@ class Neo4jGraphBackend(GraphBackend):
                     CREATE INDEX imports_collection_idx IF NOT EXISTS
                     FOR ()-[r:IMPORTS]-() ON (r.collection)
                 """)
+                session.run("""
+                    CREATE INDEX calls_language_idx IF NOT EXISTS
+                    FOR ()-[r:CALLS]-() ON (r.language)
+                """)
             
-            _INITIALIZED_DATABASES.add(db)
+            self._initialized_databases.add(db)
             logger.info(f"Neo4j graph store initialized: {db}")
             return base_collection or db
 
@@ -509,8 +533,16 @@ class Neo4jGraphBackend(GraphBackend):
         graph_store: str,
         import_name: str,
         repo: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> Optional[str]:
-        """Resolve an import to its source file path via Neo4j."""
+        """Resolve an import to its source file path via Neo4j.
+
+        Args:
+            graph_store: Collection/graph store name
+            import_name: Dotted import name (e.g., "scripts.utils")
+            repo: Optional repo filter
+            language: Programming language for extension detection
+        """
         driver = self._get_driver()
         db = self._get_database()
         collection = self._get_collection(graph_store)
@@ -518,18 +550,63 @@ class Neo4jGraphBackend(GraphBackend):
         # Convert dotted import to file path pattern
         module_parts = import_name.replace(".", "/")
 
+        # Language-specific file extensions (supports 16+ languages)
+        extensions_by_language = {
+            "python": [".py", ".pyi"],
+            "javascript": [".js", ".mjs", ".cjs"],
+            "typescript": [".ts", ".tsx", ".mts", ".cts"],
+            "go": [".go"],
+            "rust": [".rs"],
+            "java": [".java"],
+            "kotlin": [".kt", ".kts"],
+            "c": [".c", ".h"],
+            "cpp": [".cpp", ".cc", ".cxx", ".hpp", ".h"],
+            "csharp": [".cs"],
+            "ruby": [".rb"],
+            "php": [".php"],
+            "swift": [".swift"],
+            "scala": [".scala"],
+            "elixir": [".ex", ".exs"],
+        }
+
+        # Get extensions to try
+        if language and language.lower() in extensions_by_language:
+            extensions = extensions_by_language[language.lower()]
+        else:
+            # Default: try common extensions
+            extensions = [".py", ".ts", ".js", ".go", ".rs", ".java"]
+
         try:
             with driver.session(database=db) as session:
-                result = session.run("""
-                    MATCH (s:Symbol {collection: $collection})
-                    WHERE s.path ENDS WITH $suffix
-                    RETURN s.path as path
-                    LIMIT 1
-                """, {"collection": collection, "suffix": f"/{module_parts}.py"})
+                # Try each extension until we find a match
+                for ext in extensions:
+                    suffix = f"/{module_parts}{ext}"
+                    result = session.run("""
+                        MATCH (s:Symbol {collection: $collection})
+                        WHERE s.path ENDS WITH $suffix
+                        RETURN s.path as path
+                        LIMIT 1
+                    """, {"collection": collection, "suffix": suffix})
 
-                record = result.single()
-                if record:
-                    return record["path"]
+                    record = result.single()
+                    if record:
+                        return record["path"]
+
+                # Also try index file patterns (e.g., module/index.ts)
+                index_patterns = ["/__init__.py", "/index.ts", "/index.js", "/mod.rs"]
+                for pattern in index_patterns:
+                    suffix = f"/{module_parts}{pattern}"
+                    result = session.run("""
+                        MATCH (s:Symbol {collection: $collection})
+                        WHERE s.path ENDS WITH $suffix
+                        RETURN s.path as path
+                        LIMIT 1
+                    """, {"collection": collection, "suffix": suffix})
+
+                    record = result.single()
+                    if record:
+                        return record["path"]
+
                 return None
 
         except Exception as e:
