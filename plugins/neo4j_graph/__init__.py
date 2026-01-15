@@ -1,13 +1,27 @@
 # Copyright 2025 John Donalson and Context-Engine Contributors.
-# Licensed under the Business Source License 1.1.
-# See the LICENSE file in the repository root for full terms.
+# Free for local development/testing. Commercial/production use requires license.
+# Contact mirlok89@gmail.com for commercial licensing.
 """
 Neo4j Knowledge Graph Plugin for Context-Engine.
 
-This is a STANDALONE PLUGIN that can be:
-- Extracted from the main repo and maintained privately
-- Dropped into any Context-Engine deployment
-- Installed via pip: pip install context-engine-neo4j-graph
+LICENSING:
+    FREE FOR:
+    - Local development and testing on developer machines
+    - Evaluation and proof-of-concept work
+    - Non-commercial personal projects
+
+    COMMERCIAL LICENSE REQUIRED FOR:
+    - Production deployments
+    - Commercial use (revenue-generating applications)
+    - Redistribution or inclusion in commercial products
+    - Hosted/managed services
+
+    Contact: mirlok89@gmail.com
+
+    NEO4J DATABASE:
+    Also requires Neo4j software with appropriate license from Neo4j, Inc.
+    See https://neo4j.com/licensing/
+    Neo4j® is a registered trademark of Neo4j, Inc.
 
 The plugin provides:
 - Neo4j graph database backend for code relationships
@@ -19,14 +33,14 @@ Usage:
     # Enable via environment variable
     export NEO4J_GRAPH=1
     export NEO4J_PASSWORD=your_password
-    
+
     # Plugin auto-registers when Context-Engine starts
-    
+
 Requirements:
-    - Neo4j 5.x (Community or Enterprise)
+    - Neo4j 5.x with appropriate Neo4j license
     - neo4j Python driver: pip install neo4j
-    
-For Qdrant backend (open core default), no plugin needed.
+
+For Qdrant backend (open core default), no additional license needed.
 """
 from __future__ import annotations
 

@@ -2,6 +2,39 @@
 
 Standalone Neo4j graph backend plugin for Context-Engine.
 
+## Licensing Requirements
+
+### Context-Engine Neo4j Plugin License
+
+**Free for:**
+- Local development and testing
+- Evaluation and proof-of-concept
+- Non-commercial personal projects
+
+**Commercial license required for:**
+- Production deployments
+- Commercial use (revenue-generating applications)
+- Redistribution or inclusion in commercial products
+- Hosted/managed services
+
+**Contact for commercial licensing:** mirlok89@gmail.com
+
+### Neo4j Database License
+
+This plugin also requires Neo4j database software, licensed separately by Neo4j, Inc.:
+
+| Neo4j Edition | License | Use Case |
+|---------------|---------|----------|
+| **Community Edition** | GPL v3 | Open source projects, development, testing |
+| **Enterprise Edition** | Commercial | Production deployments requiring enterprise features |
+| **AuraDB (Cloud)** | Subscription | Managed cloud service |
+
+You must independently comply with [Neo4j's licensing terms](https://neo4j.com/licensing/).
+
+Neo4j® is a registered trademark of Neo4j, Inc.
+
+---
+
 ## Overview
 
 This plugin provides a Neo4j-based graph backend as an alternative to the default Qdrant graph storage. It enables:
