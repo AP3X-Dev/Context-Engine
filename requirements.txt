@@ -32,6 +32,7 @@ python-multipart
 jinja2
 openai>=2.11.0
 openlit>=1.0.0  # LLM observability SDK
+neo4j>=5.0.0  # Neo4j graph backend for symbol_graph queries
 
 # Test-only
 pytest
