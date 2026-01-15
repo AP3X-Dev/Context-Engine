@@ -32,13 +32,27 @@ __all__ = [
     "QdrantGraphBackend",
     "get_graph_backend",
     "ensure_plugins_path",
+    "is_neo4j_enabled",
     "GRAPH_BACKEND_TYPE",
 ]
 
+
+def is_neo4j_enabled() -> bool:
+    """Check if Neo4j graph backend is enabled via environment.
+
+    Checks the NEO4J_GRAPH environment variable.
+    This is the canonical function to use across the codebase.
+
+    Returns:
+        True if NEO4J_GRAPH is set to a truthy value (1, true, yes, on).
+    """
+    return str(os.environ.get("NEO4J_GRAPH", "")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
 # Environment variable to enable Neo4j backend (requires plugin)
-_NEO4J_ENABLED = str(os.environ.get("NEO4J_GRAPH", "")).strip().lower() in {
-    "1", "true", "yes", "on"
-}
+_NEO4J_ENABLED = is_neo4j_enabled()
 
 # Track which backend is active
 GRAPH_BACKEND_TYPE = "neo4j" if _NEO4J_ENABLED else "qdrant"

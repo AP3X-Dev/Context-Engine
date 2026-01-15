@@ -7,12 +7,15 @@ process_file_with_smart_reindexing, and related orchestration logic.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import hashlib
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from qdrant_client import QdrantClient, models
 
@@ -76,9 +79,9 @@ from scripts.ingest.qdrant import (
     PATTERN_VECTOR_NAME,
 )
 # Graph edges - route through backend adapter when Neo4j is enabled
-_NEO4J_GRAPH_ENABLED = os.environ.get("NEO4J_GRAPH", "").strip().lower() in {
-    "1", "true", "yes", "on"
-}
+from scripts.graph_backends import is_neo4j_enabled
+
+_NEO4J_GRAPH_ENABLED = is_neo4j_enabled()
 
 if _NEO4J_GRAPH_ENABLED:
     # Use backend abstraction layer for Neo4j support
@@ -941,10 +944,7 @@ def _index_single_file_inner(
                     upsert_edges(client, graph_coll, all_edges)
         except Exception as e:
             # Don't fail indexing if graph edges fail
-            try:
-                print(f"[graph_edges] Warning: Failed to emit edges for {file_path}: {e}")
-            except Exception:
-                pass
+            logger.warning(f"Failed to emit graph edges for {file_path}: {e}")
 
         try:
             ws = os.environ.get("WATCH_ROOT") or os.environ.get("WORKSPACE_PATH") or "/work"
@@ -1774,16 +1774,13 @@ def process_file_with_smart_reindexing(
                 if all_edges:
                     upsert_edges(client, graph_coll, all_edges)
         except Exception as e:
-            try:
-                print(f"[graph_edges] Warning: Failed to emit edges for {fp}: {e}")
-            except Exception:
-                pass
+            logger.warning(f"Failed to emit graph edges for {fp}: {e}")
 
     try:
         if set_cached_symbols:
             set_cached_symbols(fp, symbol_meta, file_hash)
     except Exception as e:
-        print(f"[SMART_REINDEX] Failed to update symbol cache for {file_path}: {e}")
+        logger.warning(f"Failed to update symbol cache for {file_path}: {e}")
     try:
         if set_cached_file_hash:
             set_cached_file_hash(fp, file_hash, per_file_repo)

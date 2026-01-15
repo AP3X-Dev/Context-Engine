@@ -16,14 +16,26 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set
 
-from . import ensure_plugins_path
+from . import ensure_plugins_path, is_neo4j_enabled
 
 logger = logging.getLogger(__name__)
 
-# Internal flag - do not expose
-_ENHANCED_GRAPH_AVAILABLE = str(os.environ.get("NEO4J_GRAPH", "")).strip().lower() in {
-    "1", "true", "yes", "on"
-}
+__all__ = [
+    # Query functions
+    "get_subgraph_context",
+    "get_impact_analysis",
+    "get_transitive_callers",
+    "get_symbol_importance",
+    "find_similar_symbols",
+    "get_shortest_path",
+    # Enhancement functions
+    "enhance_search_results",
+    "get_related_symbols",
+    "expand_query_with_graph",
+]
+
+# Internal flag - use shared utility
+_ENHANCED_GRAPH_AVAILABLE = is_neo4j_enabled()
 
 # Lazy-loaded knowledge graph instance
 _KNOWLEDGE_GRAPH = None
