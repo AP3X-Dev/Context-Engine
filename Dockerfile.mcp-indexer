@@ -35,6 +35,9 @@ COPY scripts /app/scripts
 
 COPY bench /app/bench
 
+# Copy plugins for Neo4j graph backend and other extensions
+COPY plugins /app/plugins
+
 # Expose SSE port for this companion server
 EXPOSE 8001
 
