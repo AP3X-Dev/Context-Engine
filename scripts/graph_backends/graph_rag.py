@@ -27,11 +27,11 @@ __all__ = [
     "get_transitive_callers",
     "get_symbol_importance",
     "find_similar_symbols",
-    "get_shortest_path",
-    # Enhancement functions
-    "enhance_search_results",
-    "get_related_symbols",
-    "expand_query_with_graph",
+    "get_graph_distance",
+    # Reranking and context
+    "rerank_by_graph_distance",
+    "get_connected_symbols",
+    "get_k_hop_context",
 ]
 
 # Internal flag - use shared utility
