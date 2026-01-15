@@ -436,9 +436,11 @@ def _format_neo4j_graph_toon(response: Dict[str, Any]) -> str:
         if path:
             lines.append(f"  → {sym} @ {path}")
         elif hop:
-            lines.append(f"  → {sym} (hop {hop})")
+            repo_suffix = f" [{repo}]" if repo else ""
+            lines.append(f"  → {sym} (hop {hop}){repo_suffix}")
         else:
-            lines.append(f"  → {sym}")
+            repo_suffix = f" [{repo}]" if repo else ""
+            lines.append(f"  → {sym}{repo_suffix}")
 
         if r.get("path_nodes"):
             lines.append(f"    path: {' → '.join(r['path_nodes'])}")
