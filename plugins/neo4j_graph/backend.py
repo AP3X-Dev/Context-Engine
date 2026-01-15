@@ -305,7 +305,16 @@ class Neo4jGraphBackend(GraphBackend):
                     CREATE INDEX calls_language_idx IF NOT EXISTS
                     FOR ()-[r:CALLS]-() ON (r.language)
                 """)
-            
+                # Index for caller_point_id to support "find all edges from chunk X" queries
+                session.run("""
+                    CREATE INDEX calls_caller_point_idx IF NOT EXISTS
+                    FOR ()-[r:CALLS]-() ON (r.caller_point_id)
+                """)
+                session.run("""
+                    CREATE INDEX imports_caller_point_idx IF NOT EXISTS
+                    FOR ()-[r:IMPORTS]-() ON (r.caller_point_id)
+                """)
+
             self._initialized_databases.add(db)
             logger.info(f"Neo4j graph store initialized: {db}")
             return base_collection or db

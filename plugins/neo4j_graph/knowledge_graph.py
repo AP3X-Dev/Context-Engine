@@ -894,6 +894,76 @@ class Neo4jKnowledgeGraph:
                 return record["distance"]
             return None
 
+    def get_batch_shortest_path_lengths(
+        self,
+        source_symbols: List[str],
+        target_symbols: List[str],
+        repo: Optional[str] = None,
+        max_depth: int = 4,
+    ) -> Dict[Tuple[str, str], int]:
+        """Get shortest path lengths for multiple source-target pairs in a single query.
+
+        This is much more efficient than calling get_shortest_path_length repeatedly.
+
+        Args:
+            source_symbols: List of source symbol names
+            target_symbols: List of target symbol names
+            repo: Optional repo filter
+            max_depth: Maximum path length to search
+
+        Returns:
+            Dict mapping (source, target) tuples to their shortest path lengths.
+            Pairs with no path are not included in the result.
+        """
+        if not source_symbols or not target_symbols:
+            return {}
+
+        driver = self._get_driver()
+        safe_depth = _sanitize_depth(max_depth, default=4, max_depth=8)
+
+        # Deduplicate inputs
+        sources = list(set(source_symbols))[:10]  # Limit to prevent huge queries
+        targets = list(set(target_symbols))[:50]
+
+        with driver.session(database=self._database) as session:
+            try:
+                if repo:
+                    result = session.run(f"""
+                        UNWIND $sources AS src_name
+                        UNWIND $targets AS tgt_name
+                        MATCH (source {{name: src_name}})
+                        MATCH (target {{name: tgt_name}})
+                        WHERE source.repo = $repo AND target.repo = $repo
+                              AND source <> target
+                        MATCH path = shortestPath((source)-[*1..{safe_depth}]-(target))
+                        RETURN source.name AS source, target.name AS target, length(path) AS distance
+                    """, sources=sources, targets=targets, repo=repo)
+                else:
+                    result = session.run(f"""
+                        UNWIND $sources AS src_name
+                        UNWIND $targets AS tgt_name
+                        MATCH (source {{name: src_name}})
+                        MATCH (target {{name: tgt_name}})
+                        WHERE source <> target
+                        MATCH path = shortestPath((source)-[*1..{safe_depth}]-(target))
+                        RETURN source.name AS source, target.name AS target, length(path) AS distance
+                    """, sources=sources, targets=targets)
+
+                distances: Dict[Tuple[str, str], int] = {}
+                for record in result:
+                    src = record["source"]
+                    tgt = record["target"]
+                    dist = record["distance"]
+                    # Keep minimum distance if same pair found multiple times
+                    key = (src, tgt)
+                    if key not in distances or dist < distances[key]:
+                        distances[key] = dist
+                return distances
+
+            except Exception as e:
+                logger.debug(f"Batch shortest path query failed: {e}")
+                return {}
+
 
 # =============================================================================
 # Singleton instance
@@ -909,3 +979,24 @@ def get_knowledge_graph() -> Neo4jKnowledgeGraph:
         _KNOWLEDGE_GRAPH = Neo4jKnowledgeGraph()
     return _KNOWLEDGE_GRAPH
 
+
+def _cleanup_knowledge_graph() -> None:
+    """Cleanup knowledge graph singleton on process exit."""
+    global _KNOWLEDGE_GRAPH, _EXECUTOR
+    if _KNOWLEDGE_GRAPH is not None:
+        try:
+            _KNOWLEDGE_GRAPH.close()
+            logger.debug("Knowledge graph driver closed on shutdown")
+        except Exception:
+            pass
+        _KNOWLEDGE_GRAPH = None
+    if _EXECUTOR is not None:
+        try:
+            _EXECUTOR.shutdown(wait=False)
+        except Exception:
+            pass
+        _EXECUTOR = None
+
+
+# Register cleanup on process exit
+atexit.register(_cleanup_knowledge_graph)

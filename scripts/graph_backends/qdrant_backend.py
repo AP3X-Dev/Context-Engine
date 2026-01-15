@@ -20,6 +20,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "QdrantGraphBackend",
+    "GRAPH_COLLECTION_SUFFIX",
+    "EDGE_TYPE_CALLS",
+    "EDGE_TYPE_IMPORTS",
+]
+
 # Re-use constants from graph_edges
 GRAPH_COLLECTION_SUFFIX = "_graph"
 EDGE_TYPE_CALLS = "calls"

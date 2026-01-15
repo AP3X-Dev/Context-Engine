@@ -219,7 +219,62 @@ def rerank_by_graph_distance(
     if not kg:
         return results
 
-    # Calculate graph distance boost for each result
+    # Extract all target symbols from results
+    result_symbols: List[str] = []
+    symbol_to_results: Dict[str, List[Dict[str, Any]]] = {}
+
+    for result in results:
+        symbol_path = (
+            result.get("metadata", {}).get("symbol_path") or
+            result.get("symbol_path") or
+            result.get("symbol") or
+            ""
+        )
+        if symbol_path:
+            result_symbols.append(symbol_path)
+            if symbol_path not in symbol_to_results:
+                symbol_to_results[symbol_path] = []
+            symbol_to_results[symbol_path].append(result)
+
+    if not result_symbols:
+        return results
+
+    # Limit query symbols for efficiency
+    limited_query_symbols = query_symbols[:3]
+
+    # Try batch query first (much more efficient)
+    distances: Dict[tuple, int] = {}
+    try:
+        if hasattr(kg, 'get_batch_shortest_path_lengths'):
+            distances = kg.get_batch_shortest_path_lengths(
+                limited_query_symbols,
+                result_symbols,
+                repo=repo,
+                max_depth=4
+            )
+    except Exception:
+        pass
+
+    # Fall back to individual queries only if batch failed and we have few results
+    if not distances and len(results) <= 10:
+        for result in results:
+            symbol_path = (
+                result.get("metadata", {}).get("symbol_path") or
+                result.get("symbol_path") or
+                result.get("symbol") or
+                ""
+            )
+            if not symbol_path:
+                continue
+
+            for qs in limited_query_symbols:
+                dist = get_graph_distance(qs, symbol_path, repo=repo)
+                if dist is not None:
+                    key = (qs, symbol_path)
+                    if key not in distances or dist < distances[key]:
+                        distances[key] = dist
+
+    # Apply boosts based on distances
     for result in results:
         symbol_path = (
             result.get("metadata", {}).get("symbol_path") or
@@ -232,8 +287,8 @@ def rerank_by_graph_distance(
 
         # Find minimum distance to any query symbol
         min_distance = None
-        for qs in query_symbols[:3]:  # Limit to 3 query symbols
-            dist = get_graph_distance(qs, symbol_path, repo=repo)
+        for qs in limited_query_symbols:
+            dist = distances.get((qs, symbol_path))
             if dist is not None:
                 if min_distance is None or dist < min_distance:
                     min_distance = dist
