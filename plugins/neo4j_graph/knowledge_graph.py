@@ -565,6 +565,9 @@ class Neo4jKnowledgeGraph:
         type_filter = f":{node_type.value}" if node_type else ""
         repo_filter = "AND n.repo = $repo" if repo else ""
 
+        # Escape regex metacharacters to prevent injection/expensive patterns
+        escaped_name = _escape_regex(name)
+
         with driver.session(database=self._database) as session:
             result = session.run(f"""
                 MATCH (n{type_filter})
@@ -575,7 +578,7 @@ class Neo4jKnowledgeGraph:
                        n.pagerank AS importance
                 ORDER BY n.pagerank DESC
                 LIMIT 20
-            """, pattern=f"(?i).*{name}.*", repo=repo)
+            """, pattern=f"(?i).*{escaped_name}.*", repo=repo)
             return [dict(r) for r in result]
 
     def get_callers(

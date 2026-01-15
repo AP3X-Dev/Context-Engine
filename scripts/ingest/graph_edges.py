@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -86,7 +87,32 @@ _ENSURED_GRAPH_COLLECTIONS: set[str] = set()
 _GRAPH_VECTOR_MODE: dict[str, str] = {}
 
 # Track collections known to not exist (avoid repeated 404s in benchmarks)
-_MISSING_GRAPH_COLLECTIONS: set[str] = set()
+# Now uses TTL-based expiry to handle transient 404s
+_MISSING_COLLECTIONS_TTL_SECONDS = int(os.environ.get("GRAPH_MISSING_TTL", "300"))  # 5 minutes default
+_MISSING_GRAPH_COLLECTIONS: Dict[str, float] = {}  # collection_name -> expiry_timestamp
+
+
+def _is_collection_missing(collection: str) -> bool:
+    """Check if a collection is cached as missing (with TTL expiry)."""
+    expiry = _MISSING_GRAPH_COLLECTIONS.get(collection)
+    if expiry is None:
+        return False
+    if time.time() > expiry:
+        # Entry expired, remove it
+        _MISSING_GRAPH_COLLECTIONS.pop(collection, None)
+        return False
+    return True
+
+
+def _mark_collection_missing(collection: str) -> None:
+    """Mark a collection as missing with TTL expiry."""
+    _MISSING_GRAPH_COLLECTIONS[collection] = time.time() + _MISSING_COLLECTIONS_TTL_SECONDS
+
+
+def _clear_collection_missing(collection: str) -> None:
+    """Remove a collection from the missing cache."""
+    _MISSING_GRAPH_COLLECTIONS.pop(collection, None)
+
 
 # Fallback vector schema for Qdrant deployments that don't support vector-less collections.
 _EDGE_VECTOR_NAME = "_edge"
@@ -131,8 +157,8 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
         info = client.get_collection(graph_coll)
         _GRAPH_VECTOR_MODE[graph_coll] = _detect_vector_mode(info)
         _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
-        # Clear from missing set if it was previously marked missing
-        _MISSING_GRAPH_COLLECTIONS.discard(graph_coll)
+        # Clear from missing cache if it was previously marked missing
+        _clear_collection_missing(graph_coll)
         return graph_coll
     except Exception:
         pass  # Collection doesn't exist, create it
@@ -174,14 +200,14 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
                     logger.warning(f"Failed to create index on {field}: {e}")
 
         _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
-        # Clear from missing set now that it's confirmed to exist
-        _MISSING_GRAPH_COLLECTIONS.discard(graph_coll)
+        # Clear from missing cache now that it's confirmed to exist
+        _clear_collection_missing(graph_coll)
         return graph_coll
 
     except Exception as e:
         if "already exists" in str(e).lower():
             _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
-            _MISSING_GRAPH_COLLECTIONS.discard(graph_coll)
+            _clear_collection_missing(graph_coll)
             return graph_coll
         else:
             logger.error(f"Failed to create graph collection {graph_coll}: {e}")
