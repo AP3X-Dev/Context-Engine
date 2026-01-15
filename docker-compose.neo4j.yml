@@ -1,0 +1,89 @@
+# Neo4j Graph Database - Optional SaaS-Ready Graph Backend
+# Usage: docker compose -f docker-compose.yml -f docker-compose.neo4j.yml up -d
+#
+# This adds Neo4j as an alternative graph backend for symbol relationships.
+# Provides advanced graph traversals, path finding, and relationship analytics.
+#
+# Enable via: NEO4J_GRAPH=1 in your .env file
+#
+# Browser: http://localhost:7474 (login: neo4j / contextengine)
+# Bolt: bolt://localhost:7687
+
+services:
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: neo4j-graph
+    ports:
+      - "7474:7474"   # HTTP browser interface
+      - "7687:7687"   # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-contextengine}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_pagecache_size=512M
+      - NEO4J_dbms_memory_heap_max__size=512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - dev-remote-network
+
+  # Enable Neo4j graph backend for indexer services
+  indexer:
+    environment:
+      - NEO4J_GRAPH=1
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-contextengine}
+      - NEO4J_DATABASE=neo4j
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  watcher:
+    environment:
+      - NEO4J_GRAPH=1
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-contextengine}
+      - NEO4J_DATABASE=neo4j
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  # Enable Neo4j for MCP indexer services (symbol_graph queries)
+  mcp_indexer:
+    environment:
+      - NEO4J_GRAPH=1
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-contextengine}
+      - NEO4J_DATABASE=neo4j
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  mcp_indexer_http:
+    environment:
+      - NEO4J_GRAPH=1
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-contextengine}
+      - NEO4J_DATABASE=neo4j
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+

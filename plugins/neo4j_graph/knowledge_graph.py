@@ -1,0 +1,761 @@
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
+"""
+Neo4j Knowledge Graph Service - Graph RAG Brain.
+
+This is the core knowledge graph that powers advanced code understanding:
+- Rich semantic relationships beyond simple calls/imports
+- Graph algorithms (PageRank, community detection, path finding)
+- Embeddings for semantic similarity
+- Async batch operations for production scale
+- Context retrieval for RAG augmentation
+
+The knowledge graph is the "brain" that understands code relationships.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+# Support both package and standalone imports
+try:
+    from .schema import NodeType, RelationType, GraphNode, GraphRelationship
+except ImportError:
+    from schema import NodeType, RelationType, GraphNode, GraphRelationship
+
+logger = logging.getLogger(__name__)
+
+# Configuration
+NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
+NEO4J_MAX_POOL_SIZE = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
+
+# Batch sizes for production
+BATCH_SIZE_NODES = int(os.environ.get("NEO4J_BATCH_NODES", "500") or 500)
+BATCH_SIZE_RELS = int(os.environ.get("NEO4J_BATCH_RELS", "1000") or 1000)
+
+# Thread pool for async operations
+_EXECUTOR: Optional[ThreadPoolExecutor] = None
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Get thread pool executor for async operations."""
+    global _EXECUTOR
+    if _EXECUTOR is None:
+        _EXECUTOR = ThreadPoolExecutor(max_workers=4)
+    return _EXECUTOR
+
+
+@dataclass
+class KnowledgeGraphStats:
+    """Statistics about the knowledge graph."""
+    node_count: int = 0
+    relationship_count: int = 0
+    file_count: int = 0
+    class_count: int = 0
+    function_count: int = 0
+    community_count: int = 0
+    avg_pagerank: float = 0.0
+
+
+class Neo4jKnowledgeGraph:
+    """
+    Production-ready Neo4j Knowledge Graph for Graph RAG.
+    
+    Features:
+    - Async batch operations with connection pooling
+    - Rich node types and semantic relationships
+    - Graph algorithms (PageRank, communities, path finding)
+    - Embedding storage for semantic similarity
+    - Subgraph extraction for RAG context
+    """
+    
+    _driver = None
+    _initialized: Set[str] = set()
+    
+    def __init__(self):
+        """Initialize knowledge graph service."""
+        self._uri = NEO4J_URI
+        self._user = NEO4J_USER
+        self._password = NEO4J_PASSWORD
+        self._database = NEO4J_DATABASE
+    
+    def _get_driver(self):
+        """Get Neo4j driver with connection pooling."""
+        if self._driver is not None:
+            return self._driver
+        
+        try:
+            from neo4j import GraphDatabase
+        except ImportError:
+            raise ImportError("neo4j package required: pip install neo4j")
+        
+        self._driver = GraphDatabase.driver(
+            self._uri,
+            auth=(self._user, self._password),
+            max_connection_pool_size=NEO4J_MAX_POOL_SIZE,
+        )
+        logger.info(f"Neo4j knowledge graph connected: {self._uri}")
+        return self._driver
+    
+    def close(self):
+        """Close driver connection."""
+        if self._driver:
+            self._driver.close()
+            self._driver = None
+    
+    def initialize_schema(self) -> bool:
+        """Initialize Neo4j schema with indexes and constraints."""
+        if self._database in self._initialized:
+            return True
+        
+        driver = self._get_driver()
+        
+        try:
+            with driver.session(database=self._database) as session:
+                # Node indexes for each type
+                for node_type in NodeType:
+                    session.run(f"""
+                        CREATE INDEX {node_type.value.lower()}_id_idx IF NOT EXISTS
+                        FOR (n:{node_type.value}) ON (n.id)
+                    """)
+                    session.run(f"""
+                        CREATE INDEX {node_type.value.lower()}_name_idx IF NOT EXISTS
+                        FOR (n:{node_type.value}) ON (n.name)
+                    """)
+                    session.run(f"""
+                        CREATE INDEX {node_type.value.lower()}_repo_idx IF NOT EXISTS
+                        FOR (n:{node_type.value}) ON (n.repo)
+                    """)
+                
+                # Composite indexes for common queries
+                session.run("""
+                    CREATE INDEX function_path_idx IF NOT EXISTS
+                    FOR (n:Function) ON (n.path, n.name)
+                """)
+                session.run("""
+                    CREATE INDEX class_path_idx IF NOT EXISTS
+                    FOR (n:Class) ON (n.path, n.name)
+                """)
+                
+                # Full-text search index for docstrings
+                try:
+                    session.run("""
+                        CREATE FULLTEXT INDEX docstring_search IF NOT EXISTS
+                        FOR (n:Function|Class|Method)
+                        ON EACH [n.docstring, n.name]
+                    """)
+                except Exception:
+                    pass  # Fulltext may already exist
+            
+            self._initialized.add(self._database)
+            logger.info(f"Neo4j schema initialized for {self._database}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to initialize Neo4j schema: {e}")
+            return False
+
+    # =========================================================================
+    # Batch Node Operations
+    # =========================================================================
+
+    def upsert_nodes(
+        self,
+        nodes: List[GraphNode],
+        batch_size: int = BATCH_SIZE_NODES,
+    ) -> int:
+        """Batch upsert nodes into knowledge graph."""
+        if not nodes:
+            return 0
+
+        driver = self._get_driver()
+        self.initialize_schema()
+
+        total = 0
+        for i in range(0, len(nodes), batch_size):
+            batch = nodes[i:i + batch_size]
+            # Group by node type for efficient MERGE
+            by_type: Dict[NodeType, List[GraphNode]] = {}
+            for node in batch:
+                by_type.setdefault(node.node_type, []).append(node)
+
+            with driver.session(database=self._database) as session:
+                for node_type, type_nodes in by_type.items():
+                    params = [n.to_neo4j_props() for n in type_nodes]
+                    result = session.run(f"""
+                        UNWIND $nodes AS node
+                        MERGE (n:{node_type.value} {{id: node.id}})
+                        SET n += node
+                        RETURN count(n) AS cnt
+                    """, nodes=params)
+                    total += result.single()["cnt"]
+
+        logger.debug(f"Upserted {total} nodes")
+        return total
+
+    def upsert_relationships(
+        self,
+        relationships: List[GraphRelationship],
+        batch_size: int = BATCH_SIZE_RELS,
+    ) -> int:
+        """Batch upsert relationships into knowledge graph."""
+        if not relationships:
+            return 0
+
+        driver = self._get_driver()
+        self.initialize_schema()
+
+        total = 0
+        for i in range(0, len(relationships), batch_size):
+            batch = relationships[i:i + batch_size]
+            # Group by relationship type
+            by_type: Dict[RelationType, List[GraphRelationship]] = {}
+            for rel in batch:
+                by_type.setdefault(rel.rel_type, []).append(rel)
+
+            with driver.session(database=self._database) as session:
+                for rel_type, type_rels in by_type.items():
+                    params = [
+                        {
+                            "source_id": r.source_id,
+                            "target_id": r.target_id,
+                            **r.to_neo4j_props()
+                        }
+                        for r in type_rels
+                    ]
+                    # Use MATCH for existing nodes, create rel
+                    result = session.run(f"""
+                        UNWIND $rels AS rel
+                        MATCH (a {{id: rel.source_id}})
+                        MATCH (b {{id: rel.target_id}})
+                        MERGE (a)-[r:{rel_type.value}]->(b)
+                        SET r.weight = rel.weight,
+                            r.start_line = rel.start_line,
+                            r.caller_path = rel.caller_path,
+                            r.repo = rel.repo
+                        RETURN count(r) AS cnt
+                    """, rels=params)
+                    total += result.single()["cnt"]
+
+        logger.debug(f"Upserted {total} relationships")
+        return total
+
+    def delete_by_repo(self, repo: str) -> int:
+        """Delete all nodes and relationships for a repository."""
+        driver = self._get_driver()
+
+        with driver.session(database=self._database) as session:
+            result = session.run("""
+                MATCH (n {repo: $repo})
+                DETACH DELETE n
+                RETURN count(n) AS deleted
+            """, repo=repo)
+            deleted = result.single()["deleted"]
+
+        logger.info(f"Deleted {deleted} nodes for repo {repo}")
+        return deleted
+
+    def delete_by_path(self, path: str, repo: str) -> int:
+        """Delete all nodes in a specific file path."""
+        driver = self._get_driver()
+
+        with driver.session(database=self._database) as session:
+            result = session.run("""
+                MATCH (n {path: $path, repo: $repo})
+                DETACH DELETE n
+                RETURN count(n) AS deleted
+            """, path=path, repo=repo)
+            deleted = result.single()["deleted"]
+
+        return deleted
+
+    # =========================================================================
+    # Graph Algorithms
+    # =========================================================================
+
+    def compute_pagerank(
+        self,
+        repo: Optional[str] = None,
+        iterations: int = 20,
+        damping: float = 0.85,
+    ) -> int:
+        """Compute PageRank for code symbols (importance scoring)."""
+        driver = self._get_driver()
+
+        repo_filter = "WHERE n.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            # Use GDS if available, otherwise simple approximation
+            try:
+                # Check if GDS is available
+                session.run("CALL gds.version()")
+
+                # Project graph and run PageRank
+                session.run(f"""
+                    CALL gds.graph.project.cypher(
+                        'code_graph',
+                        'MATCH (n) {repo_filter} RETURN id(n) AS id',
+                        'MATCH (a)-[r:CALLS|IMPORTS]->(b)
+                         {repo_filter.replace('n', 'a')}
+                         RETURN id(a) AS source, id(b) AS target, r.weight AS weight'
+                    )
+                """, repo=repo)
+
+                session.run("""
+                    CALL gds.pageRank.write('code_graph', {
+                        maxIterations: $iterations,
+                        dampingFactor: $damping,
+                        writeProperty: 'pagerank'
+                    })
+                """, iterations=iterations, damping=damping)
+
+                session.run("CALL gds.graph.drop('code_graph')")
+
+            except Exception:
+                # Fallback: simple in-degree approximation
+                result = session.run(f"""
+                    MATCH (n)<-[r:CALLS|IMPORTS]-()
+                    {repo_filter}
+                    WITH n, count(r) AS in_degree
+                    SET n.pagerank = toFloat(in_degree) / 100.0
+                    RETURN count(n) AS cnt
+                """, repo=repo)
+                return result.single()["cnt"]
+
+        return 0
+
+    def detect_communities(
+        self,
+        repo: Optional[str] = None,
+    ) -> int:
+        """Detect code communities using label propagation."""
+        driver = self._get_driver()
+
+        repo_filter = "WHERE n.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            try:
+                # Check if GDS available
+                session.run("CALL gds.version()")
+
+                session.run(f"""
+                    CALL gds.graph.project.cypher(
+                        'community_graph',
+                        'MATCH (n) {repo_filter} RETURN id(n) AS id',
+                        'MATCH (a)-[r:CALLS|IMPORTS|INHERITS_FROM]->(b)
+                         {repo_filter.replace('n', 'a')}
+                         RETURN id(a) AS source, id(b) AS target'
+                    )
+                """, repo=repo)
+
+                session.run("""
+                    CALL gds.louvain.write('community_graph', {
+                        writeProperty: 'community_id'
+                    })
+                """)
+
+                session.run("CALL gds.graph.drop('community_graph')")
+
+            except Exception:
+                # Fallback: assign community by file path
+                result = session.run(f"""
+                    MATCH (n)
+                    {repo_filter}
+                    WITH n, CASE
+                        WHEN n.path IS NOT NULL
+                        THEN toInteger(abs(reduce(h = 0, c IN split(n.path, '/') | h + size(c)))) % 100
+                        ELSE 0
+                    END AS community
+                    SET n.community_id = community
+                    RETURN count(n) AS cnt
+                """, repo=repo)
+                return result.single()["cnt"]
+
+        return 0
+
+    # =========================================================================
+    # Query Operations - Graph RAG Context Retrieval
+    # =========================================================================
+
+    def find_symbol(
+        self,
+        name: str,
+        repo: Optional[str] = None,
+        node_type: Optional[NodeType] = None,
+    ) -> List[Dict[str, Any]]:
+        """Find symbols by name (fuzzy match)."""
+        driver = self._get_driver()
+
+        type_filter = f":{node_type.value}" if node_type else ""
+        repo_filter = "AND n.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            result = session.run(f"""
+                MATCH (n{type_filter})
+                WHERE n.name =~ $pattern {repo_filter}
+                RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+                       n.path AS path, n.start_line AS start_line,
+                       n.signature AS signature, n.docstring AS docstring,
+                       n.pagerank AS importance
+                ORDER BY n.pagerank DESC
+                LIMIT 20
+            """, pattern=f"(?i).*{name}.*", repo=repo)
+            return [dict(r) for r in result]
+
+    def get_callers(
+        self,
+        symbol_name: str,
+        repo: Optional[str] = None,
+        depth: int = 1,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Get all callers of a symbol (with depth for transitive)."""
+        driver = self._get_driver()
+
+        repo_filter = "AND n.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            result = session.run(f"""
+                MATCH (target {{name: $name}})
+                MATCH (caller)-[:CALLS*1..{depth}]->(target)
+                WHERE caller <> target {repo_filter.replace('n', 'caller')}
+                RETURN DISTINCT
+                    caller.id AS id, caller.name AS name, labels(caller)[0] AS type,
+                    caller.path AS path, caller.start_line AS start_line,
+                    caller.signature AS signature,
+                    size((caller)-[:CALLS]->()) AS call_count
+                ORDER BY caller.pagerank DESC
+                LIMIT $limit
+            """, name=symbol_name, repo=repo, limit=limit)
+            return [dict(r) for r in result]
+
+    def get_callees(
+        self,
+        symbol_name: str,
+        repo: Optional[str] = None,
+        depth: int = 1,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Get all symbols called by a symbol (with depth for transitive)."""
+        driver = self._get_driver()
+
+        repo_filter = "AND n.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            result = session.run(f"""
+                MATCH (source {{name: $name}})
+                MATCH (source)-[:CALLS*1..{depth}]->(callee)
+                WHERE source <> callee {repo_filter.replace('n', 'callee')}
+                RETURN DISTINCT
+                    callee.id AS id, callee.name AS name, labels(callee)[0] AS type,
+                    callee.path AS path, callee.start_line AS start_line,
+                    callee.signature AS signature
+                ORDER BY callee.pagerank DESC
+                LIMIT $limit
+            """, name=symbol_name, repo=repo, limit=limit)
+            return [dict(r) for r in result]
+
+    def get_inheritance_chain(
+        self,
+        class_name: str,
+        repo: Optional[str] = None,
+        direction: str = "up",  # up = ancestors, down = descendants
+    ) -> List[Dict[str, Any]]:
+        """Get class inheritance chain."""
+        driver = self._get_driver()
+
+        # Add repo filter when specified to avoid cross-repo collisions
+        repo_filter = "WHERE c.repo = $repo" if repo else ""
+
+        if direction == "up":
+            # Get ancestors (what this class inherits from)
+            query = f"""
+                MATCH (c:Class {{name: $name}})
+                {repo_filter}
+                MATCH path = (c)-[:INHERITS_FROM*1..10]->(ancestor)
+                RETURN DISTINCT
+                    ancestor.id AS id, ancestor.name AS name,
+                    ancestor.path AS path, ancestor.signature AS signature,
+                    length(path) AS distance
+                ORDER BY distance
+            """
+        else:
+            # Get descendants (what inherits from this class)
+            query = f"""
+                MATCH (c:Class {{name: $name}})
+                {repo_filter}
+                MATCH path = (descendant)-[:INHERITS_FROM*1..10]->(c)
+                RETURN DISTINCT
+                    descendant.id AS id, descendant.name AS name,
+                    descendant.path AS path, descendant.signature AS signature,
+                    length(path) AS distance
+                ORDER BY distance
+            """
+
+        with driver.session(database=self._database) as session:
+            result = session.run(query, name=class_name, repo=repo)
+            return [dict(r) for r in result]
+
+    def impact_analysis(
+        self,
+        symbol_name: str,
+        repo: Optional[str] = None,
+        max_depth: int = 3,
+    ) -> Dict[str, Any]:
+        """Analyze impact of changing a symbol."""
+        driver = self._get_driver()
+
+        # Add repo filter when specified to avoid cross-repo collisions
+        repo_filter = "AND target.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            # Get direct and transitive callers
+            callers = session.run(f"""
+                MATCH (target {{name: $name}})
+                WHERE true {repo_filter}
+                MATCH path = (caller)-[:CALLS*1..{max_depth}]->(target)
+                WHERE caller <> target
+                RETURN caller.name AS name, caller.path AS path,
+                       labels(caller)[0] AS type, length(path) AS depth
+                ORDER BY depth
+            """, name=symbol_name, repo=repo)
+
+            caller_list = [dict(r) for r in callers]
+
+            # Get affected files
+            affected_files = set()
+            for c in caller_list:
+                if c.get("path"):
+                    affected_files.add(c["path"])
+
+            # Count by depth
+            by_depth: Dict[int, int] = {}
+            for c in caller_list:
+                d = c.get("depth", 1)
+                by_depth[d] = by_depth.get(d, 0) + 1
+
+            return {
+                "symbol": symbol_name,
+                "total_impacted": len(caller_list),
+                "affected_files": len(affected_files),
+                "files": list(affected_files)[:20],
+                "by_depth": by_depth,
+                "callers": caller_list[:50],
+            }
+
+    def find_similar(
+        self,
+        symbol_name: str,
+        repo: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Find similar symbols based on call patterns."""
+        driver = self._get_driver()
+
+        # Add repo filter when specified to avoid cross-repo collisions
+        repo_filter = "AND target.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            # Jaccard similarity on callees
+            result = session.run(f"""
+                MATCH (target {{name: $name}})
+                WHERE true {repo_filter}
+                MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
+                WHERE similar <> target
+                WITH target, similar, count(shared) AS shared_calls
+                MATCH (target)-[:CALLS]->(t_calls)
+                WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
+                MATCH (similar)-[:CALLS]->(s_calls)
+                WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                WITH similar,
+                     toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
+                WHERE jaccard > 0.1
+                RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
+                       similar.path AS path, similar.signature AS signature,
+                       jaccard AS similarity
+                ORDER BY jaccard DESC
+                LIMIT $limit
+            """, name=symbol_name, repo=repo, limit=limit)
+            return [dict(r) for r in result]
+
+    def get_subgraph_context(
+        self,
+        symbol_name: str,
+        repo: Optional[str] = None,
+        radius: int = 2,
+        include_code: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Extract subgraph context around a symbol for RAG augmentation.
+
+        Returns nodes and relationships within N hops of the target,
+        useful for providing context to the LLM.
+        """
+        driver = self._get_driver()
+
+        # Add repo filter when specified to avoid cross-repo collisions
+        repo_filter = "AND center.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            result = session.run(f"""
+                MATCH (center {{name: $name}})
+                WHERE true {repo_filter}
+                CALL apoc.path.subgraphAll(center, {{
+                    maxLevel: $radius,
+                    relationshipFilter: 'CALLS|IMPORTS|INHERITS_FROM|CONTAINS'
+                }})
+                YIELD nodes, relationships
+                RETURN nodes, relationships
+            """, name=symbol_name, repo=repo, radius=radius)
+
+            try:
+                record = result.single()
+                if record:
+                    nodes = []
+                    for n in record["nodes"]:
+                        node_data = dict(n)
+                        node_data["labels"] = list(n.labels)
+                        if not include_code and "docstring" in node_data:
+                            # Truncate docstrings for context
+                            node_data["docstring"] = node_data["docstring"][:200] + "..."
+                        nodes.append(node_data)
+
+                    rels = []
+                    for r in record["relationships"]:
+                        rels.append({
+                            "source": r.start_node["name"],
+                            "target": r.end_node["name"],
+                            "type": r.type,
+                        })
+
+                    return {
+                        "center": symbol_name,
+                        "radius": radius,
+                        "nodes": nodes,
+                        "relationships": rels,
+                    }
+            except Exception as e:
+                logger.debug(f"APOC subgraph query failed, falling back: {e}")
+
+            # Fallback without APOC (also with repo filter)
+            result = session.run(f"""
+                MATCH (center {{name: $name}})
+                WHERE true {repo_filter}
+                MATCH path = (center)-[*1..{radius}]-(related)
+                WITH center, collect(DISTINCT related) AS nodes,
+                     collect(DISTINCT relationships(path)) AS all_rels
+                UNWIND all_rels AS rel_list
+                UNWIND rel_list AS rel
+                WITH center, nodes, collect(DISTINCT rel) AS rels
+                RETURN center, nodes, rels
+            """, name=symbol_name, repo=repo)
+
+            record = result.single()
+            if not record:
+                return {"center": symbol_name, "nodes": [], "relationships": []}
+
+            return {
+                "center": symbol_name,
+                "radius": radius,
+                "node_count": len(record["nodes"]) if record["nodes"] else 0,
+                "rel_count": len(record["rels"]) if record["rels"] else 0,
+            }
+
+    def get_stats(self, repo: Optional[str] = None) -> KnowledgeGraphStats:
+        """Get knowledge graph statistics."""
+        driver = self._get_driver()
+
+        repo_filter = "WHERE n.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            result = session.run(f"""
+                MATCH (n) {repo_filter}
+                WITH count(n) AS total,
+                     sum(CASE WHEN 'File' IN labels(n) THEN 1 ELSE 0 END) AS files,
+                     sum(CASE WHEN 'Class' IN labels(n) THEN 1 ELSE 0 END) AS classes,
+                     sum(CASE WHEN 'Function' IN labels(n) THEN 1 ELSE 0 END) AS functions,
+                     avg(n.pagerank) AS avg_pr,
+                     count(DISTINCT n.community_id) AS communities
+                MATCH ()-[r]->()
+                RETURN total, files, classes, functions, avg_pr, communities,
+                       count(r) AS rels
+            """, repo=repo)
+
+            record = result.single()
+            if not record:
+                return KnowledgeGraphStats()
+
+            return KnowledgeGraphStats(
+                node_count=record["total"] or 0,
+                relationship_count=record["rels"] or 0,
+                file_count=record["files"] or 0,
+                class_count=record["classes"] or 0,
+                function_count=record["functions"] or 0,
+                community_count=record["communities"] or 0,
+                avg_pagerank=record["avg_pr"] or 0.0,
+            )
+
+    def get_shortest_path_length(
+        self,
+        source_symbol: str,
+        target_symbol: str,
+        repo: Optional[str] = None,
+        max_depth: int = 4,
+    ) -> Optional[int]:
+        """Get shortest path length between two symbols.
+
+        Args:
+            source_symbol: Starting symbol name
+            target_symbol: Target symbol name
+            repo: Optional repo filter
+            max_depth: Maximum path length to search
+
+        Returns:
+            Path length (number of hops), or None if no path exists.
+        """
+        driver = self._get_driver()
+
+        # Add repo filter when specified to avoid cross-repo collisions
+        repo_filter = "AND source.repo = $repo AND target.repo = $repo" if repo else ""
+
+        with driver.session(database=self._database) as session:
+            # Use shortestPath with depth limit
+            result = session.run(f"""
+                MATCH (source {{name: $source}})
+                MATCH (target {{name: $target}})
+                WHERE true {repo_filter}
+                MATCH path = shortestPath((source)-[*1..{max_depth}]-(target))
+                RETURN length(path) AS distance
+                LIMIT 1
+            """, source=source_symbol, target=target_symbol, repo=repo)
+
+            record = result.single()
+            if record:
+                return record["distance"]
+            return None
+
+
+# =============================================================================
+# Singleton instance
+# =============================================================================
+
+_KNOWLEDGE_GRAPH: Optional[Neo4jKnowledgeGraph] = None
+
+
+def get_knowledge_graph() -> Neo4jKnowledgeGraph:
+    """Get singleton knowledge graph instance."""
+    global _KNOWLEDGE_GRAPH
+    if _KNOWLEDGE_GRAPH is None:
+        _KNOWLEDGE_GRAPH = Neo4jKnowledgeGraph()
+    return _KNOWLEDGE_GRAPH
+

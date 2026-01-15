@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "context-engine-neo4j-graph"
+version = "1.0.0"
+description = "Neo4j Knowledge Graph plugin for Context-Engine"
+license = "BSL-1.1"
+authors = [
+    { name = "John Donalson", email = "mirlok89@gmail.com" },
+    { name = "Context-Engine Contributors" },
+]
+keywords = [
+    "context-engine",
+    "neo4j",
+    "knowledge-graph",
+    "graph-rag",
+    "code-intelligence",
+    "mcp",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Database :: Database Engines/Servers",
+]
+requires-python = ">=3.11"
+
+dependencies = [
+    "neo4j>=5.0.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "packaging>=21.0",
+    "numpy>=1.24.0",  # For embeddings
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/augmentcode/context-engine"
+Documentation = "https://github.com/augmentcode/context-engine/tree/main/plugins/neo4j_graph"
+Repository = "https://github.com/augmentcode/context-engine"
+
+[project.entry-points."context_engine.plugins"]
+neo4j_graph = "neo4j_graph.plugin:register_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "*.py",
+    "README.md",
+    "tests/",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "neo4j: marks tests requiring Neo4j connection",
+]
+
