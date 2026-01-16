@@ -332,21 +332,15 @@ class Neo4jGraphBackend(GraphBackend):
         tx_timeout = timeout if timeout is not None else self._QUERY_TIMEOUT_SECONDS
 
         try:
-            from neo4j import AsyncManagedTransaction
             driver = await self._get_async_driver()
 
-            async def _run_tx(tx: AsyncManagedTransaction) -> list[dict]:
-                result = await tx.run(query, parameters)
-                return await result.data()
-
             async with driver.session(database=db) as session:
-                # Use execute_read with timeout for read queries
-                # Note: timeout is in seconds for neo4j driver
-                records = await session.execute_read(
-                    _run_tx,
-                    timeout=tx_timeout,
-                )
-                return records
+                # Use begin_transaction with explicit timeout
+                # Note: execute_read doesn't accept timeout directly - it passes kwargs to tx function
+                async with session.begin_transaction(timeout=tx_timeout) as tx:
+                    result = await tx.run(query, parameters)
+                    records = await result.data()
+                    return records
         except ImportError:
             # Fallback: run sync query in thread pool
             import asyncio
@@ -371,12 +365,11 @@ class Neo4jGraphBackend(GraphBackend):
         tx_timeout = timeout if timeout is not None else self._QUERY_TIMEOUT_SECONDS
         driver = self._get_driver()
 
-        def _run_tx(tx) -> list[dict]:
-            result = tx.run(query, parameters)
-            return [dict(r) for r in result]
-
         with driver.session(database=database) as session:
-            return session.execute_read(_run_tx, timeout=tx_timeout)
+            # Use begin_transaction with explicit timeout
+            with session.begin_transaction(timeout=tx_timeout) as tx:
+                result = tx.run(query, parameters)
+                return [dict(r) for r in result]
 
     def ensure_graph_store(self, base_collection: str) -> Optional[str]:
         """Ensure Neo4j database and indexes exist.

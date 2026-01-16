@@ -1265,6 +1265,17 @@ def process_file_with_smart_reindexing(
 
     file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
+    # FAST PATH: Check if file hash is unchanged - skip entire processing if so
+    # This avoids AST parsing for unchanged files (P1 optimization)
+    if get_cached_file_hash:
+        try:
+            cached_file_hash = get_cached_file_hash(fp, per_file_repo)
+            if cached_file_hash and cached_file_hash == file_hash:
+                print(f"[SMART_REINDEX] {file_path}: file hash unchanged, skipping (fast path)")
+                return "skipped"
+        except Exception:
+            pass  # Fall through to normal processing
+
     if allowed_vectors is None and allowed_sparse is None:
         allowed_vectors, allowed_sparse = get_collection_vector_names(client, current_collection)
 

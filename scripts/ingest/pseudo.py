@@ -159,12 +159,16 @@ def should_process_pseudo_for_chunk(
 def should_use_smart_reindexing(file_path: str, file_hash: str) -> Tuple[bool, str]:
     """Determine if smart reindexing should be used for a file.
 
+    This function implements a fast-path optimization:
+    1. First check if file hash is unchanged - if so, skip AST parsing entirely
+    2. Only if file hash changed, do we re-parse and compare symbols
+
     Returns:
         (use_smart, reason)
     """
     from scripts.ingest.config import get_cached_symbols, compare_symbol_changes
     from scripts.ingest.symbols import extract_symbols_with_tree_sitter
-    
+
     if not _smart_symbol_reindexing_enabled():
         return False, "smart_reindexing_disabled"
 
@@ -176,7 +180,19 @@ def should_use_smart_reindexing(file_path: str, file_hash: str) -> Tuple[bool, s
     if not cached_symbols:
         return False, "no_cached_symbols"
 
-    # Extract current symbols
+    # FAST PATH: Check if file hash is unchanged
+    # If the file content hash matches what we cached, skip AST parsing entirely
+    try:
+        from scripts.ingest.config import get_cached_file_hash
+        cached_file_hash = get_cached_file_hash(file_path)
+        if cached_file_hash and cached_file_hash == file_hash:
+            # File unchanged - all symbols unchanged, skip AST parsing
+            print(f"[SMART_REINDEX] {file_path}: file hash unchanged, skipping AST parsing")
+            return True, "file_hash_unchanged"
+    except ImportError:
+        pass  # Function not available, fall through to symbol comparison
+
+    # SLOW PATH: File changed, need to re-parse and compare symbols
     current_symbols = extract_symbols_with_tree_sitter(file_path)
     if not current_symbols:
         return False, "no_current_symbols"

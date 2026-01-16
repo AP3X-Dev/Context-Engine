@@ -314,8 +314,9 @@ def classify_intent(query: str) -> Tuple[QueryIntent, float, bool]:
                 best_score = sim
                 best_intent = intent
 
-    # Apply confidence threshold
-    if best_score < CONFIDENCE_THRESHOLD:
+    # Apply per-intent confidence threshold
+    threshold = get_query_intent_threshold(best_intent)
+    if best_score < threshold:
         return QueryIntent.HYBRID, best_score, False
 
     return best_intent, best_score, False
@@ -362,8 +363,12 @@ def reset_exemplar_cache() -> None:
         _EMBEDDER = None
 
 
-def is_graph_intent(query: str, threshold: float = CONFIDENCE_THRESHOLD) -> bool:
+def is_graph_intent(query: str, threshold: float | None = None) -> bool:
     """Check if query has graph intent above threshold.
+
+    Args:
+        query: The user's search query
+        threshold: Optional override. If None, uses per-intent threshold for GRAPH.
 
     When using keyword fallback (embedder unavailable), trusts the fallback
     result without applying the semantic threshold.
@@ -375,5 +380,7 @@ def is_graph_intent(query: str, threshold: float = CONFIDENCE_THRESHOLD) -> bool
     if fallback_used:
         return intent == QueryIntent.GRAPH
 
-    return intent == QueryIntent.GRAPH and score >= threshold
+    # Use per-intent threshold if not explicitly provided
+    effective_threshold = threshold if threshold is not None else get_query_intent_threshold(QueryIntent.GRAPH)
+    return intent == QueryIntent.GRAPH and score >= effective_threshold
 
