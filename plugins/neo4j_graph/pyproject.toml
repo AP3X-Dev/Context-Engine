@@ -50,9 +50,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/augmentcode/context-engine"
-Documentation = "https://github.com/augmentcode/context-engine/tree/main/plugins/neo4j_graph"
-Repository = "https://github.com/augmentcode/context-engine"
+Homepage = "https://context-engine.ai"
+Documentation = "https://github.com/m1rl0k/context-engine/tree/main/plugins/neo4j_graph"
+Repository = "https://github.com/m1rl0k/context-engine"
 
 [project.entry-points."context_engine.plugins"]
 neo4j_graph = "neo4j_graph.plugin:register_plugin"

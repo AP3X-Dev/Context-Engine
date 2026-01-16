@@ -22,6 +22,7 @@ import atexit
 import hashlib
 import logging
 import os
+import threading
 import weakref
 from typing import Any, Dict, List, Optional
 
@@ -100,6 +101,7 @@ class Neo4jGraphBackend(GraphBackend):
     _initialized_databases: set[str] = set()
 
     # Circuit breaker state (class-level, shared)
+    _circuit_lock = threading.Lock()  # Protects circuit breaker state
     _circuit_open: bool = False
     _circuit_failures: int = 0
     _circuit_last_failure: float = 0.0
@@ -129,9 +131,10 @@ class Neo4jGraphBackend(GraphBackend):
 
         Useful for testing or manual recovery.
         """
-        cls._circuit_open = False
-        cls._circuit_failures = 0
-        cls._circuit_last_failure = 0.0
+        with cls._circuit_lock:
+            cls._circuit_open = False
+            cls._circuit_failures = 0
+            cls._circuit_last_failure = 0.0
 
     @classmethod
     def _check_circuit(cls) -> bool:
@@ -141,39 +144,42 @@ class Neo4jGraphBackend(GraphBackend):
         """
         import time
 
-        if not cls._circuit_open:
-            return True
+        with cls._circuit_lock:
+            if not cls._circuit_open:
+                return True
 
-        # Check if enough time has passed to try again (half-open state)
-        if time.time() - cls._circuit_last_failure > cls._CIRCUIT_RESET_TIMEOUT:
-            logger.info("Neo4j circuit breaker entering half-open state")
-            return True
+            # Check if enough time has passed to try again (half-open state)
+            if time.time() - cls._circuit_last_failure > cls._CIRCUIT_RESET_TIMEOUT:
+                logger.info("Neo4j circuit breaker entering half-open state")
+                return True
 
-        return False
+            return False
 
     @classmethod
     def _record_success(cls) -> None:
         """Record a successful connection/operation."""
-        if cls._circuit_open:
-            logger.info("Neo4j circuit breaker closed after successful operation")
-        cls._circuit_open = False
-        cls._circuit_failures = 0
+        with cls._circuit_lock:
+            if cls._circuit_open:
+                logger.info("Neo4j circuit breaker closed after successful operation")
+            cls._circuit_open = False
+            cls._circuit_failures = 0
 
     @classmethod
     def _record_failure(cls) -> None:
         """Record a connection/operation failure."""
         import time
 
-        cls._circuit_failures += 1
-        cls._circuit_last_failure = time.time()
+        with cls._circuit_lock:
+            cls._circuit_failures += 1
+            cls._circuit_last_failure = time.time()
 
-        if cls._circuit_failures >= cls._CIRCUIT_FAILURE_THRESHOLD:
-            if not cls._circuit_open:
-                logger.warning(
-                    f"Neo4j circuit breaker OPEN after {cls._circuit_failures} failures. "
-                    f"Will retry after {cls._CIRCUIT_RESET_TIMEOUT}s"
-                )
-            cls._circuit_open = True
+            if cls._circuit_failures >= cls._CIRCUIT_FAILURE_THRESHOLD:
+                if not cls._circuit_open:
+                    logger.warning(
+                        f"Neo4j circuit breaker OPEN after {cls._circuit_failures} failures. "
+                        f"Will retry after {cls._CIRCUIT_RESET_TIMEOUT}s"
+                    )
+                cls._circuit_open = True
 
     @property
     def backend_type(self) -> str:
@@ -719,23 +725,26 @@ class Neo4jGraphBackend(GraphBackend):
 
         try:
             with driver.session(database=db) as session:
+                # Note: count(r) must be computed BEFORE DELETE, not after
                 if repo:
                     result = session.run("""
                         MATCH ()-[r]->()
                         WHERE r.caller_path = $path AND r.repo = $repo AND r.collection = $collection
+                        WITH r, count(r) AS deleted
                         DELETE r
-                        RETURN count(r) as deleted
+                        RETURN deleted
                     """, {"path": norm_path, "repo": repo, "collection": collection})
                 else:
                     result = session.run("""
                         MATCH ()-[r]->()
                         WHERE r.caller_path = $path AND r.collection = $collection
+                        WITH r, count(r) AS deleted
                         DELETE r
-                        RETURN count(r) as deleted
+                        RETURN deleted
                     """, {"path": norm_path, "collection": collection})
 
                 record = result.single()
-                return 1 if record and record["deleted"] > 0 else 0
+                return record["deleted"] if record else 0
 
         except Exception as e:
             logger.error(f"Failed to delete Neo4j edges for {norm_path}: {e}")
@@ -790,7 +799,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get callers for {symbol}: {e}")
-            return []
+            raise  # Let caller handle the error
 
     def get_callees(
         self,
@@ -843,7 +852,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get callees for {symbol}: {e}")
-            return []
+            raise  # Let caller handle the error
 
     def get_importers(
         self,
@@ -890,7 +899,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get importers for {module}: {e}")
-            return []
+            raise  # Let caller handle the error
 
     def resolve_symbol(
         self,
