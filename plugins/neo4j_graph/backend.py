@@ -301,24 +301,45 @@ class Neo4jGraphBackend(GraphBackend):
             self._async_driver = None
             self._async_driver_initialized = False
 
+    # Default transaction timeout in seconds (configurable via env)
+    _QUERY_TIMEOUT_SECONDS = float(os.environ.get("NEO4J_QUERY_TIMEOUT", "30.0") or 30.0)
+
     async def run_query_async(
         self,
         query: str,
         parameters: dict,
         database: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> list[dict]:
         """Execute a Cypher query asynchronously and return results as dicts.
 
         This is the primary async interface for Neo4j queries.
         Falls back to sync execution in thread pool if async driver unavailable.
+
+        Args:
+            query: Cypher query string
+            parameters: Query parameters
+            database: Target database (defaults to NEO4J_DATABASE env)
+            timeout: Query timeout in seconds (defaults to NEO4J_QUERY_TIMEOUT env)
         """
         db = database or self._get_database()
+        tx_timeout = timeout if timeout is not None else self._QUERY_TIMEOUT_SECONDS
 
         try:
+            from neo4j import AsyncManagedTransaction
             driver = await self._get_async_driver()
+
+            async def _run_tx(tx: AsyncManagedTransaction) -> list[dict]:
+                result = await tx.run(query, parameters)
+                return await result.data()
+
             async with driver.session(database=db) as session:
-                result = await session.run(query, parameters)
-                records = await result.data()
+                # Use execute_read with timeout for read queries
+                # Note: timeout is in seconds for neo4j driver
+                records = await session.execute_read(
+                    _run_tx,
+                    timeout=tx_timeout,
+                )
                 return records
         except ImportError:
             # Fallback: run sync query in thread pool
@@ -330,6 +351,7 @@ class Neo4jGraphBackend(GraphBackend):
                 query,
                 parameters,
                 db,
+                tx_timeout,
             )
 
     def _run_query_sync(
@@ -337,12 +359,18 @@ class Neo4jGraphBackend(GraphBackend):
         query: str,
         parameters: dict,
         database: str,
+        timeout: Optional[float] = None,
     ) -> list[dict]:
         """Sync query execution (used as fallback)."""
+        tx_timeout = timeout if timeout is not None else self._QUERY_TIMEOUT_SECONDS
         driver = self._get_driver()
-        with driver.session(database=database) as session:
-            result = session.run(query, parameters)
+
+        def _run_tx(tx) -> list[dict]:
+            result = tx.run(query, parameters)
             return [dict(r) for r in result]
+
+        with driver.session(database=database) as session:
+            return session.execute_read(_run_tx, timeout=tx_timeout)
 
     def ensure_graph_store(self, base_collection: str) -> Optional[str]:
         """Ensure Neo4j database and indexes exist.

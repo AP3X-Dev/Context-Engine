@@ -92,58 +92,58 @@ async def _neo4j_graph_query_impl(
     collection = str(collection or os.environ.get("COLLECTION_NAME", "codebase")).strip() or "codebase"
     if collection.endswith("_graph"):
         collection = collection[: -len("_graph")]
-    
+
     # Clamp depth
     depth = max(1, min(10, depth))
-    
-    db = backend._get_database()
-    driver = backend._get_driver()
-    
+
     results = []
     query_info = {"query_type": query_type, "symbol": symbol, "depth": depth, "collection": collection}
-    
+
+    # Language filter is reserved for future use
+    _ = language
+
     try:
-        with driver.session(database=db) as session:
-            if query_type == "callers":
-                results = _query_callers(session, symbol, repo, limit, collection)
-                
-            elif query_type == "callees":
-                results = _query_callees(session, symbol, repo, limit, collection)
-                
-            elif query_type == "transitive_callers":
-                results = _query_transitive_callers(
-                    session, symbol, depth, repo, limit, include_paths, collection
-                )
-                
-            elif query_type == "transitive_callees":
-                results = _query_transitive_callees(
-                    session, symbol, depth, repo, limit, include_paths, collection
-                )
-                
-            elif query_type == "impact":
-                # Impact = what would break if symbol changes
-                # This is transitive callers (what calls this, directly or indirectly)
-                results = _query_transitive_callers(
-                    session, symbol, depth, repo, limit, include_paths=True, collection=collection
-                )
-                query_info["impact_note"] = "Shows all symbols that depend on this symbol"
-                
-            elif query_type == "dependencies":
-                results = _query_dependencies(
-                    session, symbol, depth, repo, limit, include_paths, collection
-                )
-                
-            elif query_type == "cycles":
-                results = _query_cycles(session, symbol, repo, limit, collection)
-                
-            else:
-                return {
-                    "ok": False,
-                    "error": f"Unknown query_type: {query_type}. "
-                             "Valid: callers, callees, transitive_callers, transitive_callees, "
-                             "impact, dependencies, cycles",
-                }
-    
+        # Use async queries for better performance
+        if query_type == "callers":
+            results = await _query_callers_async(backend, symbol, repo, limit, collection)
+
+        elif query_type == "callees":
+            results = await _query_callees_async(backend, symbol, repo, limit, collection)
+
+        elif query_type == "transitive_callers":
+            results = await _query_transitive_callers_async(
+                backend, symbol, depth, repo, limit, include_paths, collection
+            )
+
+        elif query_type == "transitive_callees":
+            results = await _query_transitive_callees_async(
+                backend, symbol, depth, repo, limit, include_paths, collection
+            )
+
+        elif query_type == "impact":
+            # Impact = what would break if symbol changes
+            # This is transitive callers (what calls this, directly or indirectly)
+            results = await _query_transitive_callers_async(
+                backend, symbol, depth, repo, limit, include_paths=True, collection=collection
+            )
+            query_info["impact_note"] = "Shows all symbols that depend on this symbol"
+
+        elif query_type == "dependencies":
+            results = await _query_dependencies_async(
+                backend, symbol, depth, repo, limit, include_paths, collection
+            )
+
+        elif query_type == "cycles":
+            results = await _query_cycles_async(backend, symbol, repo, limit, collection)
+
+        else:
+            return {
+                "ok": False,
+                "error": f"Unknown query_type: {query_type}. "
+                         "Valid: callers, callees, transitive_callers, transitive_callees, "
+                         "impact, dependencies, cycles",
+            }
+
     except Exception as e:
         logger.error(f"Neo4j query failed: {e}")
         return {
@@ -169,68 +169,76 @@ async def _neo4j_graph_query_impl(
     return response
 
 
-def _query_callers(
-    session,
+# ============================================================================
+# Async query implementations (use run_query_async from backend)
+# ============================================================================
+
+async def _query_callers_async(
+    backend,
     symbol: str,
     repo: Optional[str],
     limit: int,
     collection: str,
 ) -> List[Dict]:
-    """Simple caller query (depth 1)."""
+    """Async simple caller query (depth 1)."""
     if repo and repo != "*":
-        result = session.run("""
+        query = """
             MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {name: $symbol, collection: $collection})
             WHERE r.collection = $collection AND (r.repo = $repo OR callee.repo = $repo)
             RETURN caller.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, callee.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
     else:
-        result = session.run("""
+        query = """
             MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {name: $symbol, collection: $collection})
             WHERE r.collection = $collection
             RETURN caller.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, callee.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "collection": collection, "limit": limit}
 
-    return [dict(r) for r in result]
+    return await backend.run_query_async(query, params)
 
 
-def _query_callees(
-    session,
+async def _query_callees_async(
+    backend,
     symbol: str,
     repo: Optional[str],
     limit: int,
     collection: str,
 ) -> List[Dict]:
-    """Simple callee query (depth 1)."""
+    """Async simple callee query (depth 1)."""
     if repo and repo != "*":
-        result = session.run("""
+        query = """
             MATCH (caller:Symbol {name: $symbol, collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
             WHERE r.collection = $collection AND (r.repo = $repo OR caller.repo = $repo)
             RETURN callee.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, caller.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
     else:
-        result = session.run("""
+        query = """
             MATCH (caller:Symbol {name: $symbol, collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
             WHERE r.collection = $collection
             RETURN callee.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, caller.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "collection": collection, "limit": limit}
 
-    return [dict(r) for r in result]
+    return await backend.run_query_async(query, params)
 
 
-def _query_transitive_callers(
-    session,
+async def _query_transitive_callers_async(
+    backend,
     symbol: str,
     depth: int,
     repo: Optional[str],
@@ -238,14 +246,12 @@ def _query_transitive_callers(
     include_paths: bool,
     collection: str,
 ) -> List[Dict]:
-    """Multi-hop caller traversal."""
-    # Cypher doesn't support parameterized path lengths, so we embed depth directly
+    """Async multi-hop caller traversal."""
     safe_depth = max(1, min(10, int(depth)))
 
     if include_paths:
-        # Include full path information
         if repo and repo != "*":
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH caller, path, length(path) as hop
@@ -254,9 +260,10 @@ def _query_transitive_callers(
                        caller.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
         else:
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH caller, path, length(path) as hop
@@ -265,30 +272,33 @@ def _query_transitive_callers(
                        caller.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "collection": collection, "limit": limit}
     else:
         if repo and repo != "*":
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT caller
                 RETURN caller.name as symbol, caller.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
         else:
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{name: $symbol, collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT caller
                 RETURN caller.name as symbol, caller.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "collection": collection, "limit": limit}
 
-    return [dict(r) for r in result]
+    return await backend.run_query_async(query, params)
 
 
-def _query_transitive_callees(
-    session,
+async def _query_transitive_callees_async(
+    backend,
     symbol: str,
     depth: int,
     repo: Optional[str],
@@ -296,13 +306,12 @@ def _query_transitive_callees(
     include_paths: bool,
     collection: str,
 ) -> List[Dict]:
-    """Multi-hop callee traversal."""
-    # Cypher doesn't support parameterized path lengths, so we embed depth directly
+    """Async multi-hop callee traversal."""
     safe_depth = max(1, min(10, int(depth)))
 
     if include_paths:
         if repo and repo != "*":
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH callee, path, length(path) as hop
@@ -311,9 +320,10 @@ def _query_transitive_callees(
                        callee.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
         else:
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH callee, path, length(path) as hop
@@ -322,30 +332,33 @@ def _query_transitive_callees(
                        callee.repo as repo
                 ORDER BY hop
                 LIMIT $limit
-            """, {"symbol": symbol, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "collection": collection, "limit": limit}
     else:
         if repo and repo != "*":
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT callee
                 RETURN callee.name as symbol, callee.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
         else:
-            result = session.run(f"""
+            query = f"""
                 MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
                 WHERE all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT callee
                 RETURN callee.name as symbol, callee.repo as repo
                 LIMIT $limit
-            """, {"symbol": symbol, "collection": collection, "limit": limit})
+            """
+            params = {"symbol": symbol, "collection": collection, "limit": limit}
 
-    return [dict(r) for r in result]
+    return await backend.run_query_async(query, params)
 
 
-def _query_dependencies(
-    session,
+async def _query_dependencies_async(
+    backend,
     symbol: str,
     depth: int,
     repo: Optional[str],
@@ -353,41 +366,42 @@ def _query_dependencies(
     include_paths: bool,
     collection: str,
 ) -> List[Dict]:
-    """Query both calls and imports for full dependency analysis."""
-    # Cypher doesn't support parameterized path lengths, so we embed depth directly
+    """Async query both calls and imports for full dependency analysis."""
     safe_depth = max(1, min(10, int(depth)))
     _ = include_paths  # Reserved for future use
 
     if repo and repo != "*":
-        result = session.run(f"""
+        query = f"""
             MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS|IMPORTS*1..{safe_depth}]->(dep:Symbol {{collection: $collection}})
             WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
             WITH DISTINCT dep
             RETURN dep.name as symbol, dep.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
     else:
-        result = session.run(f"""
+        query = f"""
             MATCH path = (source:Symbol {{name: $symbol, collection: $collection}})-[:CALLS|IMPORTS*1..{safe_depth}]->(dep:Symbol {{collection: $collection}})
             WHERE all(r IN relationships(path) WHERE r.collection = $collection)
             WITH DISTINCT dep
             RETURN dep.name as symbol, dep.repo as repo
             LIMIT $limit
-        """, {"symbol": symbol, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "collection": collection, "limit": limit}
 
-    return [dict(r) for r in result]
+    return await backend.run_query_async(query, params)
 
 
-def _query_cycles(
-    session,
+async def _query_cycles_async(
+    backend,
     symbol: str,
     repo: Optional[str],
     limit: int,
     collection: str,
 ) -> List[Dict]:
-    """Detect circular dependencies involving the symbol."""
+    """Async detect circular dependencies involving the symbol."""
     if repo and repo != "*":
-        result = session.run("""
+        query = """
             MATCH path = (s:Symbol {name: $symbol, collection: $collection})-[:CALLS*2..10]->(s)
             WHERE all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
             WITH s, path, length(path) as cycle_length
@@ -396,9 +410,10 @@ def _query_cycles(
                    s.repo as repo
             ORDER BY cycle_length
             LIMIT $limit
-        """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit}
     else:
-        result = session.run("""
+        query = """
             MATCH path = (s:Symbol {name: $symbol, collection: $collection})-[:CALLS*2..10]->(s)
             WHERE all(r IN relationships(path) WHERE r.collection = $collection)
             WITH s, path, length(path) as cycle_length
@@ -407,9 +422,10 @@ def _query_cycles(
                    s.repo as repo
             ORDER BY cycle_length
             LIMIT $limit
-        """, {"symbol": symbol, "collection": collection, "limit": limit})
+        """
+        params = {"symbol": symbol, "collection": collection, "limit": limit}
 
-    return [dict(r) for r in result]
+    return await backend.run_query_async(query, params)
 
 
 def _format_neo4j_graph_toon(response: Dict[str, Any]) -> str:
