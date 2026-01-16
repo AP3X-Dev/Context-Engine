@@ -109,7 +109,9 @@ class Neo4jGraphBackend(GraphBackend):
     def __init__(self):
         """Initialize the Neo4j graph backend."""
         self._driver = None
+        self._async_driver = None
         self._driver_initialized = False
+        self._async_driver_initialized = False
         # Register for cleanup on process exit
         _DRIVER_INSTANCES.add(self)
 
@@ -236,12 +238,112 @@ class Neo4jGraphBackend(GraphBackend):
         return collection
     
     def close(self):
-        """Close the Neo4j driver."""
+        """Close the Neo4j driver(s)."""
         if self._driver:
             self._driver.close()
             self._driver = None
             self._driver_initialized = False
-    
+        # Note: async driver must be closed with await in an async context
+        # This sync close only handles the sync driver
+
+    async def _get_async_driver(self):
+        """Get or create async Neo4j driver (lazy singleton with connection pooling).
+
+        Uses the same circuit breaker as sync driver.
+        """
+        # Check circuit breaker first
+        if not self._check_circuit():
+            raise ConnectionError(
+                f"Neo4j circuit breaker is OPEN. Too many failures. "
+                f"Will retry after {self._CIRCUIT_RESET_TIMEOUT}s"
+            )
+
+        if self._async_driver is not None:
+            return self._async_driver
+
+        try:
+            from neo4j import AsyncGraphDatabase
+        except ImportError:
+            raise ImportError(
+                "neo4j package not installed or async not supported. "
+                "Install with: pip install neo4j>=5.0"
+            )
+
+        uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+        user = os.environ.get("NEO4J_USER", "neo4j")
+        password = os.environ.get("NEO4J_PASSWORD", "")
+        max_pool = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
+
+        if not password:
+            logger.warning("NEO4J_PASSWORD not set - using empty password")
+
+        try:
+            self._async_driver = AsyncGraphDatabase.driver(
+                uri,
+                auth=(user, password),
+                max_connection_pool_size=max_pool,
+            )
+            # Verify connection works
+            await self._async_driver.verify_connectivity()
+            self._async_driver_initialized = True
+            self._record_success()
+            logger.info(f"Neo4j async driver initialized: {uri}")
+            return self._async_driver
+        except Exception as e:
+            self._record_failure()
+            logger.error(f"Neo4j async connection failed: {e}")
+            raise
+
+    async def close_async(self):
+        """Close the async Neo4j driver."""
+        if self._async_driver:
+            await self._async_driver.close()
+            self._async_driver = None
+            self._async_driver_initialized = False
+
+    async def run_query_async(
+        self,
+        query: str,
+        parameters: dict,
+        database: Optional[str] = None,
+    ) -> list[dict]:
+        """Execute a Cypher query asynchronously and return results as dicts.
+
+        This is the primary async interface for Neo4j queries.
+        Falls back to sync execution in thread pool if async driver unavailable.
+        """
+        db = database or self._get_database()
+
+        try:
+            driver = await self._get_async_driver()
+            async with driver.session(database=db) as session:
+                result = await session.run(query, parameters)
+                records = await result.data()
+                return records
+        except ImportError:
+            # Fallback: run sync query in thread pool
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,
+                self._run_query_sync,
+                query,
+                parameters,
+                db,
+            )
+
+    def _run_query_sync(
+        self,
+        query: str,
+        parameters: dict,
+        database: str,
+    ) -> list[dict]:
+        """Sync query execution (used as fallback)."""
+        driver = self._get_driver()
+        with driver.session(database=database) as session:
+            result = session.run(query, parameters)
+            return [dict(r) for r in result]
+
     def ensure_graph_store(self, base_collection: str) -> Optional[str]:
         """Ensure Neo4j database and indexes exist.
         
