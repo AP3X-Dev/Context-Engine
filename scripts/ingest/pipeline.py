@@ -12,6 +12,8 @@ import os
 import sys
 import hashlib
 import time
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
@@ -1136,10 +1138,22 @@ def index_repo(
     if log_progress:
         print(f"[index] Found {total_files} files to process under {root}")
 
-    files_processed = 0
-    for file_path in iterator:
-        files_processed += 1
-        per_file_repo_for_cache = (
+    # Parallel file processing configuration
+    # INDEX_WORKERS=0 or 1 means sequential (default for safety)
+    # INDEX_WORKERS=N uses N threads (recommended: 4-8 for I/O-bound indexing)
+    # INDEX_WORKERS=-1 uses CPU count
+    try:
+        index_workers = int(os.environ.get("INDEX_WORKERS", "1") or "1")
+    except (ValueError, TypeError):
+        index_workers = 1
+    if index_workers == -1:
+        index_workers = multiprocessing.cpu_count()
+    # Cap at reasonable max to avoid overwhelming Qdrant
+    max_workers = min(index_workers, 16) if index_workers > 1 else 1
+
+    def _index_file_task(file_path: Path) -> tuple[Path, Optional[Exception]]:
+        """Task for parallel file indexing. Returns (path, error_or_none)."""
+        per_file_repo = (
             root_repo_for_cache
             if root_repo_for_cache is not None
             else (
@@ -1153,15 +1167,44 @@ def index_repo(
                 client, model, collection, vector_name, file_path,
                 dedupe=dedupe, skip_unchanged=skip_unchanged,
                 pseudo_mode=pseudo_mode,
-                repo_name_for_cache=per_file_repo_for_cache,
+                repo_name_for_cache=per_file_repo,
                 allowed_vectors=allowed_vectors,
                 allowed_sparse=allowed_sparse,
             )
+            return (file_path, None)
         except Exception as e:
-            print(f"Error indexing {file_path}: {e}")
+            return (file_path, e)
 
-        if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
-            print(f"[index] {files_processed}/{total_files} files processed")
+    files_processed = 0
+    errors = []
+
+    if max_workers > 1:
+        # Parallel processing with ThreadPoolExecutor
+        if log_progress:
+            print(f"[index] Using {max_workers} parallel workers")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_index_file_task, fp): fp for fp in files}
+            for future in as_completed(futures):
+                files_processed += 1
+                file_path, error = future.result()
+                if error:
+                    errors.append((file_path, error))
+                    print(f"Error indexing {file_path}: {error}")
+                if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
+                    print(f"[index] {files_processed}/{total_files} files processed")
+    else:
+        # Sequential processing (original behavior)
+        for file_path in iterator:
+            files_processed += 1
+            file_path, error = _index_file_task(file_path)
+            if error:
+                errors.append((file_path, error))
+                print(f"Error indexing {file_path}: {error}")
+            if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
+                print(f"[index] {files_processed}/{total_files} files processed")
+
+    if errors and log_progress:
+        print(f"[index] Completed with {len(errors)} errors out of {total_files} files")
 
 
 def process_file_with_smart_reindexing(
