@@ -337,9 +337,12 @@ class Neo4jGraphBackend(GraphBackend):
             async with driver.session(database=db) as session:
                 # Use begin_transaction with explicit timeout
                 # Note: execute_read doesn't accept timeout directly - it passes kwargs to tx function
-                async with session.begin_transaction(timeout=tx_timeout) as tx:
+                tx = await session.begin_transaction(timeout=tx_timeout)
+                async with tx:
                     result = await tx.run(query, parameters)
                     records = await result.data()
+                    # Commit is automatic on exit if no exception, but explicit commit is safer for read-only if we just want to close
+                    await tx.commit()
                     return records
         except ImportError:
             # Fallback: run sync query in thread pool
