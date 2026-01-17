@@ -50,17 +50,22 @@ def prune(
             )
         )
         # Ask for confirmation
-        response = console.input("[bold]Continue with actual pruning?[/bold] [dim](y/N)[/dim] ")
-        if response.lower() not in ("y", "yes"):
+        try:
+            response = console.input(
+                "[bold]Continue with actual pruning?[/bold] [dim](y/N)[/dim] "
+            )
+        except (EOFError, KeyboardInterrupt):
+            response = ""
+        if response.lower().strip() not in ("y", "yes"):
             console.print("[dim]Cancelled[/dim]")
-            sys.exit(0)
+            return 0
 
     # Create MCP client
     try:
         client = MCPClient(server="indexer")
     except Exception as e:
         console.print(f"[red]Error:[/red] Failed to initialize MCP client: {e}")
-        sys.exit(1)
+        return 1
 
     # Build parameters
     params = {}
@@ -95,10 +100,10 @@ def prune(
 
     except MCPError as e:
         console.print(f"[red]Error:[/red] MCP call failed: {e}")
-        sys.exit(1)
+        return 1
     except Exception as e:
         console.print(f"[red]Error:[/red] Unexpected error: {e}")
-        sys.exit(1)
+        return 1
 
     elapsed = time.time() - start_time
 
@@ -106,7 +111,7 @@ def prune(
     if not result.get("ok", False):
         error_msg = result.get("stderr", result.get("error", "Unknown error"))
         console.print(f"[red]Pruning failed:[/red] {error_msg}")
-        sys.exit(1)
+        return 1
 
     # Parse output from prune.py
     stdout = result.get("stdout", "")
@@ -199,6 +204,7 @@ def prune(
     # Show any warnings/errors from stderr
     if stderr and stderr.strip():
         console.print(f"\n[yellow]Warnings:[/yellow]\n{stderr}")
+    return 0
 
 
 def register_command(subparsers):
@@ -229,7 +235,6 @@ def register_command(subparsers):
     # Set the function to be called when this command is invoked
     def run_prune(args):
         """Wrapper to call prune function with argparse args."""
-        prune(collection=args.collection, dry_run=args.dry_run)
-        return 0
+        return prune(collection=args.collection, dry_run=args.dry_run)
 
     parser.set_defaults(func=run_prune)
