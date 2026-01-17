@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,8 +23,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    # Constants
+    "GRAPH_COLLECTION_SUFFIX",
+    "EDGE_TYPE_CALLS",
+    "EDGE_TYPE_IMPORTS",
+    "GRAPH_INDEX_FIELDS",
+    # Utility functions
+    "normalize_path",
+    "edge_id",
+    "get_graph_collection_name",
+    # Collection management
+    "ensure_graph_collection",
+    # Edge extraction
+    "extract_call_edges",
+    "extract_import_edges",
+    # Edge operations
+    "upsert_edges",
+    "delete_edges_by_path",
+    # Query functions
+    "get_callers",
+    "get_callees",
+    "get_importers",
+]
 
-def _normalize_path(path: str) -> str:
+
+def normalize_path(path: str) -> str:
     """Normalize path for consistent edge matching.
 
     Ensures paths are comparable across different call sites.
@@ -35,18 +60,24 @@ def _normalize_path(path: str) -> str:
     # Ensure consistent forward slashes on all platforms
     return normalized.replace("\\", "/")
 
+
+# Backward compatibility alias
+_normalize_path = normalize_path
+
 # Graph collection suffix
 GRAPH_COLLECTION_SUFFIX = "_graph"
 
-# Edge types
+# Edge types - use string values for backward compatibility
+# (EdgeType enum defined in scripts.graph_backends.base for type-safe usage)
 EDGE_TYPE_CALLS = "calls"
 EDGE_TYPE_IMPORTS = "imports"
 
 # Payload index fields for fast lookups
 GRAPH_INDEX_FIELDS = (
     "caller_symbol",
-    "callee_symbol", 
+    "callee_symbol",
     "caller_path",
+    "callee_path",  # For "find by target file" queries
     "edge_type",
     "repo",
 )
@@ -56,7 +87,32 @@ _ENSURED_GRAPH_COLLECTIONS: set[str] = set()
 _GRAPH_VECTOR_MODE: dict[str, str] = {}
 
 # Track collections known to not exist (avoid repeated 404s in benchmarks)
-_MISSING_GRAPH_COLLECTIONS: set[str] = set()
+# Now uses TTL-based expiry to handle transient 404s
+_MISSING_COLLECTIONS_TTL_SECONDS = int(os.environ.get("GRAPH_MISSING_TTL", "300"))  # 5 minutes default
+_MISSING_GRAPH_COLLECTIONS: Dict[str, float] = {}  # collection_name -> expiry_timestamp
+
+
+def _is_collection_missing(collection: str) -> bool:
+    """Check if a collection is cached as missing (with TTL expiry)."""
+    expiry = _MISSING_GRAPH_COLLECTIONS.get(collection)
+    if expiry is None:
+        return False
+    if time.time() > expiry:
+        # Entry expired, remove it
+        _MISSING_GRAPH_COLLECTIONS.pop(collection, None)
+        return False
+    return True
+
+
+def _mark_collection_missing(collection: str) -> None:
+    """Mark a collection as missing with TTL expiry."""
+    _MISSING_GRAPH_COLLECTIONS[collection] = time.time() + _MISSING_COLLECTIONS_TTL_SECONDS
+
+
+def _clear_collection_missing(collection: str) -> None:
+    """Remove a collection from the missing cache."""
+    _MISSING_GRAPH_COLLECTIONS.pop(collection, None)
+
 
 # Fallback vector schema for Qdrant deployments that don't support vector-less collections.
 _EDGE_VECTOR_NAME = "_edge"
@@ -101,6 +157,8 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
         info = client.get_collection(graph_coll)
         _GRAPH_VECTOR_MODE[graph_coll] = _detect_vector_mode(info)
         _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
+        # Clear from missing cache if it was previously marked missing
+        _clear_collection_missing(graph_coll)
         return graph_coll
     except Exception:
         pass  # Collection doesn't exist, create it
@@ -142,18 +200,21 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
                     logger.warning(f"Failed to create index on {field}: {e}")
 
         _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
+        # Clear from missing cache now that it's confirmed to exist
+        _clear_collection_missing(graph_coll)
         return graph_coll
 
     except Exception as e:
         if "already exists" in str(e).lower():
             _ENSURED_GRAPH_COLLECTIONS.add(graph_coll)
+            _clear_collection_missing(graph_coll)
             return graph_coll
         else:
             logger.error(f"Failed to create graph collection {graph_coll}: {e}")
             return None  # Explicit failure
 
 
-def _edge_id(
+def edge_id(
     caller_symbol: str,
     callee_symbol: str,
     caller_path: str,
@@ -165,10 +226,83 @@ def _edge_id(
     Uses full 32-char hex (128 bits) to avoid collision risk at scale.
     Path is normalized before hashing for consistency.
     """
-    # Normalize path and include repo to avoid cross-repo collisions
-    norm_path = _normalize_path(caller_path)
+    norm_path = normalize_path(caller_path)
     key = f"{edge_type}:{repo}:{caller_symbol}:{callee_symbol}:{norm_path}"
-    return hashlib.sha256(key.encode()).hexdigest()[:32]  # 128-bit, not 64-bit
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
+# Backward compatibility alias
+_edge_id = edge_id
+
+
+def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None) -> str:
+    """Resolve a callee symbol to its definition file path.
+
+    Resolution order:
+    1. Check if builtin for the given language (via tree-sitter based detection)
+    2. Try symbol resolver cache (cross-file resolution via indexed symbols)
+    3. Fallback to <external>
+
+    Args:
+        callee: The callee symbol name
+        repo: Repository name
+        language: Programming language for builtin detection (None = skip language-specific checks)
+    """
+    # Use tree-sitter based builtin detection (supports 16+ languages)
+    if language:
+        try:
+            from scripts.ast_analyzer import is_builtin
+
+            # Extract base name for detection (handles qualified names)
+            base_name = callee.split(".")[-1] if "." in callee else callee
+            base_name = base_name.split("::")[-1] if "::" in base_name else base_name
+
+            if is_builtin(base_name, language):
+                return f"<builtin>/{base_name}"
+        except ImportError:
+            pass  # Fallback if AST analyzer unavailable
+
+    # Try cross-file resolution via symbol resolver (language-agnostic)
+    try:
+        from scripts.graph_backends.symbol_resolver import get_symbol_resolver
+        collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
+        if collection:
+            resolver = get_symbol_resolver(collection)
+            resolved = resolver.resolve_symbol(callee, repo)
+            if resolved:
+                return resolved
+    except Exception:
+        pass
+
+    # Unresolved = external (no hardcoded stdlib lists)
+    return f"<external>/{callee}"
+
+
+def _resolve_import_path(imported: str, repo: str) -> str:
+    """Resolve an import to its source file path.
+
+    Resolution order:
+    1. Try symbol resolver cache (cross-file resolution)
+    2. Fallback to <external>
+
+    Args:
+        imported: The imported module/symbol name
+        repo: Repository name
+    """
+    # Try cross-file resolution via symbol resolver
+    try:
+        from scripts.graph_backends.symbol_resolver import get_symbol_resolver
+        collection = os.environ.get("COLLECTION_NAME") or os.environ.get("CURRENT_COLLECTION")
+        if collection:
+            resolver = get_symbol_resolver(collection)
+            resolved = resolver.resolve_import(imported, repo)
+            if resolved:
+                return resolved
+    except Exception:
+        pass
+
+    # Unresolved = external (no hardcoded stdlib lists)
+    return f"<external>/{imported}"
 
 
 def extract_call_edges(
@@ -199,22 +333,25 @@ def extract_call_edges(
     if not symbol_path or not calls:
         return []
 
-    # Normalize path for consistent matching
     norm_path = _normalize_path(path)
-
     edges = []
+
     for callee in calls:
         if not callee:
             continue
+
+        # Resolve callee to its definition file path (language-aware for stdlib/builtin detection)
+        callee_path = _resolve_callee_path(callee, repo, language=language)
+
         edge_id = _edge_id(symbol_path, callee, norm_path, EDGE_TYPE_CALLS, repo)
         payload = {
             "caller_symbol": symbol_path,
             "callee_symbol": callee,
             "caller_path": norm_path,
+            "callee_path": callee_path,
             "edge_type": EDGE_TYPE_CALLS,
             "repo": repo,
         }
-        # Include line info if available
         if start_line is not None:
             payload["start_line"] = start_line
         if end_line is not None:
@@ -254,21 +391,23 @@ def extract_import_edges(
     if not imports:
         return []
 
-    # Normalize path for consistent matching
     norm_path = _normalize_path(path)
-
-    # For imports, use file path as caller if no symbol
     caller = symbol_path or norm_path
-
     edges = []
+
     for imported in imports:
         if not imported:
             continue
+
+        # Resolve import to its source file path
+        callee_path = _resolve_import_path(imported, repo)
+
         edge_id = _edge_id(caller, imported, norm_path, EDGE_TYPE_IMPORTS, repo)
         payload = {
             "caller_symbol": caller,
             "callee_symbol": imported,
             "caller_path": norm_path,
+            "callee_path": callee_path,
             "edge_type": EDGE_TYPE_IMPORTS,
             "repo": repo,
         }
@@ -433,8 +572,8 @@ def get_callers(
             )
         )
 
-    # Skip if we already know this collection doesn't exist
-    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+    # Skip if we already know this collection doesn't exist (with TTL expiry)
+    if _is_collection_missing(graph_collection):
         return []
 
     try:
@@ -450,7 +589,7 @@ def get_callers(
         # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
         err_str = str(e).lower()
         if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
-            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            _mark_collection_missing(graph_collection)
             return []
         logger.error(f"Failed to get callers for {symbol}: {e}")
         return []
@@ -495,8 +634,8 @@ def get_callees(
             )
         )
 
-    # Skip if we already know this collection doesn't exist
-    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+    # Skip if we already know this collection doesn't exist (with TTL expiry)
+    if _is_collection_missing(graph_collection):
         return []
 
     try:
@@ -512,7 +651,7 @@ def get_callees(
         # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
         err_str = str(e).lower()
         if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
-            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            _mark_collection_missing(graph_collection)
             return []
         logger.error(f"Failed to get callees for {symbol}: {e}")
         return []
@@ -557,8 +696,8 @@ def get_importers(
             )
         )
 
-    # Skip if we already know this collection doesn't exist
-    if graph_collection in _MISSING_GRAPH_COLLECTIONS:
+    # Skip if we already know this collection doesn't exist (with TTL expiry)
+    if _is_collection_missing(graph_collection):
         return []
 
     try:
@@ -574,7 +713,7 @@ def get_importers(
         # Silently return empty for "collection doesn't exist" errors (common in benchmarks)
         err_str = str(e).lower()
         if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
-            _MISSING_GRAPH_COLLECTIONS.add(graph_collection)
+            _mark_collection_missing(graph_collection)
             return []
         logger.error(f"Failed to get importers for {module}: {e}")
         return []

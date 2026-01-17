@@ -28,6 +28,33 @@ INTENT_PRUNE = "prune"
 INTENT_STATUS = "status"
 INTENT_LIST = "list"
 
+# Default ML confidence threshold (fallback to SEARCH if below)
+_DEFAULT_ML_THRESHOLD = float(os.environ.get("INTENT_ML_THRESHOLD", "0.25"))
+
+# Per-intent confidence thresholds (override default)
+# Lower = more permissive, higher = stricter classification
+# Rationale:
+#   - symbol_graph: very distinctive queries ("who calls X"), lower threshold
+#   - answer: expensive LLM call, require higher confidence
+#   - memory_store: irreversible action, require higher confidence
+#   - search: default fallback, moderate threshold
+_INTENT_THRESHOLDS: Dict[str, float] = {
+    INTENT_SYMBOL_GRAPH: float(os.environ.get("INTENT_THRESHOLD_SYMBOL_GRAPH", "0.20")),
+    INTENT_SEARCH_CALLERS: float(os.environ.get("INTENT_THRESHOLD_SEARCH_CALLERS", "0.20")),
+    INTENT_SEARCH_IMPORTERS: float(os.environ.get("INTENT_THRESHOLD_SEARCH_IMPORTERS", "0.22")),
+    INTENT_SEARCH_TESTS: float(os.environ.get("INTENT_THRESHOLD_SEARCH_TESTS", "0.22")),
+    INTENT_SEARCH_CONFIG: float(os.environ.get("INTENT_THRESHOLD_SEARCH_CONFIG", "0.22")),
+    INTENT_ANSWER: float(os.environ.get("INTENT_THRESHOLD_ANSWER", "0.30")),
+    INTENT_MEMORY_STORE: float(os.environ.get("INTENT_THRESHOLD_MEMORY_STORE", "0.35")),
+    INTENT_MEMORY_FIND: float(os.environ.get("INTENT_THRESHOLD_MEMORY_FIND", "0.25")),
+    INTENT_SEARCH: float(os.environ.get("INTENT_THRESHOLD_SEARCH", "0.25")),
+}
+
+
+def get_intent_threshold(intent: str) -> float:
+    """Get the confidence threshold for a specific intent."""
+    return _INTENT_THRESHOLDS.get(intent, _DEFAULT_ML_THRESHOLD)
+
 # Debug state
 _LAST_INTENT_DEBUG: Dict[str, Any] = {}
 
@@ -202,7 +229,7 @@ def _classify_intent_ml(q: str) -> str:
             "query": q,
             "top_candidate": INTENT_SEARCH,
             "top_score": 0.0,
-            "threshold": 0.25,
+            "threshold": _DEFAULT_ML_THRESHOLD,
             "candidates": [],
             "reason": "embed_failed",
             "timestamp": time.time(),
@@ -214,7 +241,11 @@ def _classify_intent_ml(q: str) -> str:
         sims.append((lab, _cosine(qv, vecs[1 + i])))
     sims.sort(key=lambda x: x[1], reverse=True)
     top, score = sims[0]
-    picked = top if score >= 0.25 else INTENT_SEARCH
+
+    # Use per-intent threshold instead of hard-coded 0.25
+    threshold = get_intent_threshold(top)
+    picked = top if score >= threshold else INTENT_SEARCH
+
     _LAST_INTENT_DEBUG = {
         "strategy": "ml",
         "intent": picked,
@@ -222,7 +253,7 @@ def _classify_intent_ml(q: str) -> str:
         "query": q,
         "top_candidate": top,
         "top_score": float(score),
-        "threshold": 0.25,
+        "threshold": threshold,
         "candidates": [(name, float(val)) for name, val in sims[:5]],
         "fallback": picked == INTENT_SEARCH and top != INTENT_SEARCH,
         "timestamp": time.time(),

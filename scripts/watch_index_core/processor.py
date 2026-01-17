@@ -254,12 +254,21 @@ def _process_paths(
                     pass
                 # Also delete graph edges for this file
                 try:
-                    from scripts.ingest.graph_edges import (
-                        delete_edges_by_path,
-                        get_graph_collection_name,
-                    )
-                    graph_coll = get_graph_collection_name(collection)
-                    delete_edges_by_path(client, graph_coll, str(p), repo=repo_name)
+                    from scripts.graph_backends import get_graph_backend
+                    backend = get_graph_backend()
+                except Exception:
+                    backend = None
+
+                try:
+                    if backend and backend.backend_type == "neo4j":
+                        backend.delete_edges_by_path(collection, str(p), repo=repo_name)
+                    else:
+                        from scripts.ingest.graph_edges import (
+                            delete_edges_by_path,
+                            get_graph_collection_name,
+                        )
+                        graph_coll = get_graph_collection_name(collection)
+                        delete_edges_by_path(client, graph_coll, str(p), repo=repo_name)
                 except Exception:
                     pass  # Graph collection may not exist yet
             try:

@@ -11,6 +11,9 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 API_KEY = os.environ.get("QDRANT_API_KEY")
 ROOT = Path(os.environ.get("PRUNE_ROOT", ".")).resolve()
 GRAPH_COLLECTION_SUFFIX = "_graph"
+_NEO4J_GRAPH_ENABLED = os.environ.get("NEO4J_GRAPH", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 def sha1_file(path: Path) -> str:
@@ -39,7 +42,7 @@ def delete_by_path(client: QdrantClient, path_str: str) -> int:
         return 0
 
 
-def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
+def delete_graph_edges_by_path(client: QdrantClient, path_str: str, repo: str | None = None) -> int:
     """Delete graph edges for a specific file path.
 
     Deletes edges where the file appears as caller_path.
@@ -49,6 +52,15 @@ def delete_graph_edges_by_path(client: QdrantClient, path_str: str) -> int:
     """
     import logging
     logger = logging.getLogger(__name__)
+
+    if _NEO4J_GRAPH_ENABLED:
+        try:
+            from scripts.graph_backends import get_graph_backend
+            backend = get_graph_backend()
+            if backend.backend_type == "neo4j":
+                return backend.delete_edges_by_path(COLLECTION, path_str, repo=repo)
+        except Exception:
+            pass
 
     graph_coll = COLLECTION + GRAPH_COLLECTION_SUFFIX
 
@@ -148,13 +160,13 @@ def main():
             )
             if not abs_path.exists():
                 removed_missing += delete_by_path(client, path_str)
-                removed_graph_edges += delete_graph_edges_by_path(client, path_str)
+                removed_graph_edges += delete_graph_edges_by_path(client, path_str, repo=md.get("repo"))
                 print(f"[prune] removed missing file points: {path_str}")
                 continue
             current_hash = sha1_file(abs_path)
             if file_hash and current_hash and current_hash != file_hash:
                 removed_mismatch += delete_by_path(client, path_str)
-                removed_graph_edges += delete_graph_edges_by_path(client, path_str)
+                removed_graph_edges += delete_graph_edges_by_path(client, path_str, repo=md.get("repo"))
                 print(f"[prune] removed outdated points (hash mismatch): {path_str}")
 
         if next_page is None:

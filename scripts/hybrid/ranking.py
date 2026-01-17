@@ -16,6 +16,7 @@ __all__ = [
     "_get_symbol_extent", "ADAPTIVE_SPAN_SIZING",
     "_detect_implementation_intent", "_IMPL_INTENT_PATTERNS",
     "_detect_score_variance",
+    "clear_collection_stats_cache", "clear_symbol_extent_cache",
 ]
 
 import os
@@ -131,6 +132,12 @@ def _get_collection_stats(client: Any, coll_name: str) -> Dict[str, Any]:
         return stats
     except Exception:
         return {"points_count": 0}
+
+
+def clear_collection_stats_cache() -> None:
+    """Clear the collection statistics cache."""
+    global _COLL_STATS_CACHE
+    _COLL_STATS_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +852,13 @@ def _get_symbol_extent(
         if os.environ.get("DEBUG_ADAPTIVE_SPAN"):
             logger.debug(f"Symbol extent lookup failed: {e}")
         return (0, 0)
+
+
+def clear_symbol_extent_cache() -> None:
+    """Clear the symbol extent cache and reset the client."""
+    global _SYMBOL_EXTENT_CACHE, _SYMBOL_EXTENT_CLIENT
+    _SYMBOL_EXTENT_CACHE.clear()
+    _SYMBOL_EXTENT_CLIENT = None
 
 
 # ---------------------------------------------------------------------------

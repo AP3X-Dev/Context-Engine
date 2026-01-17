@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -25,6 +26,8 @@ __all__ = [
     "_symbol_graph_impl",
     "_format_symbol_graph_toon",
     "_compute_called_by",
+    "clear_graph_collection_cache",
+    "clear_symbol_suggestions_cache",
 ]
 
 
@@ -56,7 +59,47 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 # Graph collection suffix (matches graph_edges.py)
 GRAPH_COLLECTION_SUFFIX = "_graph"
 
-_GRAPH_COLLECTION_EXISTS: Dict[str, bool] = {}
+# Cache for graph collection existence checks
+# Key: collection name, Value: (exists: bool, timestamp: float)
+_GRAPH_COLLECTION_EXISTS: Dict[str, Tuple[bool, float]] = {}
+_GRAPH_COLLECTION_CACHE_TTL = 300  # 5 minutes
+
+
+def _check_graph_collection_exists(collection: str) -> Optional[bool]:
+    """Check if graph collection exists (with TTL cache).
+
+    Returns:
+        True/False if cached and valid, None if cache miss/expired.
+    """
+    if collection not in _GRAPH_COLLECTION_EXISTS:
+        return None
+    exists, timestamp = _GRAPH_COLLECTION_EXISTS[collection]
+    if time.time() - timestamp > _GRAPH_COLLECTION_CACHE_TTL:
+        del _GRAPH_COLLECTION_EXISTS[collection]
+        return None
+    return exists
+
+
+def _set_graph_collection_exists(collection: str, exists: bool) -> None:
+    """Cache graph collection existence status."""
+    _GRAPH_COLLECTION_EXISTS[collection] = (exists, time.time())
+
+
+def clear_graph_collection_cache() -> None:
+    """Clear the graph collection existence cache (useful for testing)."""
+    _GRAPH_COLLECTION_EXISTS.clear()
+
+
+def _get_graph_backend():
+    """Return Neo4j graph backend when enabled, otherwise None."""
+    try:
+        from scripts.graph_backends import get_graph_backend
+        backend = get_graph_backend()
+        if backend.backend_type == "neo4j":
+            return backend
+    except Exception:
+        return None
+    return None
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -177,10 +220,26 @@ def _similarity_score(query: str, candidate: str) -> float:
     return 0.0
 
 
-# Cache for symbol suggestions: {(collection, symbol): [(symbol, score), ...]}
+# Cache for symbol suggestions: {(collection, symbol): (timestamp, [(symbol, score), ...])}
 _SYMBOL_SUGGESTIONS_CACHE: Dict[Tuple[str, str], Tuple[float, List[Tuple[str, float]]]] = {}
-_SYMBOL_SUGGESTIONS_CACHE_MAX = 100
-_SYMBOL_SUGGESTIONS_CACHE_TTL = 60  # seconds
+_SYMBOL_SUGGESTIONS_CACHE_MAX = int(os.environ.get("SYMBOL_SUGGESTIONS_CACHE_MAX", "100") or 100)
+_SYMBOL_SUGGESTIONS_CACHE_TTL = int(os.environ.get("SYMBOL_SUGGESTIONS_CACHE_TTL", "60") or 60)
+
+
+def clear_symbol_suggestions_cache() -> None:
+    """Clear the symbol suggestions cache (useful for testing)."""
+    _SYMBOL_SUGGESTIONS_CACHE.clear()
+
+
+def _evict_expired_suggestions() -> None:
+    """Remove expired entries from the suggestions cache."""
+    now = time.time()
+    expired = [
+        k for k, (ts, _) in _SYMBOL_SUGGESTIONS_CACHE.items()
+        if now - ts > _SYMBOL_SUGGESTIONS_CACHE_TTL
+    ]
+    for k in expired:
+        _SYMBOL_SUGGESTIONS_CACHE.pop(k, None)
 
 
 def _get_symbol_suggestions(
@@ -299,11 +358,18 @@ def _get_symbol_suggestions(
         # Sort by score and return top N
         suggestions = sorted(candidates.items(), key=lambda x: x[1], reverse=True)[:limit]
 
-        # Cache results
+        # Cache results with proper eviction
+        # First, evict expired entries
+        _evict_expired_suggestions()
+
+        # If still at capacity, evict oldest 10%
         if len(_SYMBOL_SUGGESTIONS_CACHE) >= _SYMBOL_SUGGESTIONS_CACHE_MAX:
-            # Simple FIFO eviction
-            keys_to_remove = list(_SYMBOL_SUGGESTIONS_CACHE.keys())[:20]
-            for k in keys_to_remove:
+            evict_count = max(1, _SYMBOL_SUGGESTIONS_CACHE_MAX // 10)
+            sorted_keys = sorted(
+                _SYMBOL_SUGGESTIONS_CACHE.keys(),
+                key=lambda k: _SYMBOL_SUGGESTIONS_CACHE[k][0]  # Sort by timestamp
+            )
+            for k in sorted_keys[:evict_count]:
                 _SYMBOL_SUGGESTIONS_CACHE.pop(k, None)
 
         _SYMBOL_SUGGESTIONS_CACHE[cache_key] = (now, suggestions)
@@ -592,6 +658,7 @@ async def _query_graph_collection(
     query_type: str,
     limit: int,
     repo: Optional[str] = None,
+    depth: int = 1,  # Accepted for compatibility but not used (Qdrant doesn't support multi-hop)
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Query the graph collection for fast indexed lookups.
@@ -601,7 +668,8 @@ async def _query_graph_collection(
     from qdrant_client import models as qmodels
 
     graph_coll = collection + GRAPH_COLLECTION_SUFFIX
-    if _GRAPH_COLLECTION_EXISTS.get(graph_coll) is False:
+    cached_exists = _check_graph_collection_exists(graph_coll)
+    if cached_exists is False:
         return None
 
     def _is_missing_collection_error(err: Exception) -> bool:
@@ -668,7 +736,7 @@ async def _query_graph_collection(
                 scroll_result = await asyncio.to_thread(do_scroll)
             except Exception as e:
                 if _is_missing_collection_error(e):
-                    _GRAPH_COLLECTION_EXISTS[graph_coll] = False
+                    _set_graph_collection_exists(graph_coll, False)
                     return None
                 logger.debug(f"Graph scroll failed for variant '{variant}': {e}")
                 continue
@@ -681,7 +749,7 @@ async def _query_graph_collection(
                 seen.add(edge_id)
                 edges_all.append(edge)
 
-        _GRAPH_COLLECTION_EXISTS[graph_coll] = True
+        _set_graph_collection_exists(graph_coll, True)
         if not edges_all:
             return []
 
@@ -729,6 +797,171 @@ async def _query_graph_collection(
 
     except Exception as e:
         logger.debug(f"Graph collection query failed: {e}")
+        return None
+
+
+async def _query_graph_backend(
+    backend: Any,
+    client: Any,
+    collection: str,
+    symbol: str,
+    query_type: str,
+    limit: int,
+    repo: Optional[str] = None,
+    depth: int = 1,
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Query graph backend and return results in graph-collection format.
+
+    When enhanced graph backend is available and depth > 1, uses multi-hop
+    traversal for richer results (transitive callers/callees).
+    """
+    if query_type not in ("callers", "callees", "importers"):
+        return None
+
+    graph_store = collection
+    variants = _symbol_variants(symbol) or [symbol]
+
+    # Try enhanced multi-hop traversal when depth > 1
+    if depth > 1:
+        enhanced_results = await _try_enhanced_multihop_query(
+            symbol=symbol,
+            query_type=query_type,
+            depth=depth,
+            limit=limit,
+            repo=repo,
+        )
+        if enhanced_results is not None:
+            return enhanced_results
+
+    def do_query():
+        edges_all: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for variant in variants:
+            if query_type == "callers":
+                edges = backend.get_callers(graph_store, variant, repo=repo, limit=limit)
+            elif query_type == "callees":
+                edges = backend.get_callees(graph_store, variant, repo=repo, limit=limit)
+            else:
+                edges = backend.get_importers(graph_store, variant, repo=repo, limit=limit)
+
+            for edge in edges or []:
+                edge_key = edge.get("edge_id") or f"{edge.get('caller_symbol')}|{edge.get('callee_symbol')}|{edge.get('caller_path')}"
+                if edge_key in seen:
+                    continue
+                seen.add(edge_key)
+                edges_all.append(edge)
+                if len(edges_all) >= limit:
+                    return edges_all
+
+        return edges_all
+
+    try:
+        edges = await asyncio.to_thread(do_query)
+    except Exception as e:
+        logger.debug(f"Graph backend query failed: {e}")
+        return None
+
+    if not edges:
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for edge in edges:
+        if query_type == "callees":
+            target_symbol = edge.get("callee_symbol", "")
+            target_path = edge.get("callee_path", "")
+            start_line = 0
+        else:
+            target_symbol = edge.get("caller_symbol", "")
+            target_path = edge.get("caller_path", "")
+            start_line = edge.get("start_line")
+
+        language = edge.get("language", "")
+
+        if "/" in target_symbol or target_symbol.endswith(".py"):
+            symbol_name = Path(target_symbol).stem
+        elif "." in target_symbol:
+            symbol_name = target_symbol.split(".")[-1]
+        else:
+            symbol_name = target_symbol
+
+        end_line = edge.get("end_line")
+        results.append(
+            {
+                "path": target_path,
+                "start_line": int(start_line) if start_line else 0,
+                "end_line": int(end_line) if end_line else 0,
+                "symbol": symbol_name,
+                "symbol_path": target_symbol,
+                "language": language or "",
+                "snippet": "",
+                "from_graph": True,
+            }
+        )
+
+    return results
+
+
+async def _try_enhanced_multihop_query(
+    symbol: str,
+    query_type: str,
+    depth: int,
+    limit: int,
+    repo: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Try enhanced multi-hop traversal using advanced graph backend.
+
+    Returns None if enhanced backend is not available, allowing fallback.
+    This is transparent to users - just provides richer results when available.
+    """
+    try:
+        from scripts.graph_backends.graph_rag import get_transitive_callers
+    except ImportError:
+        return None
+
+    if query_type not in ("callers", "callees"):
+        return None  # Multi-hop only makes sense for callers/callees
+
+    try:
+        if query_type == "callers":
+            results = get_transitive_callers(symbol, repo=repo, depth=depth, limit=limit)
+        else:
+            # For callees, use similar approach
+            try:
+                from scripts.graph_backends.graph_rag import _get_knowledge_graph
+                kg = _get_knowledge_graph()
+                if kg:
+                    results = kg.get_callees(symbol, repo=repo, depth=depth, limit=limit)
+                else:
+                    return None
+            except Exception:
+                return None
+
+        if not results:
+            return None
+
+        # Convert to standard format
+        formatted = []
+        for r in results:
+            hop = r.get("distance", 1) or r.get("hop", 1) or 1
+            formatted.append({
+                "path": r.get("path", ""),
+                "start_line": r.get("start_line", 0) or 0,
+                "end_line": r.get("end_line", 0) or 0,
+                "symbol": r.get("name", ""),
+                "symbol_path": r.get("id", "") or r.get("name", ""),
+                "language": r.get("language", ""),
+                "snippet": "",
+                "from_graph": True,
+                "hop": hop,
+                "via": symbol if hop == 1 else "",  # First hop is via the queried symbol
+            })
+
+        logger.debug(f"Enhanced multi-hop returned {len(formatted)} results (depth={depth})")
+        return formatted
+
+    except Exception as e:
+        logger.debug(f"Enhanced multi-hop query failed: {e}")
         return None
 
 
@@ -1068,6 +1301,8 @@ async def _symbol_graph_impl(
             coll = os.environ.get("COLLECTION_NAME", "codebase")
     if not coll:
         coll = os.environ.get("COLLECTION_NAME", "codebase")
+    if coll.endswith("_graph"):
+        coll = coll[: -len("_graph")]
 
     # Connect to Qdrant using engine's standard env vars
     try:
@@ -1085,6 +1320,13 @@ async def _symbol_graph_impl(
             "query_type": query_type,
             "collection": coll,
         }
+
+    graph_backend = _get_graph_backend()
+
+    async def graph_query_fn(**kwargs):
+        if graph_backend:
+            return await _query_graph_backend(graph_backend, **kwargs)
+        return await _query_graph_collection(**kwargs)
 
     # Validate query_type
     if query_type not in ("callers", "definition", "importers", "callees"):
@@ -1104,13 +1346,14 @@ async def _symbol_graph_impl(
         # IMPORTANT: treat graph as an accelerator. If it's present-but-empty (e.g. freshly created
         # before a full reindex), optionally fall back to legacy array queries to avoid false negatives.
         if query_type in ("callers", "importers", "callees"):
-            graph_results = await _query_graph_collection(
+            graph_results = await graph_query_fn(
                 client=client,
                 collection=coll,
                 symbol=symbol,
                 query_type=query_type,
                 limit=limit,
                 repo=repo,
+                depth=depth,  # Pass depth for multi-hop traversal
             )
             if graph_results:
                 # Hydrate hollow graph results with actual snippets and line numbers
@@ -1126,7 +1369,7 @@ async def _symbol_graph_impl(
                     used_graph = True
 
         # Fallback for callees: use _query_callees which can use metadata.calls array
-        if query_type == "callees" and not results and not used_graph:
+        if query_type == "callees" and not results and not used_graph and not graph_backend:
             results = await _query_callees(
                 client=client,
                 collection=coll,
@@ -1208,15 +1451,17 @@ async def _symbol_graph_impl(
             next_hop_results: List[Dict[str, Any]] = []
 
             # Parallelize traversal across current hop symbols
-            hop_tasks = []
+            # Track (via_symbol, task) pairs to maintain correct attribution
+            hop_tasks_with_via: List[Tuple[str, Any]] = []
             for r in current_hop_results:
                 hop_symbol = r.get("symbol_path") or r.get("symbol", "")
                 if not hop_symbol or hop_symbol in seen_symbols:
                     continue
                 seen_symbols.add(hop_symbol)
 
-                hop_tasks.append(
-                    _query_graph_collection(
+                hop_tasks_with_via.append((
+                    hop_symbol,  # via_symbol for attribution
+                    graph_query_fn(
                         client=client,
                         collection=coll,
                         symbol=hop_symbol,
@@ -1224,14 +1469,15 @@ async def _symbol_graph_impl(
                         limit=max(5, limit // hop),
                         repo=repo,
                     )
-                )
+                ))
 
-            if hop_tasks:
+            if hop_tasks_with_via:
+                # Extract just the tasks for gather
+                hop_tasks = [task for _, task in hop_tasks_with_via]
                 hop_results_batch = await asyncio.gather(*hop_tasks)
 
-                for i, hop_graph_results in enumerate(hop_results_batch):
+                for (via_symbol, _), hop_graph_results in zip(hop_tasks_with_via, hop_results_batch):
                     if hop_graph_results:
-                        via_symbol = current_hop_results[i].get("symbol_path") or current_hop_results[i].get("symbol", "")
                         hydrated = await _hydrate_graph_results(client, coll, hop_graph_results)
                         for hr in hydrated:
                             hr["hop"] = hop
@@ -1246,9 +1492,15 @@ async def _symbol_graph_impl(
             if not next_hop_results:
                 break
 
-        # Mark first hop results and truncate
+        # Mark first hop results
         for r in results:
             r["hop"] = 1
+
+        # Sort by hop first (ascending), then by proximity_score within each hop (descending)
+        # This ensures stable ordering: hop=1 results first, then hop=2, etc.
+        all_results.sort(
+            key=lambda x: (x.get("hop", 1), -x.get("proximity_score", 0)),
+        )
         results = all_results[:limit]
 
     # Add suggestions if no results found

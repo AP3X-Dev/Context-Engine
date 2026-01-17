@@ -646,10 +646,10 @@ def expand_via_embeddings(
 
         # Extract symbol names
         md = payload.get("metadata") or {}
-        symbol = payload.get("symbol") or md.get("symbol") or ""
-        if symbol and len(symbol) > 2:
+        sym_name = payload.get("symbol") or md.get("symbol") or ""
+        if sym_name and len(sym_name) > 2:
             # Split camelCase/snake_case
-            parts = re.split(r"[_\s]+|(?<=[a-z])(?=[A-Z])", symbol)
+            parts = re.split(r"[_\s]+|(?<=[a-z])(?=[A-Z])", sym_name)
             for part in parts:
                 part_lower = part.lower()
                 if len(part_lower) > 2 and part_lower not in query_tokens:

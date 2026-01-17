@@ -339,3 +339,70 @@ class TestDetectScoreVariance:
         assert "variance" in result
         assert "cv" in result
         assert "high_variance" in result
+
+
+# ============================================================================
+# Tests: Score Normalization (Large Collection)
+# ============================================================================
+class TestNormalizeScores:
+    """Tests for _normalize_scores function."""
+
+    def test_normalize_scores_noop_below_threshold(self, monkeypatch, ranking_module):
+        """Below LARGE_COLLECTION_THRESHOLD, normalization should not run."""
+        score_map = {
+            "a": {"s": 0.1},
+            "b": {"s": 0.2},
+            "c": {"s": 0.3},
+        }
+        before = {k: v["s"] for k, v in score_map.items()}
+        ranking_module._normalize_scores(score_map, ranking_module.LARGE_COLLECTION_THRESHOLD - 1)
+        after = {k: v["s"] for k, v in score_map.items()}
+        assert after == before
+
+    def test_normalize_scores_noop_when_disabled(self, monkeypatch, ranking_module):
+        """When HYBRID_SCORE_NORMALIZE is disabled, normalization should not run."""
+        monkeypatch.setattr(ranking_module, "SCORE_NORMALIZE_ENABLED", False)
+
+        score_map = {
+            "a": {"s": 0.1},
+            "b": {"s": 0.2},
+            "c": {"s": 0.3},
+        }
+        before = {k: v["s"] for k, v in score_map.items()}
+        ranking_module._normalize_scores(score_map, ranking_module.LARGE_COLLECTION_THRESHOLD * 2)
+        after = {k: v["s"] for k, v in score_map.items()}
+        assert after == before
+
+    def test_normalize_scores_transforms_large_collection(self, monkeypatch, ranking_module):
+        """When enabled and collection is large, scores are transformed and ordering preserved."""
+        monkeypatch.setattr(ranking_module, "SCORE_NORMALIZE_ENABLED", True)
+
+        score_map = {
+            "low": {"s": 1.0},
+            "mid": {"s": 2.0},
+            "high": {"s": 3.0},
+        }
+        ranking_module._normalize_scores(score_map, ranking_module.LARGE_COLLECTION_THRESHOLD * 2)
+
+        low = score_map["low"]["s"]
+        mid = score_map["mid"]["s"]
+        high = score_map["high"]["s"]
+
+        assert 0.0 < low < 1.0
+        assert 0.0 < mid < 1.0
+        assert 0.0 < high < 1.0
+        assert low < mid < high
+
+    def test_normalize_scores_zero_variance_maps_to_half(self, monkeypatch, ranking_module):
+        """When scores are identical, normalization should map them to a stable midpoint (0.5)."""
+        monkeypatch.setattr(ranking_module, "SCORE_NORMALIZE_ENABLED", True)
+
+        score_map = {
+            "a": {"s": 2.0},
+            "b": {"s": 2.0},
+            "c": {"s": 2.0},
+        }
+        ranking_module._normalize_scores(score_map, ranking_module.LARGE_COLLECTION_THRESHOLD * 2)
+        assert score_map["a"]["s"] == pytest.approx(0.5)
+        assert score_map["b"]["s"] == pytest.approx(0.5)
+        assert score_map["c"]["s"] == pytest.approx(0.5)

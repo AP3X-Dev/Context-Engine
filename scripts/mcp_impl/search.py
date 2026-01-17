@@ -42,7 +42,14 @@ from scripts.mcp_impl.utils import (
     _tokens_from_queries,
     safe_int,
 )
-from scripts.mcp_impl.workspace import _default_collection, _work_script
+from scripts.mcp_impl.workspace import (
+    _default_collection,
+    _work_script,
+    SESSION_DEFAULTS,
+    SESSION_DEFAULTS_BY_SESSION,
+    _SESSION_LOCK,
+    _SESSION_CTX_LOCK,
+)
 from scripts.mcp_impl.admin_tools import _detect_current_repo, _run_async
 from scripts.mcp_toon import _should_use_toon, _format_results_as_toon
 from scripts.mcp_auth import require_collection_access as _require_collection_access

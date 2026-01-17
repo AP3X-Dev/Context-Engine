@@ -69,6 +69,10 @@ try:
         ("html", "tree_sitter_html"),
         ("css", "tree_sitter_css"),
         ("markdown", "tree_sitter_markdown"),
+        ("kotlin", "tree_sitter_kotlin"),
+        ("swift", "tree_sitter_swift"),
+        ("scala", "tree_sitter_scala"),
+        ("php", "tree_sitter_php"),
     ]:
         try:
             mod = __import__(pkg_name)

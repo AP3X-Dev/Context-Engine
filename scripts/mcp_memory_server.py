@@ -367,16 +367,51 @@ def _ensure_collection(name: str):
     except Exception:
         pass
 
+    # Add pattern vector for structural similarity search
+    try:
+        if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            pattern_vector_dim = int(os.environ.get("PATTERN_VECTOR_DIM", "64"))
+            vectors_cfg["pattern_vector"] = models.VectorParams(
+                size=pattern_vector_dim,
+                distance=models.Distance.COSINE,
+            )
+    except Exception:
+        pass
+
+    # Build sparse vector config for lex_sparse (lossless lexical matching)
+    sparse_cfg = None
+    try:
+        if os.environ.get("LEX_SPARSE_MODE", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            lex_sparse_name = os.environ.get("LEX_SPARSE_NAME", "lex_sparse")
+            sparse_params_kwargs = {
+                "index": models.SparseIndexParams(full_scan_threshold=5000)
+            }
+            # Enable IDF modifier for BM25-style term weighting
+            if os.environ.get("LEX_SPARSE_IDF", "1").strip().lower() in {"1", "true", "yes", "on"}:
+                try:
+                    sparse_params_kwargs["modifier"] = models.Modifier.IDF
+                except AttributeError:
+                    pass  # Older qdrant-client versions
+            sparse_cfg = {lex_sparse_name: models.SparseVectorParams(**sparse_params_kwargs)}
+    except Exception:
+        pass
+
     # Get a fresh client for collection creation
     client = _get_qdrant_client()
     try:
         client.create_collection(
             collection_name=name,
             vectors_config=vectors_cfg,
+            sparse_vectors_config=sparse_cfg,
             hnsw_config=models.HnswConfigDiff(m=16, ef_construct=256),
         )
         vector_names = list(vectors_cfg.keys())
-        print(f"[MEMORY_SERVER] Created collection '{name}' with vectors: {vector_names}")
+        sparse_info = f", sparse: {list(sparse_cfg.keys())}" if sparse_cfg else ""
+        print(f"[MEMORY_SERVER] Created collection '{name}' with vectors: {vector_names}{sparse_info}")
         return True
     finally:
         _return_qdrant_client(client)

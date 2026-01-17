@@ -506,11 +506,14 @@ async def _ca_inject_subgraph_context(
     repo: Any = None,
     max_neighbors: int = 5,
 ) -> list[Dict[str, Any]]:
-    """Inject 1-hop graph neighbors into retrieval results.
+    """Inject graph neighbors into retrieval results.
 
     Extracts symbols from search result metadata (AST-extracted during indexing),
     then finds their graph neighbors. Uses ego-graph intersection to prioritize
     code connected to MULTIPLE symbols over code connected to just one.
+
+    When enhanced graph backend is available, uses richer multi-hop traversal
+    with importance scoring. Falls back to standard approach transparently.
 
     Args:
         items: Existing retrieval results (with symbol_path metadata)
@@ -528,11 +531,6 @@ async def _ca_inject_subgraph_context(
     if not os.environ.get("CONTEXT_ANSWER_SUBGRAPH", "1").lower() in {"1", "true", "yes", "on"}:
         return items
 
-    try:
-        from scripts.mcp_impl.symbol_graph import _symbol_graph_impl
-    except ImportError:
-        return items
-
     # Extract symbols from search results (AST-extracted, reliable)
     symbols = _extract_symbols_from_items(items)
     if not symbols:
@@ -543,6 +541,20 @@ async def _ca_inject_subgraph_context(
         (item.get("metadata", {}).get("path") or item.get("path", ""))
         for item in items
     }
+
+    # Try enhanced graph backend first (transparent to users)
+    enhanced_neighbors = await _try_enhanced_subgraph_context(
+        symbols, existing_paths, repo, max_neighbors
+    )
+    if enhanced_neighbors:
+        logger.debug(f"Injected {len(enhanced_neighbors)} enhanced graph neighbors")
+        return items + enhanced_neighbors
+
+    # Fall back to standard symbol_graph approach
+    try:
+        from scripts.mcp_impl.symbol_graph import _symbol_graph_impl
+    except ImportError:
+        return items
 
     # Ego-graph intersection: collect neighbors per symbol, then find intersection
     # path -> {symbols that connect to it, result data}
@@ -561,6 +573,10 @@ async def _ca_inject_subgraph_context(
             for r in result.get("results", []):
                 path = r.get("path", "")
                 if not path or path in existing_paths:
+                    continue
+
+                # Skip pseudo-paths that aren't retrievable code spans
+                if path.startswith("<stdlib>/") or path.startswith("<external>/") or path.startswith("<builtin>/"):
                     continue
 
                 if path not in path_to_info:
@@ -617,6 +633,72 @@ async def _ca_inject_subgraph_context(
 
     # Append graph neighbors at the end (lower priority than direct hits)
     return items + neighbors
+
+
+async def _try_enhanced_subgraph_context(
+    symbols: List[str],
+    existing_paths: set,
+    repo: Any,
+    max_neighbors: int,
+) -> List[Dict[str, Any]]:
+    """Try to get enhanced subgraph context using advanced graph backend.
+
+    Returns empty list if enhanced backend is not available.
+    This is an internal function - the enhancement is transparent to users.
+    """
+    try:
+        from scripts.graph_backends.graph_rag import get_subgraph_context, get_symbol_importance
+    except ImportError:
+        return []
+
+    neighbors = []
+    seen_paths: set = set()
+    repo_str = str(repo) if repo else None
+
+    for sym in symbols[:4]:
+        # Get subgraph context (2-hop radius for richer context)
+        ctx = get_subgraph_context(sym, repo=repo_str, radius=2)
+        if not ctx:
+            continue
+
+        # Extract neighbor nodes from subgraph
+        for node in ctx.get("nodes", [])[:max_neighbors * 2]:
+            path = node.get("path", "")
+            if not path or path in existing_paths or path in seen_paths:
+                continue
+
+            # Skip pseudo-paths that aren't retrievable code spans
+            if path.startswith("<stdlib>/") or path.startswith("<external>/") or path.startswith("<builtin>/"):
+                continue
+
+            seen_paths.add(path)
+
+            # Get importance score for ranking
+            importance = node.get("pagerank", 0.0) or 0.0
+
+            # Base score: 0.6 + importance boost (up to 0.2)
+            score = 0.6 + min(0.2, importance * 2)
+
+            neighbors.append({
+                "metadata": {
+                    "path": path,
+                    "start_line": node.get("start_line", 0),
+                    "end_line": node.get("end_line", 0) or node.get("start_line", 0) + 20,
+                    "symbol": node.get("name", ""),
+                    "symbol_path": node.get("id", ""),
+                    "language": node.get("language", ""),
+                },
+                "information": node.get("docstring", "")[:500] if node.get("docstring") else "",
+                "_graph_injected": True,
+                "_graph_via": [sym],
+                "_importance": importance,
+                "score": score,
+            })
+
+    # Sort by importance (higher PageRank = more important code)
+    neighbors.sort(key=lambda x: x.get("_importance", 0), reverse=True)
+
+    return neighbors[:max_neighbors]
 
 
 def _ca_prepare_filters_and_retrieve(

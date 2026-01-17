@@ -76,8 +76,26 @@ INTENT_EXEMPLARS: Dict[QueryIntent, List[str]] = {
     ],
 }
 
-# Confidence threshold - below this, fall back to HYBRID
+# Default confidence threshold - below this, fall back to HYBRID
 CONFIDENCE_THRESHOLD = float(os.environ.get("INTENT_CONFIDENCE_THRESHOLD", "0.65"))
+
+# Per-intent confidence thresholds (override default)
+# Rationale:
+#   - GRAPH: very distinctive queries ("who calls X"), slightly lower threshold
+#   - SEMANTIC: conceptual explanations, moderate threshold
+#   - IDENTIFIER: exact symbol lookups, lower threshold (very distinctive)
+#   - HYBRID: fallback, uses default threshold
+_QUERY_INTENT_THRESHOLDS: Dict[str, float] = {
+    "graph": float(os.environ.get("INTENT_THRESHOLD_GRAPH", "0.55")),
+    "semantic": float(os.environ.get("INTENT_THRESHOLD_SEMANTIC", "0.65")),
+    "identifier": float(os.environ.get("INTENT_THRESHOLD_IDENTIFIER", "0.50")),
+    "hybrid": CONFIDENCE_THRESHOLD,
+}
+
+
+def get_query_intent_threshold(intent: QueryIntent) -> float:
+    """Get the confidence threshold for a specific QueryIntent."""
+    return _QUERY_INTENT_THRESHOLDS.get(intent.value, CONFIDENCE_THRESHOLD)
 
 # Pre-compiled regex patterns for keyword fallback (compiled once at module load)
 _GRAPH_PATTERNS: List[Pattern] = [
@@ -296,8 +314,9 @@ def classify_intent(query: str) -> Tuple[QueryIntent, float, bool]:
                 best_score = sim
                 best_intent = intent
 
-    # Apply confidence threshold
-    if best_score < CONFIDENCE_THRESHOLD:
+    # Apply per-intent confidence threshold
+    threshold = get_query_intent_threshold(best_intent)
+    if best_score < threshold:
         return QueryIntent.HYBRID, best_score, False
 
     return best_intent, best_score, False
@@ -344,8 +363,12 @@ def reset_exemplar_cache() -> None:
         _EMBEDDER = None
 
 
-def is_graph_intent(query: str, threshold: float = CONFIDENCE_THRESHOLD) -> bool:
+def is_graph_intent(query: str, threshold: float | None = None) -> bool:
     """Check if query has graph intent above threshold.
+
+    Args:
+        query: The user's search query
+        threshold: Optional override. If None, uses per-intent threshold for GRAPH.
 
     When using keyword fallback (embedder unavailable), trusts the fallback
     result without applying the semantic threshold.
@@ -357,5 +380,7 @@ def is_graph_intent(query: str, threshold: float = CONFIDENCE_THRESHOLD) -> bool
     if fallback_used:
         return intent == QueryIntent.GRAPH
 
-    return intent == QueryIntent.GRAPH and score >= threshold
+    # Use per-intent threshold if not explicitly provided
+    effective_threshold = threshold if threshold is not None else get_query_intent_threshold(QueryIntent.GRAPH)
+    return intent == QueryIntent.GRAPH and score >= effective_threshold
 
