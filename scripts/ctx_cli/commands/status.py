@@ -10,9 +10,13 @@ Displays health status of Context-Engine stack:
 - MCP Indexer health endpoint
 - MCP Memory health endpoint
 - Collection info (name, point count, last indexed)
+- Model warmup state (embedding/reranker models)
+- Cache statistics (hit rate, size)
+- Memory usage per service
+- Index progress if indexing is in progress
 
 Usage:
-  ctx status [--json] [--verbose]
+  ctx status [--json] [--verbose] [--brief]
 """
 
 import json
@@ -23,6 +27,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 import socket
+
+from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
 
 def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
@@ -202,6 +208,119 @@ def get_collection_info(qdrant_url: str = "http://localhost:6333") -> Tuple[bool
         return False, None
 
 
+def get_warmup_status() -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Get model warmup status from MCP indexer.
+
+    Returns:
+        Tuple of (success, warmup_info)
+        warmup_info format: {
+            "embedding_ready": true,
+            "reranker_ready": true,
+            "decoder_ready": false,
+            ...
+        }
+    """
+    try:
+        client = MCPClient(server="indexer", timeout=5)
+        result = client.call_tool("warmup_status")
+        return True, result
+    except (MCPError, Exception) as e:
+        return False, None
+
+
+def get_qdrant_status() -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Get Qdrant collection status from MCP indexer.
+
+    Returns:
+        Tuple of (success, qdrant_info)
+        qdrant_info format: {
+            "collection": "name",
+            "count": 1234,
+            "last_indexed": "2024-01-15T10:30:00Z",
+            ...
+        }
+    """
+    try:
+        client = MCPClient(server="indexer", timeout=5)
+        result = client.call_tool("qdrant_status")
+        return True, result
+    except (MCPError, Exception) as e:
+        return False, None
+
+
+def get_workspace_info() -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Get workspace information from MCP indexer.
+
+    Returns:
+        Tuple of (success, workspace_info)
+        workspace_info format: {
+            "workspace_root": "/path/to/workspace",
+            "indexing_status": "idle|indexing|error",
+            "indexing_progress": {...},
+            ...
+        }
+    """
+    try:
+        client = MCPClient(server="indexer", timeout=5)
+        result = client.call_tool("workspace_info")
+        return True, result
+    except (MCPError, Exception) as e:
+        return False, None
+
+
+def get_docker_stats(services: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Get Docker container memory statistics.
+
+    Args:
+        services: List of Docker Compose services
+
+    Returns:
+        Dict mapping service names to stats (memory_usage, memory_limit, cpu_percent)
+    """
+    stats = {}
+
+    try:
+        # Get container IDs from services
+        for svc in services:
+            service_name = svc.get("Service", svc.get("Name", ""))
+            if not service_name:
+                continue
+
+            # Get container ID
+            container_id = svc.get("ID", "")
+            if not container_id:
+                continue
+
+            # Get stats for this container (no-stream for single snapshot)
+            result = subprocess.run(
+                ["docker", "stats", "--no-stream", "--format", "{{json .}}", container_id],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                try:
+                    container_stats = json.loads(result.stdout.strip())
+                    stats[service_name] = {
+                        "memory_usage": container_stats.get("MemUsage", "N/A"),
+                        "memory_percent": container_stats.get("MemPerc", "N/A"),
+                        "cpu_percent": container_stats.get("CPUPerc", "N/A"),
+                    }
+                except json.JSONDecodeError:
+                    pass
+
+    except (subprocess.TimeoutExpired, Exception) as e:
+        pass
+
+    return stats
+
+
 def format_timestamp(ts: Optional[str]) -> str:
     """Format timestamp for display."""
     if not ts:
@@ -214,6 +333,55 @@ def format_timestamp(ts: Optional[str]) -> str:
         return ts
 
 
+def print_status_brief(
+    docker_ok: bool,
+    qdrant_ok: bool,
+    indexer_ok: bool,
+    memory_ok: bool
+):
+    """
+    Print minimal status output (brief mode).
+
+    Shows only up/down status for each component.
+    """
+    all_healthy = docker_ok and qdrant_ok and indexer_ok and memory_ok
+
+    # Print single-line status
+    status_char = "✓" if all_healthy else "✗"
+    status_text = "UP" if all_healthy else "DOWN"
+
+    print(f"{status_char} Context-Engine: {status_text}")
+
+    # Show individual component status
+    components = [
+        ("Docker", docker_ok),
+        ("Qdrant", qdrant_ok),
+        ("MCP Indexer", indexer_ok),
+        ("MCP Memory", memory_ok),
+    ]
+
+    for name, ok in components:
+        char = "✓" if ok else "✗"
+        print(f"  {char} {name}")
+
+
+def format_bytes(bytes_str: str) -> str:
+    """
+    Format bytes string from Docker stats.
+
+    Args:
+        bytes_str: String like "123.4MiB" or "1.234GiB"
+
+    Returns:
+        Formatted string
+    """
+    if not bytes_str or bytes_str == "N/A":
+        return bytes_str
+
+    # Already formatted by Docker
+    return bytes_str
+
+
 def print_status_table(
     docker_ok: bool,
     services: List[Dict[str, Any]],
@@ -221,6 +389,10 @@ def print_status_table(
     indexer_ok: bool,
     memory_ok: bool,
     collection_info: Optional[Dict[str, Any]],
+    warmup_info: Optional[Dict[str, Any]] = None,
+    qdrant_status_info: Optional[Dict[str, Any]] = None,
+    workspace_info: Optional[Dict[str, Any]] = None,
+    docker_stats: Optional[Dict[str, Dict[str, Any]]] = None,
     verbose: bool = False
 ):
     """
@@ -239,17 +411,22 @@ def print_status_table(
     health_symbol = "✓" if all_healthy else "✗"
     health_text = "All checks passed" if all_healthy else "Some checks failed"
 
-    # Collection info
+    # Collection info (prefer qdrant_status_info if available)
     collection_name = "Unknown"
     points_count = "Unknown"
     last_indexed = "Unknown"
 
-    if collection_info:
+    if qdrant_status_info:
+        collection_name = qdrant_status_info.get("collection", "Unknown")
+        points_count = qdrant_status_info.get("count", "Unknown")
+        if isinstance(points_count, int):
+            points_count = f"{points_count:,}"
+        last_indexed = format_timestamp(qdrant_status_info.get("last_indexed"))
+    elif collection_info:
         collection_name = collection_info.get("collection", "Unknown")
         points_count = collection_info.get("points_count", collection_info.get("count", "Unknown"))
         if isinstance(points_count, int):
             points_count = f"{points_count:,}"
-
         last_indexed = format_timestamp(
             collection_info.get("indexed_at") or
             collection_info.get("last_indexed") or
@@ -267,6 +444,26 @@ def print_status_table(
     print(f"│ Collection: {collection_name}" + " " * (46 - len(f"Collection: {collection_name}") - 2) + "│")
     print(f"│ Documents:  {points_count} indexed" + " " * (46 - len(f"Documents:  {points_count} indexed") - 2) + "│")
     print(f"│ Last index: {last_indexed}" + " " * (46 - len(f"Last index: {last_indexed}") - 2) + "│")
+
+    # Model warmup status
+    if warmup_info:
+        embedding_ready = warmup_info.get("embedding_ready", False)
+        reranker_ready = warmup_info.get("reranker_ready", False)
+        models_symbol = "✓" if (embedding_ready and reranker_ready) else "⚠"
+        models_text = "Ready" if (embedding_ready and reranker_ready) else "Loading"
+        print(f"│ Models:     {models_symbol} {models_text}" + " " * (46 - len(f"Models:     {models_symbol} {models_text}") - 2) + "│")
+
+    # Indexing progress
+    if workspace_info:
+        indexing_status = workspace_info.get("indexing_status", "unknown")
+        if indexing_status == "indexing":
+            progress = workspace_info.get("indexing_progress", {})
+            current = progress.get("current", 0)
+            total = progress.get("total", 0)
+            percent = (current / total * 100) if total > 0 else 0
+            progress_text = f"Indexing: {current}/{total} ({percent:.0f}%)"
+            print(f"│ Progress:   {progress_text}" + " " * (46 - len(f"Progress:   {progress_text}") - 2) + "│")
+
     print(f"│ Health:     {health_symbol} {health_text}" + " " * (46 - len(f"Health:     {health_symbol} {health_text}") - 2) + "│")
 
     print("└" + "─" * 46 + "┘")
@@ -274,19 +471,61 @@ def print_status_table(
     # Verbose mode: show per-service details
     if verbose and services:
         print("\nService Details:")
-        print("┌" + "─" * 60 + "┐")
-        print("│ " + "Service".ljust(20) + " State".ljust(12) + " Status".ljust(26) + "│")
-        print("├" + "─" * 60 + "┤")
+        print("┌" + "─" * 78 + "┐")
+        print("│ " + "Service".ljust(20) + " State".ljust(10) + " Memory".ljust(15) + " CPU".ljust(8) + " Status".ljust(22) + "│")
+        print("├" + "─" * 78 + "┤")
 
         for svc in services:
             name = svc.get("Service", svc.get("Name", "Unknown"))[:20]
-            state = svc.get("State", "unknown")[:12]
-            status = svc.get("Status", "")[:26]
+            state = svc.get("State", "unknown")[:10]
+            status = svc.get("Status", "")[:22]
+
+            # Get memory stats if available
+            mem_usage = "N/A"
+            cpu_usage = "N/A"
+            if docker_stats and name in docker_stats:
+                stats = docker_stats[name]
+                mem_usage = stats.get("memory_usage", "N/A")[:15]
+                cpu_usage = stats.get("cpu_percent", "N/A")[:8]
 
             state_symbol = "✓" if state == "running" else "✗"
-            print(f"│ {state_symbol} {name.ljust(18)} {state.ljust(12)} {status.ljust(24)} │")
+            print(f"│ {state_symbol} {name.ljust(18)} {state.ljust(10)} {mem_usage.ljust(15)} {cpu_usage.ljust(8)} {status.ljust(20)} │")
 
-        print("└" + "─" * 60 + "┘")
+        print("└" + "─" * 78 + "┘")
+
+        # Model warmup details
+        if warmup_info:
+            print("\nModel Warmup Status:")
+            print("┌" + "─" * 50 + "┐")
+            print("│ " + "Model".ljust(25) + " Status".ljust(23) + "│")
+            print("├" + "─" * 50 + "┤")
+
+            models = [
+                ("Embedding", warmup_info.get("embedding_ready", False)),
+                ("Reranker", warmup_info.get("reranker_ready", False)),
+                ("Decoder", warmup_info.get("decoder_ready", False)),
+            ]
+
+            for model_name, ready in models:
+                status_text = "✓ Ready" if ready else "✗ Not Ready"
+                print(f"│ {model_name.ljust(25)} {status_text.ljust(23)} │")
+
+            # Show cache info if available
+            if "cache_info" in warmup_info:
+                cache = warmup_info["cache_info"]
+                print("├" + "─" * 50 + "┤")
+                print("│ Cache Statistics" + " " * 33 + "│")
+                print("├" + "─" * 50 + "┤")
+
+                hit_rate = cache.get("hit_rate", 0)
+                total_requests = cache.get("total_requests", 0)
+                cache_size = cache.get("size", 0)
+
+                print(f"│ Hit Rate:    {hit_rate:.1%}" + " " * (50 - len(f"Hit Rate:    {hit_rate:.1%}") - 2) + "│")
+                print(f"│ Total Requests: {total_requests:,}" + " " * (50 - len(f"Total Requests: {total_requests:,}") - 2) + "│")
+                print(f"│ Cache Size:  {cache_size:,} items" + " " * (50 - len(f"Cache Size:  {cache_size:,} items") - 2) + "│")
+
+            print("└" + "─" * 50 + "┘")
 
         # Health check details
         print("\nHealth Checks:")
@@ -313,7 +552,11 @@ def print_status_json(
     qdrant_ok: bool,
     indexer_ok: bool,
     memory_ok: bool,
-    collection_info: Optional[Dict[str, Any]]
+    collection_info: Optional[Dict[str, Any]],
+    warmup_info: Optional[Dict[str, Any]] = None,
+    qdrant_status_info: Optional[Dict[str, Any]] = None,
+    workspace_info: Optional[Dict[str, Any]] = None,
+    docker_stats: Optional[Dict[str, Dict[str, Any]]] = None
 ):
     """Print status as JSON."""
 
@@ -329,14 +572,17 @@ def print_status_json(
                 "total": total_count,
                 "running": running_count
             },
-            "details": services
+            "details": services,
+            "stats": docker_stats or {}
         },
         "health_checks": {
             "qdrant": qdrant_ok,
             "mcp_indexer": indexer_ok,
             "mcp_memory": memory_ok
         },
-        "collection": collection_info or {}
+        "collection": qdrant_status_info or collection_info or {},
+        "warmup": warmup_info or {},
+        "workspace": workspace_info or {}
     }
 
     print(json.dumps(status, indent=2))
@@ -361,18 +607,46 @@ def run_status(args) -> int:
     indexer_ok, _ = check_http_health("http://localhost:18003/readyz")
     memory_ok, _ = check_http_health("http://localhost:18002/readyz")
 
-    # Get collection info
+    # Get collection info (fallback method)
     collection_ok, collection_info = get_collection_info("http://localhost:6333")
+
+    # Brief mode: minimal output
+    if hasattr(args, 'brief') and args.brief:
+        print_status_brief(docker_ok, qdrant_ok, indexer_ok, memory_ok)
+        all_healthy = docker_ok and qdrant_ok and indexer_ok and memory_ok
+        return 0 if all_healthy else 1
+
+    # Get additional data via MCP (only if services are healthy)
+    warmup_info = None
+    qdrant_status_info = None
+    workspace_info = None
+    docker_stats = None
+
+    if indexer_ok:
+        # Get warmup status
+        warmup_ok, warmup_info = get_warmup_status()
+
+        # Get Qdrant status via MCP (preferred over direct API)
+        qdrant_status_ok, qdrant_status_info = get_qdrant_status()
+
+        # Get workspace info (includes indexing progress)
+        workspace_ok, workspace_info = get_workspace_info()
+
+    # Get Docker stats if verbose
+    if hasattr(args, 'verbose') and args.verbose and docker_ok:
+        docker_stats = get_docker_stats(services)
 
     # Output
     if args.json:
         print_status_json(
-            docker_ok, services, qdrant_ok, indexer_ok, memory_ok, collection_info
+            docker_ok, services, qdrant_ok, indexer_ok, memory_ok, collection_info,
+            warmup_info, qdrant_status_info, workspace_info, docker_stats
         )
     else:
         print_status_table(
             docker_ok, services, qdrant_ok, indexer_ok, memory_ok, collection_info,
-            verbose=args.verbose
+            warmup_info, qdrant_status_info, workspace_info, docker_stats,
+            verbose=hasattr(args, 'verbose') and args.verbose
         )
 
     # Return exit code based on overall health
@@ -397,7 +671,13 @@ def register_command(subparsers):
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Show detailed per-service information"
+        help="Show detailed per-service information (includes memory usage, model warmup, cache stats)"
+    )
+
+    parser.add_argument(
+        "--brief", "-b",
+        action="store_true",
+        help="Show minimal output (just up/down status)"
     )
 
     parser.set_defaults(func=run_status)

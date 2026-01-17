@@ -23,9 +23,9 @@ def test_imports():
         # Commands
         from scripts.ctx_cli.commands import (
             lifecycle,
-            indexing,
+            index,
             status,
-            configuration,
+            config,
         )
         print("  ✓ scripts.ctx_cli.commands")
 

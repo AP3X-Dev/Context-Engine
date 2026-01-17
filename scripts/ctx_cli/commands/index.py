@@ -19,9 +19,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.live import Live
 from rich.panel import Panel
-from rich.text import Text
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 

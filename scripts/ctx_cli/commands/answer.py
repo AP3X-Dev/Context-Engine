@@ -23,13 +23,62 @@ try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.markdown import Markdown
-    from rich.text import Text
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
-    print("Warning: 'rich' library not found. Install with: pip install rich", file=sys.stderr)
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+
+
+def parse_mcp_response(response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Parse MCP JSON-RPC response and extract tool result.
+
+    Supports:
+      - FastMCP wrapper: result.content[0].json or result.content[0].text
+      - Direct result: result.answer/citations
+      - Already-parsed tool result (no jsonrpc wrapper)
+
+    Args:
+        response: Raw MCP JSON-RPC response or already-parsed result
+
+    Returns:
+        Parsed result data or None if error/no data
+    """
+    if not isinstance(response, dict):
+        return None
+
+    # JSON-RPC error response
+    if "error" in response:
+        return None
+
+    # If this already looks like a parsed tool output, accept it
+    if any(k in response for k in ("answer", "citations", "raw", "ok")) and "result" not in response:
+        return response
+
+    result = response.get("result", {})
+    if not isinstance(result, dict):
+        return None
+
+    # Direct result (no content wrapper)
+    if any(k in result for k in ("answer", "citations", "raw", "ok")) and "content" not in result:
+        return result
+
+    content = result.get("content", [])
+    if not content or not isinstance(content, list):
+        return None
+
+    item = content[0] if content else {}
+    if isinstance(item, dict) and "json" in item:
+        return item["json"]
+
+    text = item.get("text", "") if isinstance(item, dict) else ""
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"raw": text}
 
 
 # Default configuration
