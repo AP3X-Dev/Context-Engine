@@ -16,6 +16,7 @@ def run_docker_compose(
     *args: str,
     cwd: Optional[Path] = None,
     capture_output: bool = False,
+    quiet: bool = False,
 ) -> subprocess.CompletedProcess:
     """
     Run a docker compose command.
@@ -25,6 +26,7 @@ def run_docker_compose(
         *args: Additional arguments to pass to docker compose
         cwd: Working directory (defaults to project root)
         capture_output: Whether to capture stdout/stderr
+        quiet: Suppress warning messages from docker compose
 
     Returns:
         CompletedProcess instance with result
@@ -44,6 +46,14 @@ def run_docker_compose(
             cwd=cwd,
             capture_output=True,
             text=True,
+            check=True,
+        )
+    elif quiet:
+        # Suppress stderr warnings but show stdout
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
             check=True,
         )
     else:

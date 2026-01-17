@@ -39,19 +39,19 @@ _ctx_completion() {
             return 0
             ;;
         index)
-            COMPREPLY=( $(compgen -W "--recreate --watch --subdir --help" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--recreate --watch --collection --repo --help" -- "${cur}") )
             return 0
             ;;
         prune)
-            COMPREPLY=( $(compgen -W "--help" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--collection --help" -- "${cur}") )
             return 0
             ;;
         search)
-            COMPREPLY=( $(compgen -W "--limit --language --path --symbol --compact --snippet --no-snippet --format --help" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--limit --language --under --compact --snippet --json --collection --help" -- "${cur}") )
             return 0
             ;;
         answer)
-            COMPREPLY=( $(compgen -W "--budget --temperature --expand --help" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--budget --temperature --expand --json --collection --help" -- "${cur}") )
             return 0
             ;;
         status)

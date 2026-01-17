@@ -6,12 +6,11 @@ Removes entries for:
 - Hash mismatches (file content changed since last index)
 """
 
-import os
 import re
+import sys
 import time
 from typing import Optional
 
-import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -23,18 +22,8 @@ console = Console()
 
 
 def prune(
-    collection: Optional[str] = typer.Option(
-        None,
-        "--collection",
-        "-c",
-        help="Target collection name (default: auto-detect from workspace)",
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        "-n",
-        help="Show what would be pruned without actually removing",
-    ),
+    collection: Optional[str] = None,
+    dry_run: bool = False,
 ):
     """
     Remove stale entries from index (deleted files, hash mismatches).
@@ -61,16 +50,17 @@ def prune(
             )
         )
         # Ask for confirmation
-        if not typer.confirm("Continue with actual pruning?"):
+        response = console.input("[bold]Continue with actual pruning?[/bold] [dim](y/N)[/dim] ")
+        if response.lower() not in ("y", "yes"):
             console.print("[dim]Cancelled[/dim]")
-            raise typer.Exit(0)
+            sys.exit(0)
 
     # Create MCP client
     try:
         client = MCPClient(server="indexer")
     except Exception as e:
         console.print(f"[red]Error:[/red] Failed to initialize MCP client: {e}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Build parameters
     params = {}
@@ -105,10 +95,10 @@ def prune(
 
     except MCPError as e:
         console.print(f"[red]Error:[/red] MCP call failed: {e}")
-        raise typer.Exit(1)
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error:[/red] Unexpected error: {e}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     elapsed = time.time() - start_time
 
@@ -116,7 +106,7 @@ def prune(
     if not result.get("ok", False):
         error_msg = result.get("stderr", result.get("error", "Unknown error"))
         console.print(f"[red]Pruning failed:[/red] {error_msg}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Parse output from prune.py
     stdout = result.get("stdout", "")

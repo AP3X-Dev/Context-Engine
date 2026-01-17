@@ -145,6 +145,7 @@ timeout = 30
 
 [search]
 default_limit = 10
+default_collection = codebase
 compact = false
 include_snippet = true
 
@@ -154,6 +155,21 @@ recreate = false
 [docker]
 compose_file = docker-compose.yml
 """
+
+    def get_default_collection(self) -> Optional[str]:
+        """
+        Get default collection name for search/answer tools.
+
+        Resolution order is handled by `get()` (env override via CTX_* first, then file).
+        """
+        val = self.get("search.default_collection")
+        if val is None:
+            return None
+        try:
+            s = str(val).strip()
+        except Exception:
+            return None
+        return s or None
 
     def get_indexer_url(self) -> str:
         """Get indexer server URL."""

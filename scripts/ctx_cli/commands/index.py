@@ -16,7 +16,6 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.panel import Panel
@@ -69,33 +68,11 @@ def call_mcp_tool(tool_name: str, params: dict, timeout: int = 300) -> dict:
 
 
 def index(
-    path: Optional[str] = typer.Argument(
-        None,
-        help="Directory to index (default: current directory)",
-    ),
-    watch: bool = typer.Option(
-        False,
-        "--watch",
-        "-w",
-        help="Watch for changes and reindex automatically",
-    ),
-    recreate: bool = typer.Option(
-        False,
-        "--recreate",
-        "-r",
-        help="Drop and recreate collection before indexing",
-    ),
-    collection: Optional[str] = typer.Option(
-        None,
-        "--collection",
-        "-c",
-        help="Target collection name (default: auto-detect from workspace)",
-    ),
-    repo: Optional[str] = typer.Option(
-        None,
-        "--repo",
-        help="Logical repository name",
-    ),
+    path: Optional[str] = None,
+    watch: bool = False,
+    recreate: bool = False,
+    collection: Optional[str] = None,
+    repo: Optional[str] = None,
 ):
     """
     Index codebase into Qdrant.
@@ -122,17 +99,17 @@ def index(
             title="Service Not Available",
             border_style="red"
         ))
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Resolve target path
     target_path = Path(path if path else os.getcwd()).resolve()
     if not target_path.exists():
         console.print(f"[red]Error:[/red] Path does not exist: {target_path}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     if not target_path.is_dir():
         console.print(f"[red]Error:[/red] Path is not a directory: {target_path}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Watch mode uses subprocess
     if watch:
@@ -213,13 +190,13 @@ def run_indexing(
     # Check for error
     if "error" in data:
         console.print(f"[red]Error:[/red] {data['error']}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Check if operation succeeded
     if not data.get("ok", False):
         error_msg = data.get("error", "Unknown error")
         console.print(f"[red]Indexing failed:[/red] {error_msg}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Extract statistics
     total_files = data.get("total_files", 0)
@@ -253,7 +230,7 @@ def run_watch_mode(
     """
     if not WATCH_SCRIPT.exists():
         console.print(f"[red]Error:[/red] Watch script not found: {WATCH_SCRIPT}")
-        raise typer.Exit(1)
+        sys.exit(1)
 
     # Build environment for watch script
     env = os.environ.copy()
@@ -314,7 +291,7 @@ def run_watch_mode(
         console.print(f"[red]Error running watch mode:[/red] {e}")
         if proc:
             proc.kill()
-        raise typer.Exit(1)
+        sys.exit(1)
 
 
 def register_command(subparsers):

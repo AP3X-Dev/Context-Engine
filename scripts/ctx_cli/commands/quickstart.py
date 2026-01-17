@@ -25,10 +25,9 @@ from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.live import Live
-from rich.text import Text
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 from scripts.ctx_cli.utils.docker import (
@@ -239,8 +238,8 @@ def step_up(build: bool, wait_timeout: int) -> int:
         console.print("[dim]Rebuilding containers...[/dim]")
 
     try:
-        # Start services
-        run_docker_compose("up", *compose_args)
+        # Start services (quiet=True suppresses docker compose warnings)
+        run_docker_compose("up", *compose_args, quiet=True)
 
         # Wait for health checks with spinner
         console.print("[dim]Waiting for services to become healthy...[/dim]\n")

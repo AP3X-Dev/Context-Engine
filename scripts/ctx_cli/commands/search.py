@@ -21,12 +21,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 try:
-    import typer
-    TYPER_AVAILABLE = True
-except ImportError:
-    TYPER_AVAILABLE = False
-
-try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.syntax import Syntax
@@ -74,15 +68,21 @@ def call_mcp_search(
         params["language"] = language
     if under:
         params["under"] = under
-    # Only set collection if explicitly provided or in environment
-    if collection:
-        params["collection"] = collection
-    elif os.environ.get("COLLECTION_NAME"):
-        params["collection"] = os.environ["COLLECTION_NAME"]
-    # Otherwise let the server auto-detect from workspace
 
     try:
         client = MCPClient(server="indexer", timeout=timeout)
+        # Collection resolution order:
+        # 1) explicit flag, 2) env COLLECTION_NAME, 3) ~/.ctxrc or ./.ctxrc (search.default_collection)
+        if collection:
+            params["collection"] = collection
+        else:
+            env_collection = os.environ.get("COLLECTION_NAME")
+            if env_collection:
+                params["collection"] = env_collection
+            else:
+                cfg_collection = client.config.get_default_collection()
+                if cfg_collection:
+                    params["collection"] = cfg_collection
         return client.call_tool("repo_search", **params)
     except MCPError as e:
         return {
@@ -461,10 +461,7 @@ def search(
         collection=collection,
     )
     if exit_code != 0:
-        if TYPER_AVAILABLE:
-            raise typer.Exit(code=exit_code)
-        else:
-            sys.exit(exit_code)
+        sys.exit(exit_code)
 
 
 def run_search(args) -> int:

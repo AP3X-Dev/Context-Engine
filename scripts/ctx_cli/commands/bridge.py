@@ -36,6 +36,36 @@ except ImportError:
 console = Console() if RICH_AVAILABLE else None
 
 
+def get_service_urls() -> Dict[str, str]:
+    """
+    Get service URLs from environment or defaults.
+
+    Priority: Environment variable > .env file > defaults
+    """
+    # Try to load from .env if not in environment
+    env_file = Path.cwd() / ".env"
+    env_vars = {}
+    if env_file.exists():
+        try:
+            with open(env_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, _, value = line.partition("=")
+                        env_vars[key.strip()] = value.strip().strip('"').strip("'")
+        except Exception:
+            pass
+
+    def get_var(name: str, default: str) -> str:
+        return os.environ.get(name) or env_vars.get(name) or default
+
+    return {
+        "indexer": get_var("MCP_INDEXER_URL", "http://localhost:8003/mcp"),
+        "memory": get_var("MCP_MEMORY_URL", "http://localhost:8002/mcp"),
+        "qdrant": get_var("QDRANT_HOST_URL", "http://localhost:6333"),
+    }
+
+
 def check_bridge_status() -> Dict[str, Any]:
     """
     Check MCP bridge and server status.
@@ -43,10 +73,11 @@ def check_bridge_status() -> Dict[str, Any]:
     Returns:
         Dictionary with status information
     """
+    urls = get_service_urls()
     status = {
-        "indexer": {"url": "http://localhost:8003/mcp", "healthy": False},
-        "memory": {"url": "http://localhost:8002/mcp", "healthy": False},
-        "qdrant": {"url": "http://localhost:6333", "healthy": False},
+        "indexer": {"url": urls["indexer"], "healthy": False},
+        "memory": {"url": urls["memory"], "healthy": False},
+        "qdrant": {"url": urls["qdrant"], "healthy": False},
     }
 
     # Check each service
@@ -54,9 +85,14 @@ def check_bridge_status() -> Dict[str, Any]:
         try:
             req = Request(service_info["url"], headers={"Accept": "application/json"})
             with urlopen(req, timeout=2) as response:
-                if response.status == 200:
-                    status[service_name]["healthy"] = True
-        except (HTTPError, URLError, socket.timeout):
+                # Any response means service is running
+                status[service_name]["healthy"] = True
+        except HTTPError as e:
+            # HTTP errors like 405/406 still mean service is running
+            # MCP servers often return errors for GET requests
+            if e.code in (400, 405, 406, 415):
+                status[service_name]["healthy"] = True
+        except (URLError, socket.timeout):
             pass
 
     return status
@@ -103,13 +139,14 @@ def get_claude_desktop_config() -> Dict[str, Any]:
     Returns:
         Configuration dictionary
     """
+    urls = get_service_urls()
     return {
         "mcpServers": {
             "memory": {
-                "url": "http://localhost:8002/mcp"
+                "url": urls["memory"]
             },
             "qdrant-indexer": {
-                "url": "http://localhost:8003/mcp"
+                "url": urls["indexer"]
             }
         }
     }
@@ -119,19 +156,29 @@ def get_cursor_config() -> Dict[str, Any]:
     """
     Generate Cursor IDE MCP configuration.
 
+    Uses SSE endpoints. Falls back to converting HTTP URLs to SSE format.
+
     Returns:
         Configuration dictionary
     """
+    urls = get_service_urls()
+
+    # Convert HTTP MCP URLs to SSE format if needed
+    # http://localhost:8003/mcp -> http://localhost:8001/sse
+    # http://localhost:8002/mcp -> http://localhost:8000/sse
+    memory_sse = os.environ.get("MCP_MEMORY_SSE_URL") or "http://localhost:8000/sse"
+    indexer_sse = os.environ.get("MCP_INDEXER_SSE_URL") or "http://localhost:8001/sse"
+
     return {
         "mcpServers": {
             "memory": {
                 "type": "sse",
-                "url": "http://localhost:8000/sse",
+                "url": memory_sse,
                 "disabled": False
             },
             "qdrant-indexer": {
                 "type": "sse",
-                "url": "http://localhost:8001/sse",
+                "url": indexer_sse,
                 "disabled": False
             }
         }
@@ -142,23 +189,13 @@ def get_windsurf_config() -> Dict[str, Any]:
     """
     Generate Windsurf IDE MCP configuration.
 
+    Uses SSE endpoints (same as Cursor).
+
     Returns:
         Configuration dictionary
     """
-    return {
-        "mcpServers": {
-            "memory": {
-                "type": "sse",
-                "url": "http://localhost:8000/sse",
-                "disabled": False
-            },
-            "qdrant-indexer": {
-                "type": "sse",
-                "url": "http://localhost:8001/sse",
-                "disabled": False
-            }
-        }
-    }
+    # Windsurf uses same SSE format as Cursor
+    return get_cursor_config()
 
 
 def get_default_config_path(ide: str, output_dir: Optional[Path] = None) -> Path:
