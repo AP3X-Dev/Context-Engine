@@ -296,68 +296,73 @@ def get_graph_status(collection_name: str) -> Tuple[bool, Optional[Dict[str, Any
     success = False
 
     # Check Qdrant graph collection
-    try:
-        qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
-        graph_coll = f"{collection_name}_graph" if collection_name else None
+    # Try localhost first for CLI running on host
+    qdrant_urls = ["http://localhost:6333"]
+    configured_qdrant = os.environ.get("QDRANT_URL", "")
+    if configured_qdrant and configured_qdrant not in qdrant_urls:
+        qdrant_urls.append(configured_qdrant)
 
-        if graph_coll:
-            req = Request(
-                f"{qdrant_url}/collections/{graph_coll}",
-                headers={"Accept": "application/json"}
-            )
-            with urlopen(req, timeout=2) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode('utf-8'))
-                    result = data.get("result", {})
-                    edge_count = result.get("points_count", 0)
+    graph_coll = f"{collection_name}_graph" if collection_name else None
 
-                    graph_info["qdrant_graph"] = {
-                        "collection": graph_coll,
-                        "edge_count": edge_count,
-                    }
-                    graph_info["backend"] = "qdrant"
-                    success = True
-    except Exception:
-        pass  # Graph collection doesn't exist or Qdrant not available
-
-    # Check Neo4j if enabled
-    neo4j_enabled = os.environ.get("NEO4J_GRAPH", "").lower() in {"1", "true", "yes", "on"}
-    if neo4j_enabled:
+    for qdrant_url in qdrant_urls:
         try:
-            # Try to import and use Neo4j plugin
-            from plugins.neo4j_graph import Neo4jGraphBackend
+            if graph_coll:
+                req = Request(
+                    f"{qdrant_url}/collections/{graph_coll}",
+                    headers={"Accept": "application/json"}
+                )
+                with urlopen(req, timeout=2) as response:
+                    if response.status == 200:
+                        data = json.loads(response.read().decode('utf-8'))
+                        result = data.get("result", {})
+                        edge_count = result.get("points_count", 0)
 
-            backend = Neo4jGraphBackend()
-            # Quick health check - try a simple query
-            driver = backend._get_driver()
-            if driver:
-                with driver.session() as session:
-                    # Count nodes and relationships
-                    node_result = session.run(
-                        "MATCH (n:Symbol) RETURN count(n) as count"
-                    )
-                    node_count = node_result.single()["count"]
+                        graph_info["qdrant_graph"] = {
+                            "collection": graph_coll,
+                            "edge_count": edge_count,
+                        }
+                        graph_info["backend"] = "qdrant"
+                        success = True
+                        break  # Success, stop trying other URLs
+        except Exception:
+            continue  # Try next URL
 
-                    edge_result = session.run(
-                        "MATCH ()-[r]->() RETURN count(r) as count"
-                    )
-                    edge_count = edge_result.single()["count"]
+    # Check Neo4j - always try to connect for status
+    # Use localhost (Docker exposes port) with common default password
+    try:
+        from neo4j import GraphDatabase
 
-                    graph_info["neo4j"] = {
-                        "connected": True,
-                        "node_count": node_count,
-                        "edge_count": edge_count,
-                    }
+        uri = "bolt://localhost:7687"
+        user = os.environ.get("NEO4J_USER", "neo4j")
+        password = os.environ.get("NEO4J_PASSWORD", "contextengine")
 
-                    if graph_info["backend"] == "qdrant":
-                        graph_info["backend"] = "both"
-                    else:
-                        graph_info["backend"] = "neo4j"
-                    success = True
-        except ImportError:
-            graph_info["neo4j"] = {"connected": False, "error": "plugin not installed"}
-        except Exception as e:
-            graph_info["neo4j"] = {"connected": False, "error": str(e)[:50]}
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        driver.verify_connectivity()
+
+        with driver.session() as session:
+            node_result = session.run("MATCH (n:Symbol) RETURN count(n) as count")
+            node_count = node_result.single()["count"]
+
+            edge_result = session.run("MATCH ()-[r]->() RETURN count(r) as count")
+            edge_count = edge_result.single()["count"]
+
+            graph_info["neo4j"] = {
+                "connected": True,
+                "node_count": node_count,
+                "edge_count": edge_count,
+            }
+
+            if graph_info["backend"] == "qdrant":
+                graph_info["backend"] = "both"
+            else:
+                graph_info["backend"] = "neo4j"
+            success = True
+
+        driver.close()
+    except ImportError:
+        pass  # neo4j package not installed
+    except Exception:
+        pass  # Neo4j not available
 
     return success, graph_info if success else None
 
@@ -552,9 +557,8 @@ def print_status_table(
             # Neo4j edges
             if "neo4j" in graph_info and graph_info["neo4j"].get("connected"):
                 neo4j_edges = graph_info["neo4j"].get("edge_count", 0)
-                neo4j_nodes = graph_info["neo4j"].get("node_count", 0)
                 if neo4j_edges > 0:
-                    edge_parts.append(f"{neo4j_edges:,} neo4j ({neo4j_nodes:,} nodes)")
+                    edge_parts.append(f"{neo4j_edges:,} neo4j")
 
             if edge_parts:
                 graph_text = " + ".join(edge_parts)
