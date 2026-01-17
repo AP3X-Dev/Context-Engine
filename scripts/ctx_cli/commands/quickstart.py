@@ -698,18 +698,30 @@ def step_index(
         # Index each target and verify collection creation
         indexed_collections = {}  # collection -> chunk count
         failed_repos = []
+        recreated_collections = set()  # Track which collections have been recreated
 
         for i, (path, subdir, repo_collection, action) in enumerate(targets_to_index):
             repo_start = time.time()
-            action_str = "Recreating" if action == "recreate" else "Indexing"
+
+            # In single-repo mode, only recreate a collection once
+            # (subsequent paths to the same collection should just index, not recreate)
+            effective_action = action
+            if action == "recreate" and repo_collection in recreated_collections:
+                effective_action = "update"
+
+            action_str = "Recreating" if effective_action == "recreate" else "Indexing"
             console.print(f"[cyan]({i+1}/{len(targets_to_index)})[/cyan] {action_str} [bold]{path.name}[/bold]...")
             if repo_collection:
                 console.print(f"  [dim]Collection: {repo_collection}[/dim]")
 
             # Build kwargs for MCP call
-            kwargs = {"recreate": action == "recreate"}
+            kwargs = {"recreate": effective_action == "recreate"}
             if repo_collection:
                 kwargs["collection"] = repo_collection
+
+            # Track that we've recreated this collection
+            if effective_action == "recreate" and repo_collection:
+                recreated_collections.add(repo_collection)
 
             try:
                 if subdir:
