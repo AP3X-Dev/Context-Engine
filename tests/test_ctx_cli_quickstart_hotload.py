@@ -49,6 +49,9 @@ def test_quickstart_step_index_recreate_applied_to_each_path_in_multi_repo_mode(
     repo2 = dev_workspace / "repo2"
     repo1.mkdir(parents=True, exist_ok=True)
     repo2.mkdir(parents=True, exist_ok=True)
+    # Create .git directories so they're treated as separate repos
+    (repo1 / ".git").mkdir()
+    (repo2 / ".git").mkdir()
 
     monkeypatch.setenv("HOST_INDEX_PATH", str(dev_workspace))
     monkeypatch.setenv("MULTI_REPO_MODE", "1")
@@ -62,11 +65,12 @@ def test_quickstart_step_index_recreate_applied_to_each_path_in_multi_repo_mode(
         def call_tool(self, name, **kwargs):
             DummyClient.calls.append((name, kwargs))
             if name == "qdrant_status":
-                return {"count": 0}
+                # Return non-zero count to simulate successful indexing
+                return {"count": 10}
             if name == "qdrant_list":
                 return {"collections": []}
             if name in {"qdrant_index", "qdrant_index_root"}:
-                return {"ok": True, "total_files": 0, "changed": 0, "deleted": 0, "skipped": 0}
+                return {"ok": True, "total_files": 5, "changed": 5, "deleted": 0, "skipped": 0}
             return {"ok": True}
 
     monkeypatch.setattr(quickstart_cmd, "MCPClient", DummyClient)
@@ -95,6 +99,7 @@ def test_quickstart_step_index_recreate_only_first_in_single_repo_mode(tmp_path,
 
     monkeypatch.setenv("HOST_INDEX_PATH", str(dev_workspace))
     monkeypatch.setenv("MULTI_REPO_MODE", "0")
+    monkeypatch.setenv("COLLECTION_NAME", "test-single-repo")
 
     class DummyClient:
         calls = []
@@ -105,11 +110,12 @@ def test_quickstart_step_index_recreate_only_first_in_single_repo_mode(tmp_path,
         def call_tool(self, name, **kwargs):
             DummyClient.calls.append((name, kwargs))
             if name == "qdrant_status":
-                return {"count": 0}
+                # Return non-zero count to simulate successful indexing
+                return {"count": 10}
             if name == "qdrant_list":
                 return {"collections": []}
             if name in {"qdrant_index", "qdrant_index_root"}:
-                return {"ok": True, "total_files": 0, "changed": 0, "deleted": 0, "skipped": 0}
+                return {"ok": True, "total_files": 5, "changed": 5, "deleted": 0, "skipped": 0}
             return {"ok": True}
 
     monkeypatch.setattr(quickstart_cmd, "MCPClient", DummyClient)
@@ -135,8 +141,11 @@ def test_quickstart_import_repos_copies_external_path(tmp_path, monkeypatch):
     source = tmp_path / "source_repo"
     (source / "pkg").mkdir(parents=True, exist_ok=True)
     (source / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    # Create .git so it's treated as a git repo
+    (source / ".git").mkdir()
 
     monkeypatch.setenv("HOST_INDEX_PATH", str(dev_workspace))
+    monkeypatch.setenv("MULTI_REPO_MODE", "1")
 
     class DummyClient:
         calls = []
@@ -147,11 +156,12 @@ def test_quickstart_import_repos_copies_external_path(tmp_path, monkeypatch):
         def call_tool(self, name, **kwargs):
             DummyClient.calls.append((name, kwargs))
             if name == "qdrant_status":
-                return {"count": 0}
+                # Return non-zero count to simulate successful indexing
+                return {"count": 10}
             if name == "qdrant_list":
                 return {"collections": []}
             if name in {"qdrant_index", "qdrant_index_root"}:
-                return {"ok": True, "total_files": 0, "changed": 0, "deleted": 0, "skipped": 0}
+                return {"ok": True, "total_files": 5, "changed": 5, "deleted": 0, "skipped": 0}
             return {"ok": True}
 
     monkeypatch.setattr(quickstart_cmd, "MCPClient", DummyClient)
