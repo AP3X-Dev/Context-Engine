@@ -118,15 +118,20 @@ def call_mcp_context_answer(
     if expand:
         params["expand"] = True
 
-    # Only set collection if explicitly provided or in environment
-    if collection:
-        params["collection"] = collection
-    elif os.environ.get("COLLECTION_NAME"):
-        params["collection"] = os.environ["COLLECTION_NAME"]
-    # Otherwise let the server auto-detect from workspace
-
     try:
         client = MCPClient(server="indexer", timeout=timeout)
+        # Collection resolution order:
+        # 1) explicit flag, 2) env COLLECTION_NAME, 3) ~/.ctxrc or ./.ctxrc (search.default_collection)
+        if collection:
+            params["collection"] = collection
+        else:
+            env_collection = os.environ.get("COLLECTION_NAME")
+            if env_collection:
+                params["collection"] = env_collection
+            else:
+                cfg_collection = client.config.get_default_collection()
+                if cfg_collection:
+                    params["collection"] = cfg_collection
         return client.call_tool("context_answer", **params)
     except MCPError as e:
         return {

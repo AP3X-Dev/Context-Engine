@@ -24,6 +24,7 @@ import sys
 from typing import Optional, Dict, Any, List
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+from scripts.ctx_cli.utils.config import ConfigManager
 
 
 def format_size(bytes_count: int) -> str:
@@ -339,19 +340,20 @@ def switch_collection(args) -> int:
     except MCPError as e:
         print(f"Warning: Could not check existing collections: {e}", file=sys.stderr)
 
-    # Switch collection using set_session_defaults
+    # Persist the selection locally via .ctxrc so it applies to future CLI invocations.
+    # (MCP set_session_defaults only affects the current session and won't persist across runs.)
     try:
-        result = client.call_tool("set_session_defaults", collection=collection_name)
-    except MCPError as e:
-        print(f"Error: Failed to switch collection: {e}", file=sys.stderr)
+        config = ConfigManager()
+        config.set("search.default_collection", collection_name)
+    except Exception as e:
+        print(f"Error: Failed to update config: {e}", file=sys.stderr)
         return 1
 
-    if "error" in result:
-        error_msg = result.get("error", "Unknown error")
-        print(f"Error: Failed to switch collection: {error_msg}", file=sys.stderr)
-        return 1
-
-    print(f"✓ Switched to collection '{collection_name}'")
+    config_path = config.config_path or (None)
+    if config_path:
+        print(f"✓ Default collection set to '{collection_name}' (saved in {config_path})")
+    else:
+        print(f"✓ Default collection set to '{collection_name}'")
     return 0
 
 
