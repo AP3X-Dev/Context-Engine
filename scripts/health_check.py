@@ -82,8 +82,12 @@ def main():
         print("No collections found - nothing to health check")
         return
 
-    # Check each collection
+    # Check each collection (skip _graph collections - they don't have embedding vectors)
     for collection_name in collections:
+        if collection_name.endswith("_graph"):
+            print(f"Skipping graph collection: {collection_name}")
+            continue
+
         print(f"Checking collection: {collection_name}")
 
         # 1) Collection exists and has expected named vector/dimension
@@ -163,12 +167,15 @@ def main():
 
         print(f"[OK] Collection {collection_name} health check completed")
 
+    # Count checked collections (exclude _graph)
+    checked_count = sum(1 for c in collections if not c.endswith("_graph"))
+
     if failures:
         print(f"[WARN] Health check completed with {len(failures)} issue(s):")
         for f in failures:
             print(f" - {f}")
     else:
-        print(f"[OK] All {len(collections)} collections passed health check")
+        print(f"[OK] All {checked_count} embedding collections passed health check")
 
 
 if __name__ == "__main__":

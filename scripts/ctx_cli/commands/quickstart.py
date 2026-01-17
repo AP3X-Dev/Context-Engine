@@ -42,6 +42,8 @@ from scripts.ctx_cli.utils.docker import (
     run_docker_compose,
     wait_for_health_check,
 )
+from scripts.ctx_cli.utils.config import get_health_checks
+from scripts.ctx_cli.utils.env import load_env_file, find_env_file
 from scripts.ctx_cli.commands.init import (
     check_existing_config,
     find_docker_compose,
@@ -49,13 +51,6 @@ from scripts.ctx_cli.commands.init import (
 )
 
 console = Console() if RICH_AVAILABLE else None
-
-# Service health check configuration
-HEALTH_CHECKS = [
-    {"name": "Qdrant", "port": 6333, "host": "localhost"},
-    {"name": "Indexer", "port": 8003, "host": "localhost"},
-    {"name": "Memory", "port": 8002, "host": "localhost"},
-]
 
 def _coerce_bool(value: Optional[str], default: bool = False) -> bool:
     if value is None:
@@ -227,42 +222,6 @@ def check_docker_compose_file() -> tuple[bool, Optional[Path]]:
     return False, None
 
 
-def load_env_file(env_path: Path) -> dict:
-    """
-    Load a .env file and return key-value pairs.
-
-    Args:
-        env_path: Path to .env file
-
-    Returns:
-        Dictionary of environment variables
-    """
-    env_vars = {}
-    if not env_path.exists():
-        return env_vars
-
-    try:
-        with open(env_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                # Skip comments and empty lines
-                if not line or line.startswith("#"):
-                    continue
-                # Parse KEY=VALUE
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip()
-                    # Remove quotes if present
-                    if value and value[0] in ('"', "'") and value[-1] == value[0]:
-                        value = value[1:-1]
-                    env_vars[key] = value
-    except Exception:
-        pass
-
-    return env_vars
-
-
 def step_init(force: bool, skip_interactive: bool) -> int:
     """
     Step 1: Initialize configuration.
@@ -389,7 +348,7 @@ def step_up(build: bool, wait_timeout: int) -> int:
             return table
 
         with Live(create_status_table(results), console=console, refresh_per_second=4) as live:
-            for service in HEALTH_CHECKS:
+            for service in get_health_checks():
                 name = service["name"]
                 port = service["port"]
                 host = service["host"]
@@ -898,13 +857,26 @@ def run_quickstart(args) -> int:
     if not RICH_AVAILABLE:
         return 1
 
-    console.print()
-    console.print(Panel.fit(
-        "[bold cyan]Context-Engine Quickstart[/bold cyan]\n"
-        "[dim]The ONE COMMAND to rule them all[/dim]",
-        border_style="cyan"
-    ))
-    console.print()
+    # ASCII art banner
+    ascii_art = """
+[bold cyan]
+   ██████╗ ██████╗ ███╗   ██╗████████╗███████╗██╗  ██╗████████╗
+  ██╔════╝██╔═══██╗████╗  ██║╚══██╔══╝██╔════╝╚██╗██╔╝╚══██╔══╝
+  ██║     ██║   ██║██╔██╗ ██║   ██║   █████╗   ╚███╔╝    ██║
+  ██║     ██║   ██║██║╚██╗██║   ██║   ██╔══╝   ██╔██╗    ██║
+  ╚██████╗╚██████╔╝██║ ╚████║   ██║   ███████╗██╔╝ ██╗   ██║
+   ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝
+
+  ███████╗███╗   ██╗ ██████╗ ██╗███╗   ██╗███████╗
+  ██╔════╝████╗  ██║██╔════╝ ██║████╗  ██║██╔════╝
+  █████╗  ██╔██╗ ██║██║  ███╗██║██╔██╗ ██║█████╗
+  ██╔══╝  ██║╚██╗██║██║   ██║██║██║╚██╗██║██╔══╝
+  ███████╗██║ ╚████║╚██████╔╝██║██║ ╚████║███████╗
+  ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝╚═╝  ╚═══╝╚══════╝
+[/bold cyan]
+[dim]         << KNOW YOUR CODE, OWN YOUR CODE >>[/dim]
+"""
+    console.print(ascii_art)
 
     # Pre-flight checks
     console.print("[bold]Pre-flight Checks[/bold]")

@@ -274,7 +274,11 @@ def parse_mcp_response(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        # Unwrap nested {"result": {...}} from MCP bridge responses
+        if isinstance(parsed, dict) and "result" in parsed and isinstance(parsed["result"], dict):
+            return parsed["result"]
+        return parsed
     except json.JSONDecodeError:
         return {"raw": text}
 
@@ -1222,7 +1226,76 @@ def rewrite_prompt(original_prompt: str, context: str, note: str, max_tokens: Op
     # Check which decoder runtime to use
     runtime_kind = str(os.environ.get("REFRAG_RUNTIME", "llamacpp")).strip().lower()
 
-    if runtime_kind == "glm":
+    # Cloud models (GLM, OpenAI, MiniMax) can handle much higher token limits (3-10k)
+    # Local Granite models should use minimum 1k tokens
+    CLOUD_MAX_TOKENS = 4096
+    GRANITE_MIN_TOKENS = 1024
+
+    if runtime_kind == "openai":
+        # OpenAI API path
+        import openai
+        client = openai.OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("OPENAI_API_BASE"),
+        )
+
+        response = client.chat.completions.create(
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=CLOUD_MAX_TOKENS,
+            temperature=0.45,
+            stream=stream
+        )
+
+        enhanced = ""
+        if stream:
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    sys.stdout.write(token)
+                    sys.stdout.flush()
+                    enhanced += token
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            enhanced = response.choices[0].message.content
+
+    elif runtime_kind == "minimax":
+        # MiniMax API path (OpenAI-compatible)
+        import openai
+        client = openai.OpenAI(
+            api_key=os.environ.get("MINIMAX_API_KEY"),
+            base_url=os.environ.get("MINIMAX_API_BASE", "https://api.minimax.chat/v1"),
+        )
+
+        response = client.chat.completions.create(
+            model=os.environ.get("MINIMAX_MODEL", "abab6.5s-chat"),
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=CLOUD_MAX_TOKENS,
+            temperature=0.45,
+            stream=stream
+        )
+
+        enhanced = ""
+        if stream:
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    sys.stdout.write(token)
+                    sys.stdout.flush()
+                    enhanced += token
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            enhanced = response.choices[0].message.content
+
+    elif runtime_kind == "glm":
         from refrag_glm import GLMRefragClient  # type: ignore
         client = GLMRefragClient()
 
@@ -1248,13 +1321,17 @@ def rewrite_prompt(original_prompt: str, context: str, note: str, max_tokens: Op
             )
 
         # GLM API call
+        # Note: GLM and similar cloud models can handle much higher token limits (3-10k)
+        # compared to local Granite models (~1k). Use generous limits for better output.
+        glm_model = os.environ.get("GLM_MODEL", "glm-4.6")
+        glm_max_tokens = 4096  # GLM models handle 3-10k tokens well
         response = client.client.chat.completions.create(
-            model=os.environ.get("GLM_MODEL", "glm-4.6"),
+            model=glm_model,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ],
-            max_tokens=int(max_tokens or DEFAULT_REWRITE_TOKENS),
+            max_tokens=glm_max_tokens,
             temperature=0.45,
             stream=stream
         )
@@ -1366,7 +1443,7 @@ def rewrite_prompt(original_prompt: str, context: str, note: str, max_tokens: Op
             else:
                 payload = {
                     "prompt": meta_prompt,
-                    "n_predict": int(max_tokens or DEFAULT_REWRITE_TOKENS),
+                    "n_predict": max(GRANITE_MIN_TOKENS, int(max_tokens or DEFAULT_REWRITE_TOKENS)),
                     "temperature": 0.45,
                     "stream": stream,
                 }

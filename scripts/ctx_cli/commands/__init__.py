@@ -15,10 +15,13 @@ Available commands:
   - init: Interactive setup wizard
   - search: Search the codebase
   - answer: Get natural language answer with citations
+  - enhance: Enhance prompts with code context using local LLM
   - memory: Store and search knowledge entries
   - graph: Navigate symbol relationships (callers, definitions, imports)
   - pattern: Find structurally similar code patterns
   - index: Index codebase into Qdrant
+  - history: Ingest git commit history
+  - reset: Full development environment reset
   - sync: Upload/sync workspace to remote Context-Engine
   - prune: Remove stale entries from index
   - collections: Manage Qdrant collections
@@ -27,7 +30,7 @@ Available commands:
   - completion: Shell completion scripts
 """
 
-from . import status, init, answer, index, prune, completion, lifecycle, search, config, logs, warmup, collections, bridge, quickstart, doctor, memory, graph, pattern, sync
+from . import status, init, answer, enhance, index, history, reset, prune, completion, lifecycle, search, config, logs, warmup, collections, bridge, quickstart, doctor, memory, graph, pattern, sync
 
 # List of all command modules
 COMMANDS = [
@@ -39,10 +42,13 @@ COMMANDS = [
     init,
     search,
     answer,
+    enhance,     # Prompt enhancement with LLM
     memory,      # Memory store/find
     graph,       # Symbol graph navigation
     pattern,     # Pattern search
     index,
+    history,     # Git history ingestion
+    reset,       # Full dev environment reset
     sync,        # Remote upload/sync (like VS Code extension)
     prune,
     collections,

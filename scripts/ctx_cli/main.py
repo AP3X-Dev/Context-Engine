@@ -8,29 +8,67 @@ Usage:
   ctx status [--json] [--verbose]
   ctx --version
   ctx --help
+
+Note: This module should be invoked via the installed `ctx` command
+(see pyproject.toml entry points) or via `python -m scripts.ctx_cli`.
 """
 
+# Suppress the runpy RuntimeWarning when invoked via `python -m`
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
+
+import os
 import sys
 import argparse
-from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+# Load .env file at startup so all commands have access to environment variables
+def _load_dotenv():
+    """Load .env file into environment if it exists."""
+    from pathlib import Path
+    cwd = Path.cwd()
+    # Search current and up to 3 parent directories
+    for _ in range(4):
+        env_file = cwd / ".env"
+        if env_file.exists():
+            try:
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip()
+                    # Remove quotes
+                    if value and len(value) >= 2:
+                        if (value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'"):
+                            value = value[1:-1]
+                    # Only set if not already in environment (env vars take precedence)
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            except Exception:
+                pass
+            break
+        if cwd.parent == cwd:
+            break
+        cwd = cwd.parent
 
-from scripts.ctx_cli.commands import register_all_commands
-from scripts.ctx_cli import __version__
+_load_dotenv()
 
+# Import CLI components - handle the case when running directly (not installed)
 try:
+    from scripts.ctx_cli.commands import register_all_commands
+    from scripts.ctx_cli import __version__
     from scripts.ctx_cli.utils.mcp_client import MCPError
 except ImportError:
-    class MCPError(Exception):  # type: ignore[no-redef]
-        """Fallback MCPError type when ctx_cli utils are unavailable."""
+    # When running directly as a script (not installed), add parent to path
+    from pathlib import Path
+    _project_root = Path(__file__).resolve().parent.parent.parent
+    if str(_project_root) not in sys.path:
+        sys.path.insert(0, str(_project_root))
 
-        def __init__(self, message: str = "", code: int = -1, data=None):
-            super().__init__(message)
-            self.message = message
-            self.code = code
-            self.data = data
+    from scripts.ctx_cli.commands import register_all_commands
+    from scripts.ctx_cli import __version__
+    from scripts.ctx_cli.utils.mcp_client import MCPError
 
 
 def main():

@@ -29,6 +29,7 @@ except ImportError:
     RICH_AVAILABLE = False
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+from scripts.ctx_cli.utils.config import resolve_collection
 
 
 def call_mcp_search(
@@ -71,18 +72,10 @@ def call_mcp_search(
 
     try:
         client = MCPClient(server="indexer", timeout=timeout)
-        # Collection resolution order:
-        # 1) explicit flag, 2) env COLLECTION_NAME, 3) ~/.ctxrc or ./.ctxrc (search.default_collection)
-        if collection:
-            params["collection"] = collection
-        else:
-            env_collection = os.environ.get("COLLECTION_NAME")
-            if env_collection:
-                params["collection"] = env_collection
-            else:
-                cfg_collection = client.config.get_default_collection()
-                if cfg_collection:
-                    params["collection"] = cfg_collection
+        # Use centralized collection resolution
+        resolved = resolve_collection(explicit=collection, config=client.config)
+        if resolved:
+            params["collection"] = resolved
         return client.call_tool("repo_search", **params)
     except MCPError as e:
         return {

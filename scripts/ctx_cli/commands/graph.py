@@ -32,6 +32,7 @@ except ImportError:
     RICH_AVAILABLE = False
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+from scripts.ctx_cli.utils.config import resolve_collection
 
 
 def call_symbol_graph(
@@ -62,16 +63,10 @@ def call_symbol_graph(
     
     try:
         client = MCPClient(server="indexer", timeout=timeout)
-        if collection:
-            params["collection"] = collection
-        else:
-            env_collection = os.environ.get("COLLECTION_NAME")
-            if env_collection:
-                params["collection"] = env_collection
-            else:
-                cfg_collection = client.config.get_default_collection()
-                if cfg_collection:
-                    params["collection"] = cfg_collection
+        # Use centralized collection resolution
+        resolved = resolve_collection(explicit=collection, config=client.config)
+        if resolved:
+            params["collection"] = resolved
         return client.call_tool("symbol_graph", **params)
     except MCPError as e:
         return {"error": {"code": e.code, "message": str(e), "data": e.data}}

@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import signal
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -25,9 +26,96 @@ except ImportError:
     RICH_AVAILABLE = False
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+from scripts.ctx_cli.utils.env import find_env_file, load_env_file
 from scripts.workspace_state import ensure_logical_repo_reuse_for_cli
 
 console = Console() if RICH_AVAILABLE else None
+
+
+def clear_caches(target_path: Path) -> int:
+    """
+    Clear all indexing caches (local and container).
+
+    Clears:
+    - .codebase/cache.json files
+    - .codebase/symbols directories
+
+    Args:
+        target_path: Root path to clear caches from
+
+    Returns:
+        Number of items cleared
+    """
+    cleared = 0
+
+    # Clear local caches
+    _print("[dim]Clearing local caches...[/dim]")
+
+    # Find and remove cache.json files
+    for cache_file in target_path.rglob(".codebase/cache.json"):
+        try:
+            cache_file.unlink()
+            cleared += 1
+            _print(f"  [dim]Removed: {cache_file}[/dim]")
+        except Exception as e:
+            _print(f"  [yellow]Warning:[/yellow] Could not remove {cache_file}: {e}")
+
+    # Find and remove symbols directories
+    for symbols_dir in target_path.rglob(".codebase/symbols"):
+        if symbols_dir.is_dir():
+            try:
+                shutil.rmtree(symbols_dir)
+                cleared += 1
+                _print(f"  [dim]Removed: {symbols_dir}[/dim]")
+            except Exception as e:
+                _print(f"  [yellow]Warning:[/yellow] Could not remove {symbols_dir}: {e}")
+
+    # Also clear dev-workspace if it exists
+    dev_workspace = target_path / "dev-workspace"
+    if dev_workspace.exists():
+        for cache_file in dev_workspace.rglob(".codebase/cache.json"):
+            try:
+                cache_file.unlink()
+                cleared += 1
+            except Exception:
+                pass
+        for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
+            if symbols_dir.is_dir():
+                try:
+                    import shutil
+                    shutil.rmtree(symbols_dir)
+                    cleared += 1
+                except Exception:
+                    pass
+
+    # Clear container caches via docker exec
+    _print("[dim]Clearing container caches...[/dim]")
+    containers = ["indexer", "watcher", "mcp_indexer"]
+    for container in containers:
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "compose", "exec", "-T", container,
+                    "sh", "-c",
+                    "find /work -path '*/.codebase/cache.json' -delete 2>/dev/null; "
+                    "find /work -path '*/.codebase/symbols' -type d -exec rm -rf {} + 2>/dev/null || true"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                _print(f"  [dim]Cleared caches in container: {container}[/dim]")
+        except subprocess.TimeoutExpired:
+            _print(f"  [yellow]Warning:[/yellow] Timeout clearing {container} caches")
+        except FileNotFoundError:
+            # docker not available
+            break
+        except Exception:
+            # Container might not be running, that's fine
+            pass
+
+    return cleared
 
 
 def _print(msg: str, error: bool = False) -> None:
@@ -55,38 +143,6 @@ def _print_panel(content: str, title: str = "", border_style: str = "cyan") -> N
 # Configuration
 WATCH_SCRIPT = Path(__file__).resolve().parent.parent.parent / "watch_index.py"
 
-def _find_dotenv(start: Optional[Path] = None, max_parents: int = 3) -> Optional[Path]:
-    """Find a `.env` file by searching current/parent directories."""
-    current = (start or Path.cwd()).resolve()
-    for _ in range(max_parents + 1):
-        candidate = current / ".env"
-        if candidate.exists():
-            return candidate
-        if current.parent == current:
-            break
-        current = current.parent
-    return None
-
-
-def _load_env_file(env_path: Path) -> dict:
-    """Parse KEY=VALUE lines from a .env file (no interpolation)."""
-    env_vars: dict = {}
-    try:
-        for raw in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            if value and value[0] in ('"', "'") and value[-1] == value[0]:
-                value = value[1:-1]
-            if key:
-                env_vars[key] = value
-    except Exception:
-        return {}
-    return env_vars
-
 
 def _detect_host_index_root() -> Optional[Path]:
     """
@@ -101,10 +157,10 @@ def _detect_host_index_root() -> Optional[Path]:
         p = Path(raw).expanduser()
         return (p if p.is_absolute() else (Path.cwd() / p)).resolve()
 
-    env_path = _find_dotenv()
+    env_path = find_env_file()
     if not env_path:
         return None
-    env_vars = _load_env_file(env_path)
+    env_vars = load_env_file(env_path)
     raw = str(env_vars.get("HOST_INDEX_PATH", "")).strip()
     if not raw:
         return None
@@ -191,6 +247,7 @@ def index(
     path: Optional[str] = None,
     watch: bool = False,
     recreate: bool = False,
+    hard: bool = False,
     collection: Optional[str] = None,
     repo: Optional[str] = None,
 ):
@@ -204,6 +261,7 @@ def index(
         ctx index                       # Index current directory
         ctx index /path/to/repo         # Index specific directory
         ctx index --recreate            # Drop and recreate collection
+        ctx index --hard                # Clear all caches and recreate
         ctx index --watch               # Watch mode with auto-reindex
         ctx index --collection myrepo   # Use specific collection
     """
@@ -211,6 +269,21 @@ def index(
     ensure_logical_repo_reuse_for_cli()
 
     explicit_path = path is not None
+
+    # Resolve target path early for cache clearing
+    target_path = Path(path if path else os.getcwd()).resolve()
+
+    # Hard mode: clear all caches first, then force recreate
+    if hard:
+        _print_panel(
+            "[yellow]Hard reindex mode[/yellow]\n"
+            "Clearing all caches before reindexing...",
+            title="Cache Clear",
+            border_style="yellow"
+        )
+        cleared = clear_caches(target_path)
+        _print(f"[green]✓[/green] Cleared {cleared} cache items")
+        recreate = True  # Hard mode implies recreate
 
     # Check if services are running
     is_running, error_msg = check_services_running()
@@ -226,8 +299,7 @@ def index(
         )
         return 1
 
-    # Resolve target path
-    target_path = Path(path if path else os.getcwd()).resolve()
+    # Validate target path
     if not target_path.exists():
         _print(f"[red]Error:[/red] Path does not exist: {target_path}", error=True)
         return 1
@@ -452,6 +524,12 @@ def register_command(subparsers):
     )
 
     parser.add_argument(
+        "--hard",
+        action="store_true",
+        help="Clear all caches (local + container) then recreate and reindex"
+    )
+
+    parser.add_argument(
         "--collection", "-c",
         help="Target collection name (default: auto-detect from workspace)"
     )
@@ -468,6 +546,7 @@ def register_command(subparsers):
             path=args.path,
             watch=args.watch,
             recreate=args.recreate,
+            hard=args.hard,
             collection=args.collection,
             repo=args.repo
         )

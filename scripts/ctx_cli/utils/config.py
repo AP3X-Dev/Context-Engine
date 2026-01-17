@@ -2,12 +2,70 @@
 Configuration file management.
 
 Handles loading and managing .ctxrc configuration files.
+Provides centralized access to ports, URLs, and collection resolution.
 """
 
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import configparser
+
+
+# Default service ports - centralized for consistency
+DEFAULT_PORTS = {
+    "qdrant": 6333,
+    "indexer": 8003,
+    "indexer_internal": 18003,  # Internal health check port
+    "memory": 8002,
+    "memory_internal": 18002,   # Internal health check port
+    "neo4j_bolt": 7687,
+    "neo4j_http": 7474,
+}
+
+# Health check configuration - used by lifecycle, quickstart, status commands
+HEALTH_CHECKS = [
+    {"name": "Qdrant", "port": DEFAULT_PORTS["qdrant"], "host": "localhost"},
+    {"name": "Indexer", "port": DEFAULT_PORTS["indexer"], "host": "localhost"},
+    {"name": "Memory", "port": DEFAULT_PORTS["memory"], "host": "localhost"},
+]
+
+
+def get_health_checks() -> List[Dict[str, Any]]:
+    """
+    Get health check configuration with environment overrides.
+
+    Environment variables:
+        QDRANT_PORT: Override Qdrant port
+        MCP_INDEXER_PORT: Override Indexer port
+        MCP_MEMORY_PORT: Override Memory port
+
+    Returns:
+        List of health check configurations
+    """
+    checks = []
+    for check in HEALTH_CHECKS:
+        check_copy = check.copy()
+        name_lower = check["name"].lower()
+
+        # Check for port overrides
+        if name_lower == "qdrant":
+            port_override = os.environ.get("QDRANT_PORT")
+        elif name_lower == "indexer":
+            port_override = os.environ.get("MCP_INDEXER_PORT")
+        elif name_lower == "memory":
+            port_override = os.environ.get("MCP_MEMORY_PORT")
+        else:
+            port_override = None
+
+        if port_override:
+            try:
+                check_copy["port"] = int(port_override)
+            except ValueError:
+                pass  # Keep default if invalid
+
+        checks.append(check_copy)
+
+    return checks
 
 
 class ConfigManager:
@@ -226,3 +284,44 @@ compose_file = docker-compose.yml
             "compact": self.get("search.compact", "false").lower() == "true",
             "include_snippet": self.get("search.include_snippet", "true").lower() == "true",
         }
+
+
+def resolve_collection(
+    explicit: Optional[str] = None,
+    config: Optional[ConfigManager] = None,
+) -> Optional[str]:
+    """
+    Resolve collection name using standard priority order.
+
+    Resolution order:
+        1. Explicit value (CLI argument)
+        2. COLLECTION_NAME environment variable
+        3. Config file (search.default_collection)
+        4. None (let server auto-detect)
+
+    Args:
+        explicit: Explicitly provided collection name (highest priority)
+        config: ConfigManager instance (created if not provided)
+
+    Returns:
+        Collection name or None if not specified
+    """
+    # 1. Explicit takes priority
+    if explicit:
+        return explicit
+
+    # 2. Check environment variable
+    env_collection = os.environ.get("COLLECTION_NAME")
+    if env_collection:
+        return env_collection
+
+    # 3. Check config file
+    if config is None:
+        config = ConfigManager()
+
+    cfg_collection = config.get_default_collection()
+    if cfg_collection:
+        return cfg_collection
+
+    # 4. Let server auto-detect
+    return None
