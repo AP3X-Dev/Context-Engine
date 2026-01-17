@@ -16,13 +16,40 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.panel import Panel
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+    from rich.panel import Panel
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
-console = Console()
+console = Console() if RICH_AVAILABLE else None
+
+
+def _print(msg: str, error: bool = False) -> None:
+    """Print with Rich if available, otherwise plain print."""
+    if console:
+        console.print(msg)
+    else:
+        import re
+        plain = re.sub(r'\[/?[^\]]+\]', '', msg)
+        print(plain, file=sys.stderr if error else sys.stdout)
+
+
+def _print_panel(content: str, title: str = "", border_style: str = "cyan") -> None:
+    """Print a panel with Rich if available, otherwise plain print."""
+    if console and RICH_AVAILABLE:
+        console.print(Panel(content, title=title, border_style=border_style))
+    else:
+        import re
+        plain = re.sub(r'\[/?[^\]]+\]', '', content)
+        print(f"\n=== {title} ===" if title else "")
+        print(plain)
+        print("")
+
 
 # Configuration
 WATCH_SCRIPT = Path(__file__).resolve().parent.parent.parent / "watch_index.py"
@@ -184,7 +211,7 @@ def index(
     # Check if services are running
     is_running, error_msg = check_services_running()
     if not is_running:
-        console.print(Panel(
+        _print_panel(
             "[red]MCP Indexer service is not running![/red]\n\n"
             f"Error: {error_msg}\n\n"
             "Please start the services first:\n"
@@ -192,17 +219,17 @@ def index(
             "  [cyan]docker-compose up -d[/cyan]  # Or start manually",
             title="Service Not Available",
             border_style="red"
-        ))
+        )
         return 1
 
     # Resolve target path
     target_path = Path(path if path else os.getcwd()).resolve()
     if not target_path.exists():
-        console.print(f"[red]Error:[/red] Path does not exist: {target_path}")
+        _print(f"[red]Error:[/red] Path does not exist: {target_path}", error=True)
         return 1
 
     if not target_path.is_dir():
-        console.print(f"[red]Error:[/red] Path is not a directory: {target_path}")
+        _print(f"[red]Error:[/red] Path is not a directory: {target_path}", error=True)
         return 1
 
     # Watch mode uses subprocess
@@ -237,7 +264,7 @@ def run_indexing(
             explicit_path=explicit_path,
         )
     except ValueError as e:
-        console.print(Panel(str(e), title="Invalid Path", border_style="red"))
+        _print_panel(str(e), title="Invalid Path", border_style="red")
         return 1
 
     # Add optional parameters
@@ -247,29 +274,32 @@ def run_indexing(
         params["repo"] = repo
 
     # Show start message
-    console.print(Panel(
+    _print_panel(
         f"[cyan]Indexing:[/cyan] {display_path}\n"
         f"[cyan]Collection:[/cyan] {collection or 'auto-detect'}\n"
         f"[cyan]Recreate:[/cyan] {recreate}",
         title="Starting Indexing",
         border_style="cyan"
-    ))
+    )
 
     # Call MCP tool with progress display
     start_time = time.time()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("[cyan]Indexing...", total=None)
-
+    if RICH_AVAILABLE:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Indexing...", total=None)
+            result = call_mcp_tool(tool_name, params, timeout=600)
+            progress.update(task, completed=True)
+    else:
+        print("Indexing...")
         result = call_mcp_tool(tool_name, params, timeout=600)
-        progress.update(task, completed=True)
 
     elapsed = time.time() - start_time
 
@@ -278,13 +308,13 @@ def run_indexing(
 
     # Check for error
     if "error" in data:
-        console.print(f"[red]Error:[/red] {data['error']}")
+        _print(f"[red]Error:[/red] {data['error']}", error=True)
         return 1
 
     # Check if operation succeeded
     if not data.get("ok", False):
         error_msg = data.get("error", "Unknown error")
-        console.print(f"[red]Indexing failed:[/red] {error_msg}")
+        _print(f"[red]Indexing failed:[/red] {error_msg}", error=True)
         return 1
 
     # Extract statistics
@@ -294,14 +324,14 @@ def run_indexing(
     skipped_files = data.get("skipped", 0)
 
     # Display results
-    console.print(Panel(
+    _print_panel(
         f"[green]✓[/green] Indexed [cyan]{total_files:,}[/cyan] files in [cyan]{elapsed:.1f}s[/cyan]\n"
         f"  Changed: [yellow]{changed_files}[/yellow]\n"
         f"  Deleted: [red]{deleted_files}[/red]\n"
         f"  Skipped: [dim]{skipped_files}[/dim]",
         title="Indexing Complete",
         border_style="green"
-    ))
+    )
     return 0
 
 
@@ -319,7 +349,7 @@ def run_watch_mode(
         repo: Repository name (optional)
     """
     if not WATCH_SCRIPT.exists():
-        console.print(f"[red]Error:[/red] Watch script not found: {WATCH_SCRIPT}")
+        _print(f"[red]Error:[/red] Watch script not found: {WATCH_SCRIPT}", error=True)
         return 1
 
     # Build environment for watch script
@@ -329,13 +359,13 @@ def run_watch_mode(
     if repo:
         env["REPO_NAME"] = repo
 
-    console.print(Panel(
+    _print_panel(
         f"[cyan]Watching:[/cyan] {target_path}\n"
         f"[cyan]Collection:[/cyan] {collection or 'auto-detect'}\n"
         "[dim]Press Ctrl+C to stop[/dim]",
         title="Watch Mode",
         border_style="cyan"
-    ))
+    )
 
     # Launch subprocess
     proc = None
@@ -358,28 +388,28 @@ def run_watch_mode(
                 # Parse watch output for file events
                 line = line.rstrip()
                 if "✓" in line or "Reindexed" in line.lower():
-                    console.print(f"[green]✓[/green] {line}")
+                    _print(f"[green]✓[/green] {line}")
                 elif "error" in line.lower():
-                    console.print(f"[red]Error:[/red] {line}")
+                    _print(f"[red]Error:[/red] {line}", error=True)
                 elif "warn" in line.lower():
-                    console.print(f"[yellow]Warning:[/yellow] {line}")
+                    _print(f"[yellow]Warning:[/yellow] {line}")
                 else:
-                    console.print(f"[dim]{line}[/dim]")
+                    _print(f"[dim]{line}[/dim]")
 
         proc.wait()
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Stopping watch mode...[/yellow]")
+        _print("\n[yellow]Stopping watch mode...[/yellow]")
         if proc:
             proc.send_signal(signal.SIGTERM)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        console.print("[green]Watch mode stopped[/green]")
+        _print("[green]Watch mode stopped[/green]")
         return 0
     except Exception as e:
-        console.print(f"[red]Error running watch mode:[/red] {e}")
+        _print(f"[red]Error running watch mode:[/red] {e}", error=True)
         if proc:
             proc.kill()
         return 1

@@ -21,9 +21,26 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
-from rich.console import Console
 
-console = Console()
+try:
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+console = Console() if RICH_AVAILABLE else None
+
+
+def _print(msg: str, file=None) -> None:
+    """Print with Rich if available, otherwise plain print."""
+    if console:
+        console.print(msg)
+    else:
+        # Strip Rich markup for plain output
+        import re
+        plain = re.sub(r'\[/?[^\]]+\]', '', msg)
+        print(plain, file=file or sys.stdout)
+
 
 # Known service aliases for better UX
 SERVICE_ALIASES = {
@@ -133,16 +150,16 @@ def run_logs(args) -> int:
     # Check if docker-compose is available
     compose_available, compose_cmd = check_docker_compose_available()
     if not compose_available:
-        console.print("\n[red]Error:[/red] docker-compose not found\n", file=sys.stderr)
-        console.print("Please install Docker Compose:", file=sys.stderr)
-        console.print("  https://docs.docker.com/compose/install/\n", file=sys.stderr)
+        _print("\n[red]Error:[/red] docker-compose not found\n", file=sys.stderr)
+        _print("Please install Docker Compose:", file=sys.stderr)
+        _print("  https://docs.docker.com/compose/install/\n", file=sys.stderr)
         return 1
 
     # Find compose file
     compose_file = find_compose_file(project_root)
     if compose_file is None:
-        console.print("\n[red]Error:[/red] No docker-compose.yml or compose.yaml found\n", file=sys.stderr)
-        console.print(f"Expected location: {project_root}\n", file=sys.stderr)
+        _print("\n[red]Error:[/red] No docker-compose.yml or compose.yaml found\n", file=sys.stderr)
+        _print(f"Expected location: {project_root}\n", file=sys.stderr)
         return 1
 
     # Build docker compose logs command
@@ -170,7 +187,7 @@ def run_logs(args) -> int:
 
         # Show friendly message if using alias
         if resolved_service != args.service:
-            console.print(f"[dim]Viewing logs for {resolved_service} (alias: {args.service})[/dim]\n")
+            _print(f"[dim]Viewing logs for {resolved_service} (alias: {args.service})[/dim]\n")
 
     # Run the command
     try:
@@ -183,15 +200,15 @@ def run_logs(args) -> int:
 
     except KeyboardInterrupt:
         # Handle Ctrl+C gracefully when following logs
-        console.print("\n[dim]Stopped following logs[/dim]\n")
+        _print("\n[dim]Stopped following logs[/dim]\n")
         return 0
 
     except subprocess.CalledProcessError as e:
-        console.print(f"\n[red]Error running docker compose logs:[/red] {e}\n", file=sys.stderr)
+        _print(f"\n[red]Error running docker compose logs:[/red] {e}\n", file=sys.stderr)
         return 1
 
     except Exception as e:
-        console.print(f"\n[red]Unexpected error:[/red] {e}\n", file=sys.stderr)
+        _print(f"\n[red]Unexpected error:[/red] {e}\n", file=sys.stderr)
         return 1
 
 

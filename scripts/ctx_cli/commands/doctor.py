@@ -24,6 +24,7 @@ Usage:
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -646,10 +647,10 @@ class Doctor:
                 print(f"  Running: {check.fix_command}")
 
                 try:
-                    # Parse and execute fix command
+                    # Parse and execute fix command safely (no shell=True)
+                    cmd_parts = shlex.split(check.fix_command)
                     result = subprocess.run(
-                        check.fix_command,
-                        shell=True,
+                        cmd_parts,
                         capture_output=True,
                         text=True,
                         timeout=30

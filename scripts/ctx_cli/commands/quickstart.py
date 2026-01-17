@@ -25,11 +25,17 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.table import Table
-from rich.live import Live
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
+    from rich.live import Live
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    print("Error: 'rich' library is required for quickstart.", file=sys.stderr)
+    print("Install with: pip install rich", file=sys.stderr)
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 from scripts.ctx_cli.utils.docker import (
@@ -42,7 +48,7 @@ from scripts.ctx_cli.commands.init import (
     suggest_collection_name,
 )
 
-console = Console()
+console = Console() if RICH_AVAILABLE else None
 
 # Service health check configuration
 HEALTH_CHECKS = [
@@ -572,6 +578,7 @@ def step_index(
 
     # Build list of (path, subdir, collection) tuples
     # Each external repo gets its own collection based on directory name
+    # IMPORTANT: Only create separate collections for actual git repos, not subdirectories
     index_targets = []
     for p in resolved_paths:
         try:
@@ -581,17 +588,17 @@ def step_index(
             subdir = ""
 
         # Determine collection for this path
-        if subdir:
-            # External repo - derive collection from dir name
+        # Only create a separate collection if this is an actual git repo root
+        is_git_repo = (p / ".git").exists()
+
+        if subdir and is_git_repo and multi_repo_mode:
+            # External git repo - derive collection from dir name
             repo_collection = suggest_collection_name(p)
         else:
-            # Main workspace - use COLLECTION_NAME from env
+            # Main workspace OR subdirectory (not a separate repo) - use COLLECTION_NAME from env
             repo_collection = os.environ.get("COLLECTION_NAME", "")
 
         index_targets.append((p, subdir, repo_collection))
-
-    # Resolve display messages early (before we reorder anything)
-    display_targets = index_targets.copy()
 
     # Show what will be indexed
     mode_str = "multi-repo" if multi_repo_mode else "single-repo"
@@ -876,6 +883,9 @@ def run_quickstart(args) -> int:
     Returns:
         Exit code (0 for success, 1 for errors)
     """
+    if not RICH_AVAILABLE:
+        return 1
+
     console.print()
     console.print(Panel.fit(
         "[bold cyan]Context-Engine Quickstart[/bold cyan]\n"

@@ -78,14 +78,17 @@ def check_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
     Returns:
         True if port is open, False otherwise
     """
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         result = sock.connect_ex((host, port))
-        sock.close()
         return result == 0
     except (socket.timeout, socket.error):
         return False
+    finally:
+        if sock:
+            sock.close()
 
 
 def wait_for_health_check(

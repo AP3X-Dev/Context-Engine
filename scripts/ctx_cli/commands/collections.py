@@ -401,7 +401,7 @@ def info_collection(args) -> int:
         last_indexed = result.get("last_indexed", "Never")
 
         print(f"│ Documents:    {format_number(count).ljust(48 - len('Documents:    ') - 2)}│")
-        print(f"│ Status:       {'Active' if indexed else 'Empty'.ljust(48 - len('Status:       ') - 2)}│")
+        print(f"│ Status:       {('Active' if indexed else 'Empty').ljust(48 - len('Status:       ') - 2)}│")
         print(f"│ Last indexed: {str(last_indexed).ljust(48 - len('Last indexed: ') - 2)}│")
         print(f"└{'─' * 48}┘")
 
