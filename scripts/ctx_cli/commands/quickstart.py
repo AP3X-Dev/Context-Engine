@@ -20,12 +20,14 @@ This command orchestrates:
 import sys
 import time
 import os
+import hashlib
+import shutil
 from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.live import Live
 
@@ -48,6 +50,122 @@ HEALTH_CHECKS = [
     {"name": "Indexer", "port": 8003, "host": "localhost"},
     {"name": "Memory", "port": 8002, "host": "localhost"},
 ]
+
+def _coerce_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    v = str(value).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _resolve_compose_root() -> Path:
+    compose_path = find_docker_compose()
+    if compose_path:
+        return compose_path.parent
+    return Path.cwd()
+
+
+def _resolve_dev_workspace(compose_root: Path) -> Path:
+    """
+    Resolve the host path that is bind-mounted into containers as `/work`.
+
+    Docker Compose evaluates `HOST_INDEX_PATH` relative to the compose file directory,
+    so we do the same for a consistent UX.
+    """
+    raw = os.environ.get("HOST_INDEX_PATH")
+    if not raw:
+        env_path = compose_root / ".env"
+        if env_path.exists():
+            raw = load_env_file(env_path).get("HOST_INDEX_PATH")
+
+    if raw:
+        p = Path(str(raw)).expanduser()
+        return (p if p.is_absolute() else (compose_root / p)).resolve()
+
+    return (compose_root / "dev-workspace").resolve()
+
+
+def _multi_repo_mode_enabled(compose_root: Path) -> bool:
+    raw = os.environ.get("MULTI_REPO_MODE")
+    if raw is None:
+        env_path = compose_root / ".env"
+        if env_path.exists():
+            raw = load_env_file(env_path).get("MULTI_REPO_MODE")
+    return _coerce_bool(raw, default=False)
+
+
+def _find_existing_import(source: Path, dev_workspace: Path) -> Optional[Path]:
+    """
+    Check if source path is already imported into dev_workspace.
+
+    Looks for:
+    1. Exact name match: dev_workspace/repo-name
+    2. Hash-suffixed match: dev_workspace/repo-name-<hash>
+    3. Symlink pointing to source
+
+    Returns the existing import path if found, None otherwise.
+    """
+    if not dev_workspace.exists():
+        return None
+
+    base = source.name or "repo"
+    source_resolved = source.resolve()
+
+    # Check exact name match
+    exact = dev_workspace / base
+    if exact.exists():
+        if exact.is_symlink() and exact.resolve() == source_resolved:
+            return exact
+        if exact.is_dir():
+            # Could be a copy - check if it looks like the same repo
+            # (simple heuristic: check if key files exist)
+            if (exact / ".git").exists() or (exact / "package.json").exists() or (exact / "pyproject.toml").exists():
+                return exact
+
+    # Check hash-suffixed versions
+    digest = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:8]
+    hashed = dev_workspace / f"{base}-{digest}"
+    if hashed.exists() and hashed.is_dir():
+        return hashed
+
+    # Scan for any symlink pointing to source
+    try:
+        for entry in dev_workspace.iterdir():
+            if entry.is_symlink() and entry.resolve() == source_resolved:
+                return entry
+    except Exception:
+        pass
+
+    return None
+
+
+def _import_repo_into_workspace(source: Path, dev_workspace: Path) -> Path:
+    """
+    Copy a repo into `dev_workspace` so containers can index it under `/work`.
+
+    We avoid symlinks here because `/work` is typically a bind mount; symlinks that
+    point outside the mount are not visible inside containers.
+    """
+    dev_workspace.mkdir(parents=True, exist_ok=True)
+
+    base = source.name or "repo"
+    target = dev_workspace / base
+
+    if target.exists():
+        digest = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:8]
+        target = dev_workspace / f"{base}-{digest}"
+
+    if target.exists():
+        if not target.is_dir():
+            raise ValueError(f"Import target exists and is not a directory: {target}")
+        return target
+
+    shutil.copytree(source, target, symlinks=True)
+    return target
 
 
 def check_docker_available() -> tuple[bool, str]:
@@ -312,7 +430,12 @@ def step_up(build: bool, wait_timeout: int) -> int:
         return 1
 
 
-def step_index(skip_index: bool, recreate: bool, paths: list[str] = None) -> int:
+def step_index(
+    skip_index: bool,
+    recreate: bool,
+    paths: list[str] = None,
+    import_repos: bool = False,
+) -> int:
     """
     Step 3: Index the codebase.
 
@@ -339,6 +462,7 @@ def step_index(skip_index: bool, recreate: bool, paths: list[str] = None) -> int
     ))
 
     # Determine paths to index
+    explicit_paths = bool(paths)
     if not paths:
         # No paths provided - ask user
         cwd = Path.cwd()
@@ -378,8 +502,10 @@ def step_index(skip_index: bool, recreate: bool, paths: list[str] = None) -> int
                 return 0
 
             paths = input_paths
+            explicit_paths = True
         else:
             paths = [str(cwd)]
+            explicit_paths = False
 
     # Validate and resolve paths
     resolved_paths = []
@@ -393,200 +519,257 @@ def step_index(skip_index: bool, recreate: bool, paths: list[str] = None) -> int
             return 1
         resolved_paths.append(path)
 
-    # Determine the dev-workspace directory (where repos are mounted)
-    # Priority: 1) HOST_INDEX_PATH env, 2) ./dev-workspace relative to docker-compose
-    compose_dir = find_docker_compose()
-    if compose_dir:
-        compose_dir = compose_dir.parent
-    else:
-        compose_dir = Path.cwd()
+    compose_root = _resolve_compose_root()
+    dev_workspace = _resolve_dev_workspace(compose_root)
+    multi_repo_mode = _multi_repo_mode_enabled(compose_root)
 
-    dev_workspace = Path(os.environ.get("HOST_INDEX_PATH", compose_dir / "dev-workspace")).resolve()
-
-    # Check if paths need to be symlinked into dev-workspace
+    # Ensure all indexed paths are visible to containers under `/work` (dev_workspace).
+    # If a path is outside the mount, check if already imported or offer to copy it.
     paths_to_index = []
     for path in resolved_paths:
-        # Check if path is already under dev-workspace
-        try:
-            path.relative_to(dev_workspace)
-            # Path is already in dev-workspace
+        if path.is_relative_to(dev_workspace):
             paths_to_index.append(path)
-        except ValueError:
-            # Path is outside dev-workspace - need to symlink
-            repo_name = path.name
-            target_link = dev_workspace / repo_name
+            continue
 
-            # Create dev-workspace if needed
-            dev_workspace.mkdir(parents=True, exist_ok=True)
+        # Check if this path is already imported into dev-workspace
+        existing = _find_existing_import(path, dev_workspace)
+        if existing:
+            console.print(f"[green]✓[/green] Already in dev-workspace: [cyan]{existing.name}[/cyan]")
+            paths_to_index.append(existing)
+            continue
 
-            if target_link.exists() or target_link.is_symlink():
-                if target_link.is_symlink() and target_link.resolve() == path:
-                    console.print(f"[dim]Already linked: {repo_name}[/dim]")
-                else:
-                    console.print(f"[yellow]![/yellow] {repo_name} already exists in dev-workspace, skipping symlink")
-            else:
-                # Create symlink
-                console.print(f"[cyan]→[/cyan] Linking {path} → dev-workspace/{repo_name}")
-                target_link.symlink_to(path)
+        # Path is outside the mount and not yet imported
+        console.print(
+            f"[yellow]![/yellow] Path is outside the mounted workspace (HOST_INDEX_PATH):\n"
+            f"  Source: [cyan]{path}[/cyan]\n"
+            f"  Mounted: [cyan]{dev_workspace}[/cyan]\n"
+        )
+        if not import_repos:
+            try:
+                resp = console.input(
+                    "[bold]Copy this repo into dev-workspace so containers can index it?[/bold] [dim](Y/n)[/dim] "
+                )
+            except (EOFError, KeyboardInterrupt):
+                resp = "n"
 
-            paths_to_index.append(target_link)
+            if resp.lower().strip() in ("n", "no"):
+                console.print(
+                    "[red]✗[/red] Cannot index paths outside the mounted workspace.\n"
+                    "[dim]Either move the repo under HOST_INDEX_PATH, restart services with a wider HOST_INDEX_PATH, or re-run with --import-repos to copy it into dev-workspace.[/dim]\n"
+                )
+                return 1
+
+        try:
+            imported = _import_repo_into_workspace(path, dev_workspace)
+        except Exception as e:
+            console.print(f"[red]✗[/red] Failed to import {path}: {e}")
+            return 1
+
+        console.print(f"[green]✓[/green] Imported into dev-workspace: [cyan]{imported}[/cyan]")
+        paths_to_index.append(imported)
 
     resolved_paths = paths_to_index
 
-    # Generate collection names for each path
-    # Each repo gets its own collection
-    path_collections = []
-    for path in resolved_paths:
-        collection_name = suggest_collection_name(path)
-        path_collections.append((path, collection_name))
+    # Build list of (path, subdir, collection) tuples
+    # Each external repo gets its own collection based on directory name
+    index_targets = []
+    for p in resolved_paths:
+        try:
+            rel = p.relative_to(dev_workspace)
+            subdir = rel.as_posix()
+        except ValueError:
+            subdir = ""
+
+        # Determine collection for this path
+        if subdir:
+            # External repo - derive collection from dir name
+            repo_collection = suggest_collection_name(p)
+        else:
+            # Main workspace - use COLLECTION_NAME from env
+            repo_collection = os.environ.get("COLLECTION_NAME", "")
+
+        index_targets.append((p, subdir, repo_collection))
+
+    # Resolve display messages early (before we reorder anything)
+    display_targets = index_targets.copy()
 
     # Show what will be indexed
-    console.print(f"\n[dim]Indexing {len(resolved_paths)} repo(s):[/dim]")
-    for p, coll in path_collections:
-        console.print(f"  [cyan]•[/cyan] {p.name} → collection: [yellow]{coll}[/yellow]")
+    mode_str = "multi-repo" if multi_repo_mode else "single-repo"
+    console.print(f"\n[dim]Indexing {len(resolved_paths)} path(s) ({mode_str} mode):[/dim]")
+    for p, subdir, coll in index_targets:
+        mounted_as = "/work" if not subdir else f"/work/{subdir}"
+        coll_display = f"[yellow]{coll}[/yellow]" if coll else "[dim]auto[/dim]"
+        console.print(f"  [cyan]•[/cyan] {p.name} → {coll_display} [dim]({mounted_as})[/dim]")
     console.print()
 
-    workspace_path = resolved_paths[0] if len(resolved_paths) == 1 else Path.cwd()
     start_time = time.time()
 
     try:
         client = MCPClient(server="indexer", timeout=600)
 
-        # SAFE: First check existing collections (READ-ONLY)
-        console.print(f"[dim]Checking {workspace_path}...[/dim]\n")
+        # ─── Show existing collections ───────────────────────────────────────────
+        console.print("[dim]Checking existing collections...[/dim]")
 
-        existing_collection = None
-        existing_count = 0
-
-        # Get the configured collection name from environment
-        configured_collection = os.environ.get("COLLECTION_NAME")
-
+        all_collections = {}  # name -> count
         try:
-            # PRIORITY: Check the configured collection FIRST (with retry for transient failures)
-            if configured_collection:
-                for attempt in range(3):
-                    try:
-                        stats = client.call_tool("qdrant_status", collection=configured_collection)
-                        count = stats.get("count", 0)
-                        if count > 0:
-                            existing_collection = configured_collection
-                            existing_count = count
-                        break  # Success, exit retry loop
-                    except Exception as e:
-                        if attempt < 2:
-                            time.sleep(1)  # Brief pause before retry
-                            continue
-                        pass  # Collection might not exist yet
-
-            # Fallback: scan all collections if configured one is empty/missing
-            if not existing_collection or existing_count == 0:
-                collections_result = client.call_tool("qdrant_list")
-                collections = collections_result.get("collections", [])
-
-                # Find collection with data (skip _graph collections)
-                for coll in collections:
-                    if coll.endswith("_graph"):
-                        continue
-                    try:
-                        stats = client.call_tool("qdrant_status", collection=coll)
-                        count = stats.get("count", 0)
-                        if count > existing_count:
-                            existing_count = count
-                            existing_collection = coll
-                    except Exception:
-                        continue
+            collections_result = client.call_tool("qdrant_list")
+            for coll in collections_result.get("collections", []):
+                if coll.endswith("_graph"):
+                    continue
+                try:
+                    stats = client.call_tool("qdrant_status", collection=coll)
+                    all_collections[coll] = stats.get("count", 0)
+                except Exception:
+                    all_collections[coll] = 0
         except Exception:
             pass
 
-        # If data exists and user didn't pass --recreate, just show stats
-        if existing_collection and existing_count > 0 and not recreate:
-            elapsed = time.time() - start_time
+        if all_collections:
+            console.print(f"\n[bold]Existing collections ({len(all_collections)}):[/bold]")
+            for coll, count in sorted(all_collections.items(), key=lambda x: -x[1]):
+                if count > 0:
+                    console.print(f"  [green]●[/green] {coll}: [cyan]{count:,}[/cyan] chunks")
+                else:
+                    console.print(f"  [dim]○[/dim] {coll}: [dim]empty[/dim]")
+        else:
+            console.print("\n[dim]No existing collections found.[/dim]")
+
+        # ─── Multi-repo mode explanation ─────────────────────────────────────────
+        if multi_repo_mode:
             console.print(
-                f"[green]✓[/green] Codebase already indexed - [cyan]{existing_count:,}[/cyan] chunks"
+                f"\n[yellow]ℹ[/yellow] [bold]MULTI_REPO_MODE=1[/bold]: "
+                f"Each repo gets its own collection. Indexing {len(index_targets)} repo(s) sequentially."
             )
-            console.print(f"  [dim]Collection: {existing_collection}[/dim]")
-            console.print(f"  [dim]Use --recreate to reindex ({elapsed:.1f}s)[/dim]\n")
+        else:
+            console.print(
+                f"\n[dim]ℹ MULTI_REPO_MODE=0: All paths indexed into one collection. "
+                f"Set MULTI_REPO_MODE=1 in .env for per-repo collections.[/dim]"
+            )
+
+        # ─── Check which targets need indexing ───────────────────────────────────
+        def find_matching_collection(repo_name: str, collections: dict) -> tuple[str, int]:
+            """Find a collection matching repo name (exact or prefix match)."""
+            # Normalize for comparison
+            normalized = repo_name.lower().replace("_", "-").replace(" ", "-")
+
+            # Exact match first
+            if repo_name in collections:
+                return repo_name, collections[repo_name]
+
+            # Prefix match (e.g., "context-engine" matches "Context-Engine-41e67959")
+            for coll, count in collections.items():
+                coll_norm = coll.lower().replace("_", "-")
+                if coll_norm.startswith(normalized) or normalized.startswith(coll_norm.split("-")[0]):
+                    if count > 0:
+                        return coll, count
+
+            return "", 0
+
+        targets_to_index = []
+        for path, subdir, repo_collection in index_targets:
+            # Try to find existing collection for this repo
+            if repo_collection:
+                matched_coll, existing_count = find_matching_collection(repo_collection, all_collections)
+            else:
+                matched_coll, existing_count = find_matching_collection(path.name, all_collections)
+
+            if recreate:
+                targets_to_index.append((path, subdir, matched_coll or repo_collection, "recreate"))
+            elif existing_count > 0 and not explicit_paths:
+                console.print(f"  [green]✓[/green] {path.name}: already indexed in [yellow]{matched_coll}[/yellow] ({existing_count:,} chunks)")
+            else:
+                targets_to_index.append((path, subdir, repo_collection, "new" if existing_count == 0 else "update"))
+
+        if not targets_to_index:
+            elapsed = time.time() - start_time
+            console.print(f"\n[green]✓[/green] All paths already indexed ({elapsed:.1f}s)")
+            console.print(f"  [dim]Use --recreate to reindex[/dim]\n")
             return 0
 
-        # Only index if collection is empty OR user explicitly requested --recreate
-        if recreate:
-            console.print("[yellow]Recreating index (--recreate)...[/yellow]\n")
-        else:
-            console.print("[dim]No existing index found, creating new index...[/dim]\n")
+        console.print(f"\n[dim]Indexing {len(targets_to_index)} path(s)...[/dim]\n")
 
-        # Index each path
-        total_files_all = 0
-        changed_files_all = 0
-        deleted_files_all = 0
-        skipped_files_all = 0
+        # Index each target and verify collection creation
+        indexed_collections = {}  # collection -> chunk count
+        failed_repos = []
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(
-                f"[cyan]Indexing {len(resolved_paths)} path(s)...",
-                total=len(resolved_paths)
-            )
+        for i, (path, subdir, repo_collection, action) in enumerate(targets_to_index):
+            repo_start = time.time()
+            action_str = "Recreating" if action == "recreate" else "Indexing"
+            console.print(f"[cyan]({i+1}/{len(targets_to_index)})[/cyan] {action_str} [bold]{path.name}[/bold]...")
+            if repo_collection:
+                console.print(f"  [dim]Collection: {repo_collection}[/dim]")
 
-            for i, path in enumerate(resolved_paths):
-                progress.update(task, description=f"[cyan]Indexing {path.name}...")
+            # Build kwargs for MCP call
+            kwargs = {"recreate": action == "recreate"}
+            if repo_collection:
+                kwargs["collection"] = repo_collection
 
-                # Call MCP indexing tool with specific path
-                # The path should be relative to dev-workspace (which is /work in container)
-                try:
-                    # Get relative path from dev-workspace
-                    rel_path = path.relative_to(dev_workspace)
-                    subdir = str(rel_path)
-                except ValueError:
-                    # Path is dev-workspace itself
-                    subdir = ""
-
+            try:
                 if subdir:
-                    # Index specific subdirectory
-                    result = client.call_tool(
-                        "qdrant_index",
-                        subdir=subdir,
-                        recreate=recreate if i == 0 else False,
-                    )
+                    result = client.call_tool("qdrant_index", subdir=subdir, **kwargs)
                 else:
-                    # Index root
-                    result = client.call_tool(
-                        "qdrant_index_root",
-                        recreate=recreate if i == 0 else False,
-                    )
+                    result = client.call_tool("qdrant_index_root", **kwargs)
 
-                # Accumulate statistics
+                repo_elapsed = time.time() - repo_start
+
                 if result.get("ok", False):
-                    total_files_all += result.get("total_files", 0)
-                    changed_files_all += result.get("changed", 0)
-                    deleted_files_all += result.get("deleted", 0)
-                    skipped_files_all += result.get("skipped", 0)
+                    # Verify collection has data
+                    verify_collection = repo_collection or result.get("args", {}).get("collection", "")
+                    chunk_count = 0
+                    if verify_collection:
+                        try:
+                            stats = client.call_tool("qdrant_status", collection=verify_collection)
+                            chunk_count = stats.get("count", 0)
+                        except Exception:
+                            pass
+
+                    if chunk_count > 0:
+                        console.print(
+                            f"  [green]✓[/green] Indexed {result.get('total_files', 0)} files → "
+                            f"[cyan]{chunk_count:,}[/cyan] chunks ({repo_elapsed:.1f}s)"
+                        )
+                        indexed_collections[verify_collection] = chunk_count
+                    else:
+                        console.print(
+                            f"  [yellow]⚠[/yellow] Indexed but collection empty ({repo_elapsed:.1f}s)"
+                        )
+                        failed_repos.append((path.name, "Collection empty after indexing"))
                 else:
                     error_msg = result.get("error", "Unknown error")
-                    console.print(f"\n[red]✗[/red] Failed to index {path}: {error_msg}")
+                    console.print(f"  [red]✗[/red] Failed: {error_msg} ({repo_elapsed:.1f}s)")
+                    failed_repos.append((path.name, error_msg))
+                    if not multi_repo_mode:
+                        return 1  # In single-repo mode, fail fast
+
+            except Exception as e:
+                repo_elapsed = time.time() - repo_start
+                console.print(f"  [red]✗[/red] Error: {str(e)} ({repo_elapsed:.1f}s)")
+                failed_repos.append((path.name, str(e)))
+                if not multi_repo_mode:
                     return 1
 
-                progress.update(task, advance=1)
+            console.print()  # Blank line between repos
 
         elapsed = time.time() - start_time
 
-        # Display results
-        if total_files_all > 0 or changed_files_all > 0:
+        # Summary
+        if indexed_collections:
+            total_chunks = sum(indexed_collections.values())
             console.print(
-                f"[green]✓[/green] Indexed [cyan]{total_files_all:,}[/cyan] files in [cyan]{elapsed:.1f}s[/cyan]"
+                f"[green]✓[/green] Indexed [cyan]{len(indexed_collections)}[/cyan] collection(s), "
+                f"[cyan]{total_chunks:,}[/cyan] total chunks in [cyan]{elapsed:.1f}s[/cyan]"
             )
-            console.print(f"  Changed: [yellow]{changed_files_all}[/yellow]  "
-                         f"Deleted: [red]{deleted_files_all}[/red]  "
-                         f"Skipped: [dim]{skipped_files_all}[/dim]\n")
-        else:
-            console.print(
-                f"[green]✓[/green] Index check complete in [cyan]{elapsed:.1f}s[/cyan]\n"
-            )
+            for coll, count in indexed_collections.items():
+                console.print(f"  [green]●[/green] {coll}: {count:,} chunks")
+
+        if failed_repos:
+            console.print(f"\n[yellow]⚠[/yellow] {len(failed_repos)} repo(s) failed:")
+            for repo_name, error in failed_repos:
+                console.print(f"  [red]✗[/red] {repo_name}: {error}")
+            console.print()
+            return 1 if not indexed_collections else 0  # Partial success OK
+
+        console.print()
 
         return 0
 
@@ -730,7 +913,7 @@ def run_quickstart(args) -> int:
     steps = [
         ("init", lambda: step_init(args.force, skip_interactive=True)),
         ("up", lambda: step_up(args.build, args.wait)),
-        ("index", lambda: step_index(args.no_index, args.recreate, paths)),
+        ("index", lambda: step_index(args.no_index, args.recreate, paths, args.import_repos)),
         ("warmup", lambda: step_warmup(args.no_warmup)),
     ]
 
@@ -832,6 +1015,12 @@ def register_command(subparsers):
         help="Recreate Qdrant collection (drops existing data)"
     )
 
+    parser.add_argument(
+        "--import-repos",
+        action="store_true",
+        help="Copy repos outside HOST_INDEX_PATH into dev-workspace so containers can index them"
+    )
+
     parser.set_defaults(func=run_quickstart)
 
 
@@ -853,6 +1042,8 @@ if __name__ == "__main__":
                        help="Skip warmup step")
     parser.add_argument("--recreate", action="store_true",
                        help="Recreate collection")
+    parser.add_argument("--import-repos", action="store_true",
+                       help="Copy repos outside HOST_INDEX_PATH into dev-workspace for indexing")
 
     args = parser.parse_args()
     sys.exit(run_quickstart(args))
