@@ -218,17 +218,30 @@ def is_multi_repo_mode() -> bool:
 def logical_repo_reuse_enabled() -> bool:
     """Feature flag for logical-repo / collection reuse.
 
-    Controlled by LOGICAL_REPO_REUSE env var. Defaults to ON (enabled).
-    Set to 0/false/no/off to disable.
+    Controlled by LOGICAL_REPO_REUSE env var. Defaults to OFF (disabled).
+    Set to 1/true/yes/on to enable.
 
     When enabled, repos with the same git remote origin URL share collections,
     preventing duplicate indexing when the same repo is uploaded multiple times.
+
+    Note: CLI indexing/sync operations enable this automatically via
+    ensure_logical_repo_reuse_for_cli().
     """
-    val = os.environ.get("LOGICAL_REPO_REUSE", "1").strip().lower()
-    # Explicit disable
-    if val in {"0", "false", "no", "off"}:
-        return False
-    return True
+    val = os.environ.get("LOGICAL_REPO_REUSE", "0").strip().lower()
+    # Explicit enable
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
+
+def ensure_logical_repo_reuse_for_cli() -> None:
+    """Enable logical repo reuse for CLI indexing/sync operations.
+
+    Call this at the start of CLI commands that involve indexing or syncing
+    to ensure consistent collection reuse behavior.
+    """
+    if "LOGICAL_REPO_REUSE" not in os.environ:
+        os.environ["LOGICAL_REPO_REUSE"] = "1"
 
 _state_lock = threading.Lock()
 # Track last-used timestamps for cleanup of idle workspace locks

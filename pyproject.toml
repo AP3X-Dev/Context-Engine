@@ -78,7 +78,7 @@ Repository = "https://github.com/m1rl0k/context-engine"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["scripts.ctx_cli", "scripts.ctx_cli.*"]
+include = ["scripts", "scripts.*"]
 
 [tool.setuptools]
 include-package-data = true

@@ -18,6 +18,12 @@ class ConfigManager:
     1. ./.ctxrc (current directory)
     2. ~/.ctxrc (home directory)
     3. Environment variables
+
+    Notes on environment variables:
+    - Generic config overrides use `CTX_` + uppercased key, e.g. `CTX_INDEXER_URL`
+      for `indexer.url`.
+    - For compatibility with other Context-Engine tooling and docs, the MCP endpoint
+      helpers also honor `MCP_INDEXER_URL` and `MCP_MEMORY_URL`.
     """
 
     def __init__(self):
@@ -173,10 +179,23 @@ compose_file = docker-compose.yml
 
     def get_indexer_url(self) -> str:
         """Get indexer server URL."""
+        # Prefer explicit CLI env override, then common MCP_* env vars, then config/default.
+        ctx = os.environ.get("CTX_INDEXER_URL")
+        if ctx:
+            return ctx
+        mcp = os.environ.get("MCP_INDEXER_URL")
+        if mcp:
+            return mcp
         return self.get("indexer.url", "http://localhost:8003")
 
     def get_memory_url(self) -> str:
         """Get memory server URL."""
+        ctx = os.environ.get("CTX_MEMORY_URL")
+        if ctx:
+            return ctx
+        mcp = os.environ.get("MCP_MEMORY_URL")
+        if mcp:
+            return mcp
         return self.get("memory.url", "http://localhost:8002")
 
     def get_timeout(self, server: str = "indexer") -> int:

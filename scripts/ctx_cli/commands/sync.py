@@ -25,6 +25,12 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
+try:
+    from scripts.workspace_state import ensure_logical_repo_reuse_for_cli
+except ImportError:
+    def ensure_logical_repo_reuse_for_cli() -> None:
+        os.environ.setdefault("LOGICAL_REPO_REUSE", "1")
+
 console = Console() if RICH_AVAILABLE else None
 
 
@@ -102,6 +108,9 @@ def sync(
         ctx sync --endpoint http://host:8004  # Use custom endpoint
         ctx sync --git-history                # Include git commit metadata
     """
+    # Enable logical repo reuse for CLI sync operations
+    ensure_logical_repo_reuse_for_cli()
+
     # Find upload client script
     client_script = _find_upload_client()
     if not client_script:

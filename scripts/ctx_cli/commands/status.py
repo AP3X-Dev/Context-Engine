@@ -271,6 +271,97 @@ def get_workspace_info() -> Tuple[bool, Optional[Dict[str, Any]]]:
         return False, None
 
 
+def get_graph_status(collection_name: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Get graph backend status (Qdrant _graph collection and/or Neo4j).
+
+    Returns:
+        Tuple of (success, graph_info)
+        graph_info format: {
+            "backend": "qdrant" | "neo4j" | "both",
+            "qdrant_graph": {
+                "collection": "name_graph",
+                "edge_count": 1234,
+            },
+            "neo4j": {
+                "connected": True/False,
+                "node_count": 1234,
+                "edge_count": 5678,
+            }
+        }
+    """
+    import os
+
+    graph_info: Dict[str, Any] = {"backend": "none"}
+    success = False
+
+    # Check Qdrant graph collection
+    try:
+        qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+        graph_coll = f"{collection_name}_graph" if collection_name else None
+
+        if graph_coll:
+            req = Request(
+                f"{qdrant_url}/collections/{graph_coll}",
+                headers={"Accept": "application/json"}
+            )
+            with urlopen(req, timeout=2) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    result = data.get("result", {})
+                    edge_count = result.get("points_count", 0)
+
+                    graph_info["qdrant_graph"] = {
+                        "collection": graph_coll,
+                        "edge_count": edge_count,
+                    }
+                    graph_info["backend"] = "qdrant"
+                    success = True
+    except Exception:
+        pass  # Graph collection doesn't exist or Qdrant not available
+
+    # Check Neo4j if enabled
+    neo4j_enabled = os.environ.get("NEO4J_GRAPH", "").lower() in {"1", "true", "yes", "on"}
+    if neo4j_enabled:
+        try:
+            # Try to import and use Neo4j plugin
+            from plugins.neo4j_graph import Neo4jGraphBackend
+
+            backend = Neo4jGraphBackend()
+            # Quick health check - try a simple query
+            driver = backend._get_driver()
+            if driver:
+                with driver.session() as session:
+                    # Count nodes and relationships
+                    node_result = session.run(
+                        "MATCH (n:Symbol) RETURN count(n) as count"
+                    )
+                    node_count = node_result.single()["count"]
+
+                    edge_result = session.run(
+                        "MATCH ()-[r]->() RETURN count(r) as count"
+                    )
+                    edge_count = edge_result.single()["count"]
+
+                    graph_info["neo4j"] = {
+                        "connected": True,
+                        "node_count": node_count,
+                        "edge_count": edge_count,
+                    }
+
+                    if graph_info["backend"] == "qdrant":
+                        graph_info["backend"] = "both"
+                    else:
+                        graph_info["backend"] = "neo4j"
+                    success = True
+        except ImportError:
+            graph_info["neo4j"] = {"connected": False, "error": "plugin not installed"}
+        except Exception as e:
+            graph_info["neo4j"] = {"connected": False, "error": str(e)[:50]}
+
+    return success, graph_info if success else None
+
+
 def get_docker_stats(services: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """
     Get Docker container memory statistics.
@@ -393,6 +484,7 @@ def print_status_table(
     qdrant_status_info: Optional[Dict[str, Any]] = None,
     workspace_info: Optional[Dict[str, Any]] = None,
     docker_stats: Optional[Dict[str, Dict[str, Any]]] = None,
+    graph_info: Optional[Dict[str, Any]] = None,
     verbose: bool = False
 ):
     """
@@ -443,6 +535,31 @@ def print_status_table(
 
     print(f"│ Collection: {collection_name}" + " " * (46 - len(f"Collection: {collection_name}") - 2) + "│")
     print(f"│ Documents:  {points_count} indexed" + " " * (46 - len(f"Documents:  {points_count} indexed") - 2) + "│")
+
+    # Graph info (edges from Qdrant _graph and/or Neo4j)
+    if graph_info:
+        backend = graph_info.get("backend", "none")
+        if backend != "none":
+            # Build edge count display
+            edge_parts = []
+
+            # Qdrant graph edges
+            if "qdrant_graph" in graph_info:
+                qdrant_edges = graph_info["qdrant_graph"].get("edge_count", 0)
+                if qdrant_edges > 0:
+                    edge_parts.append(f"{qdrant_edges:,} qdrant")
+
+            # Neo4j edges
+            if "neo4j" in graph_info and graph_info["neo4j"].get("connected"):
+                neo4j_edges = graph_info["neo4j"].get("edge_count", 0)
+                neo4j_nodes = graph_info["neo4j"].get("node_count", 0)
+                if neo4j_edges > 0:
+                    edge_parts.append(f"{neo4j_edges:,} neo4j ({neo4j_nodes:,} nodes)")
+
+            if edge_parts:
+                graph_text = " + ".join(edge_parts)
+                print(f"│ Graph:      {graph_text}" + " " * max(0, 46 - len(f"Graph:      {graph_text}") - 2) + "│")
+
     print(f"│ Last index: {last_indexed}" + " " * (46 - len(f"Last index: {last_indexed}") - 2) + "│")
 
     # Model warmup status
@@ -556,7 +673,8 @@ def print_status_json(
     warmup_info: Optional[Dict[str, Any]] = None,
     qdrant_status_info: Optional[Dict[str, Any]] = None,
     workspace_info: Optional[Dict[str, Any]] = None,
-    docker_stats: Optional[Dict[str, Dict[str, Any]]] = None
+    docker_stats: Optional[Dict[str, Dict[str, Any]]] = None,
+    graph_info: Optional[Dict[str, Any]] = None
 ):
     """Print status as JSON."""
 
@@ -582,7 +700,8 @@ def print_status_json(
         },
         "collection": qdrant_status_info or collection_info or {},
         "warmup": warmup_info or {},
-        "workspace": workspace_info or {}
+        "workspace": workspace_info or {},
+        "graph": graph_info or {}
     }
 
     print(json.dumps(status, indent=2))
@@ -622,6 +741,7 @@ def run_status(args) -> int:
     workspace_info = None
     docker_stats = None
 
+    graph_info = None
     if indexer_ok:
         # Get warmup status
         warmup_ok, warmup_info = get_warmup_status()
@@ -632,6 +752,14 @@ def run_status(args) -> int:
         # Get workspace info (includes indexing progress)
         workspace_ok, workspace_info = get_workspace_info()
 
+        # Get graph status (Qdrant _graph collection and/or Neo4j)
+        collection_for_graph = (
+            qdrant_status_info.get("collection") if qdrant_status_info else
+            collection_info.get("collection") if collection_info else None
+        )
+        if collection_for_graph:
+            _, graph_info = get_graph_status(collection_for_graph)
+
     # Get Docker stats if verbose
     if hasattr(args, 'verbose') and args.verbose and docker_ok:
         docker_stats = get_docker_stats(services)
@@ -640,12 +768,12 @@ def run_status(args) -> int:
     if args.json:
         print_status_json(
             docker_ok, services, qdrant_ok, indexer_ok, memory_ok, collection_info,
-            warmup_info, qdrant_status_info, workspace_info, docker_stats
+            warmup_info, qdrant_status_info, workspace_info, docker_stats, graph_info
         )
     else:
         print_status_table(
             docker_ok, services, qdrant_ok, indexer_ok, memory_ok, collection_info,
-            warmup_info, qdrant_status_info, workspace_info, docker_stats,
+            warmup_info, qdrant_status_info, workspace_info, docker_stats, graph_info,
             verbose=hasattr(args, 'verbose') and args.verbose
         )
 

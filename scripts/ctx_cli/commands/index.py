@@ -25,6 +25,7 @@ except ImportError:
     RICH_AVAILABLE = False
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+from scripts.workspace_state import ensure_logical_repo_reuse_for_cli
 
 console = Console() if RICH_AVAILABLE else None
 
@@ -206,6 +207,9 @@ def index(
         ctx index --watch               # Watch mode with auto-reindex
         ctx index --collection myrepo   # Use specific collection
     """
+    # Enable logical repo reuse for CLI indexing operations
+    ensure_logical_repo_reuse_for_cli()
+
     explicit_path = path is not None
 
     # Check if services are running

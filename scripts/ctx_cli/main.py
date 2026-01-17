@@ -23,7 +23,14 @@ from scripts.ctx_cli import __version__
 try:
     from scripts.ctx_cli.utils.mcp_client import MCPError
 except ImportError:
-    MCPError = Exception  # Fallback if import fails
+    class MCPError(Exception):  # type: ignore[no-redef]
+        """Fallback MCPError type when ctx_cli utils are unavailable."""
+
+        def __init__(self, message: str = "", code: int = -1, data=None):
+            super().__init__(message)
+            self.message = message
+            self.code = code
+            self.data = data
 
 
 def main():
@@ -72,9 +79,11 @@ For more information, visit: https://github.com/m1rl0k/context-engine
         try:
             return args.func(args)
         except MCPError as e:
-            print(f"Error: {e.message}", file=sys.stderr)
-            if e.data:
-                print(f"Details: {e.data}", file=sys.stderr)
+            msg = getattr(e, "message", str(e))
+            data = getattr(e, "data", None)
+            print(f"Error: {msg}", file=sys.stderr)
+            if data:
+                print(f"Details: {data}", file=sys.stderr)
             return 1
         except KeyboardInterrupt:
             print("\nInterrupted", file=sys.stderr)
