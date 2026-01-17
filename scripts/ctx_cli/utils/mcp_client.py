@@ -2,6 +2,7 @@
 MCP HTTP client for calling tools.
 
 Provides a simple interface for calling MCP tools via HTTP JSON-RPC.
+Handles the MCP session handshake automatically.
 """
 
 import json
@@ -14,9 +15,10 @@ from scripts.ctx_cli.utils.config import ConfigManager
 
 class MCPClient:
     """
-    MCP HTTP client.
+    MCP HTTP client with session handshake.
 
     Calls MCP tools via HTTP JSON-RPC protocol.
+    Automatically handles the initialize/initialized handshake.
     """
 
     def __init__(
@@ -35,6 +37,8 @@ class MCPClient:
         """
         self.server = server
         self.config = ConfigManager()
+        self._session_id: Optional[str] = None
+        self._request_id = 0
 
         # Determine base URL
         if base_url:
@@ -56,61 +60,99 @@ class MCPClient:
         else:
             self.timeout = self.config.get_timeout(server)
 
-    def call_tool(
-        self,
-        tool_name: str,
-        **arguments: Any,
-    ) -> Dict[str, Any]:
+    def _next_id(self) -> int:
+        """Get next request ID."""
+        self._request_id += 1
+        return self._request_id
+
+    def _parse_sse(self, data: str) -> Dict[str, Any]:
         """
-        Call an MCP tool.
+        Parse Server-Sent Events (SSE) response.
+
+        SSE format:
+            event: message
+            data: {"jsonrpc": "2.0", ...}
 
         Args:
-            tool_name: Name of the tool to call
-            **arguments: Tool arguments as keyword arguments
+            data: Raw SSE response body
 
         Returns:
-            Parsed tool result
+            Parsed JSON from the last data line
+        """
+        last_data = None
+
+        for line in data.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("data:"):
+                # Extract JSON after "data: "
+                json_str = line[5:].strip()
+                if json_str:
+                    try:
+                        last_data = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        continue
+
+        if last_data is None:
+            # No valid data found, try parsing whole response as JSON
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                raise MCPError(
+                    f"No valid JSON in SSE response",
+                    code=-1,
+                    data=data[:200],
+                )
+
+        return last_data
+
+    def _make_request(
+        self,
+        payload: Dict[str, Any],
+        include_session: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Make HTTP request to MCP server.
+
+        Args:
+            payload: JSON-RPC payload
+            include_session: Whether to include session ID header
+
+        Returns:
+            Parsed response
 
         Raises:
-            MCPError: If the call fails
+            MCPError: If request fails
         """
-        # Build JSON-RPC payload
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments,
-            },
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
         }
 
+        if include_session and self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+
         try:
-            # Make HTTP request
             req = Request(
                 self.base_url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
+                headers=headers,
             )
 
             with urlopen(req, timeout=self.timeout) as response:
+                # Capture session ID from response headers
+                session_id = response.headers.get("Mcp-Session-Id")
+                if session_id:
+                    self._session_id = session_id
+
                 response_data = response.read().decode("utf-8")
-                result = json.loads(response_data)
+                content_type = response.headers.get("Content-Type", "")
 
-                # Check for JSON-RPC error
-                if "error" in result:
-                    error = result["error"]
-                    raise MCPError(
-                        error.get("message", "Unknown error"),
-                        code=error.get("code", -1),
-                        data=error.get("data"),
-                    )
+                # Handle SSE format (text/event-stream)
+                if "text/event-stream" in content_type:
+                    return self._parse_sse(response_data)
 
-                # Extract result
-                return self._parse_result(result.get("result", {}))
+                # Handle plain JSON
+                return json.loads(response_data)
 
         except HTTPError as e:
             error_body = ""
@@ -136,6 +178,98 @@ class MCPClient:
                 f"Invalid JSON response: {e}",
                 code=-1,
             ) from e
+
+    def _ensure_session(self) -> None:
+        """
+        Ensure MCP session is initialized.
+
+        Performs the initialize/initialized handshake if needed.
+        """
+        if self._session_id:
+            return
+
+        # Step 1: Send initialize request
+        init_payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "ctx-cli",
+                    "version": "0.1.0",
+                },
+            },
+        }
+
+        result = self._make_request(init_payload, include_session=False)
+
+        # Check for error
+        if "error" in result:
+            raise MCPError(
+                result["error"].get("message", "Initialize failed"),
+                code=result["error"].get("code", -1),
+            )
+
+        # Step 2: Send initialized notification
+        initialized_payload = {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }
+
+        # Notifications don't have a response, but we need to send it
+        try:
+            self._make_request(initialized_payload, include_session=True)
+        except MCPError:
+            # Some servers may not respond to notifications, that's OK
+            pass
+
+    def call_tool(
+        self,
+        tool_name: str,
+        **arguments: Any,
+    ) -> Dict[str, Any]:
+        """
+        Call an MCP tool.
+
+        Args:
+            tool_name: Name of the tool to call
+            **arguments: Tool arguments as keyword arguments
+
+        Returns:
+            Parsed tool result
+
+        Raises:
+            MCPError: If the call fails
+        """
+        # Ensure session is initialized
+        self._ensure_session()
+
+        # Build JSON-RPC payload
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments,
+            },
+        }
+
+        result = self._make_request(payload)
+
+        # Check for JSON-RPC error
+        if "error" in result:
+            error = result["error"]
+            raise MCPError(
+                error.get("message", "Unknown error"),
+                code=error.get("code", -1),
+                data=error.get("data"),
+            )
+
+        # Extract result
+        return self._parse_result(result.get("result", {}))
 
     def _parse_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -193,32 +327,24 @@ class MCPClient:
         Returns:
             List of tool definitions
         """
+        # Ensure session is initialized
+        self._ensure_session()
+
         payload = {
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": self._next_id(),
             "method": "tools/list",
         }
 
         try:
-            req = Request(
-                self.base_url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
+            result = self._make_request(payload)
 
-            with urlopen(req, timeout=self.timeout) as response:
-                response_data = response.read().decode("utf-8")
-                result = json.loads(response_data)
+            if "result" in result:
+                return result["result"].get("tools", [])
 
-                if "result" in result:
-                    return result["result"].get("tools", [])
+            return []
 
-                return []
-
-        except Exception:
+        except MCPError:
             return []
 
 

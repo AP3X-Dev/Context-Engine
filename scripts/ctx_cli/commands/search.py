@@ -19,8 +19,6 @@ import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
-from urllib import request
-from urllib.error import HTTPError, URLError
 
 try:
     import typer
@@ -36,12 +34,8 @@ try:
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
-    print("Warning: 'rich' library not found. Install with: pip install rich", file=sys.stderr)
 
-
-# MCP configuration
-MCP_INDEXER_URL = os.environ.get("MCP_INDEXER_URL", "http://localhost:8003/mcp")
-DEFAULT_TIMEOUT = 30
+from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
 
 def call_mcp_search(
@@ -52,9 +46,9 @@ def call_mcp_search(
     include_snippet: bool = False,
     compact: bool = False,
     collection: Optional[str] = None,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: int = 30,
 ) -> Dict[str, Any]:
-    """Call MCP repo_search tool via HTTP JSON-RPC.
+    """Call MCP repo_search tool via MCPClient with session handshake.
 
     Args:
         query: Search query
@@ -67,7 +61,7 @@ def call_mcp_search(
         timeout: Request timeout in seconds
 
     Returns:
-        Dict containing the MCP response
+        Dict containing the search results
     """
     # Build parameters
     params = {
@@ -81,56 +75,22 @@ def call_mcp_search(
         params["language"] = language
     if under:
         params["under"] = under
+    # Only set collection if explicitly provided or in environment
     if collection:
         params["collection"] = collection
-    else:
-        # Use env default or fallback to "codebase"
-        params["collection"] = os.environ.get("COLLECTION_NAME", "codebase")
-
-    # Build JSON-RPC payload
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "repo_search",
-            "arguments": params
-        }
-    }
+    elif os.environ.get("COLLECTION_NAME"):
+        params["collection"] = os.environ["COLLECTION_NAME"]
+    # Otherwise let the server auto-detect from workspace
 
     try:
-        req = request.Request(
-            MCP_INDEXER_URL,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-        )
-
-        with request.urlopen(req, timeout=timeout) as resp:
-            response_data = resp.read().decode("utf-8")
-            return json.loads(response_data)
-
-    except HTTPError as e:
-        error_body = ""
-        try:
-            error_body = e.read().decode("utf-8")
-        except Exception:
-            pass
+        client = MCPClient(server="indexer", timeout=timeout)
+        return client.call_tool("repo_search", **params)
+    except MCPError as e:
         return {
             "error": {
                 "code": e.code,
-                "message": f"HTTP {e.code}: {e.reason}",
-                "data": error_body
-            }
-        }
-    except URLError as e:
-        return {
-            "error": {
-                "code": -1,
-                "message": f"Connection failed: {e.reason}",
-                "data": str(e)
+                "message": str(e),
+                "data": e.data
             }
         }
     except Exception as e:
@@ -362,8 +322,8 @@ def search_command(
     Returns:
         Exit code (0 for success, non-zero for error)
     """
-    # Call MCP search
-    response = call_mcp_search(
+    # Call MCP search (MCPClient handles session handshake and parsing)
+    data = call_mcp_search(
         query=query,
         limit=limit,
         language=language,
@@ -374,24 +334,17 @@ def search_command(
     )
 
     # Handle errors
-    if "error" in response:
-        error = response["error"]
+    if "error" in data:
+        error = data["error"]
         error_msg = error.get("message", "Unknown error")
 
         # Check for common errors
-        if "Connection refused" in error_msg or "Connection failed" in error_msg:
-            print(f"Error: Cannot connect to MCP indexer at {MCP_INDEXER_URL}", file=sys.stderr)
+        if "Connection failed" in error_msg or "Connection refused" in str(error_msg):
+            print("Error: Cannot connect to MCP indexer", file=sys.stderr)
             print("Make sure the indexer service is running on port 8003", file=sys.stderr)
         else:
             print(f"Error: {error_msg}", file=sys.stderr)
 
-        return 1
-
-    # Parse response
-    data = parse_mcp_response(response)
-
-    if data is None:
-        print("Error: Failed to parse MCP response", file=sys.stderr)
         return 1
 
     # Handle raw JSON output

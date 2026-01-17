@@ -15,8 +15,6 @@ import signal
 import subprocess
 from pathlib import Path
 from typing import Optional
-from urllib import request
-from urllib.error import HTTPError, URLError
 
 import typer
 from rich.console import Console
@@ -25,10 +23,11 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
+
 console = Console()
 
-# MCP configuration
-MCP_INDEXER_URL = os.environ.get("MCP_INDEXER_URL", "http://localhost:8003/mcp")
+# Configuration
 WATCH_SCRIPT = Path(__file__).resolve().parent.parent.parent / "watch_index.py"
 
 
@@ -40,31 +39,19 @@ def check_services_running() -> tuple[bool, str]:
         (is_running, error_message)
     """
     try:
-        # Try to connect to the indexer service
-        req = request.Request(
-            MCP_INDEXER_URL,
-            data=json.dumps({
-                "jsonrpc": "2.0",
-                "id": 0,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "ctx-cli", "version": "1.0.0"}
-                }
-            }).encode(),
-            headers={"Content-Type": "application/json"}
-        )
-
-        with request.urlopen(req, timeout=5) as resp:
-            return True, ""
-    except (HTTPError, URLError, ConnectionError, TimeoutError) as e:
+        # Try to initialize a session with the indexer
+        client = MCPClient(server="indexer", timeout=5)
+        client._ensure_session()
+        return True, ""
+    except MCPError as e:
+        return False, str(e)
+    except Exception as e:
         return False, str(e)
 
 
 def call_mcp_tool(tool_name: str, params: dict, timeout: int = 300) -> dict:
     """
-    Call MCP tool via HTTP JSON-RPC.
+    Call MCP tool via MCPClient with session handshake.
 
     Args:
         tool_name: Name of the tool to call
@@ -72,63 +59,15 @@ def call_mcp_tool(tool_name: str, params: dict, timeout: int = 300) -> dict:
         timeout: Request timeout in seconds
 
     Returns:
-        Response dictionary
+        Parsed result dictionary
     """
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": params}
-    }
-
     try:
-        req = request.Request(
-            MCP_INDEXER_URL,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"}
-        )
-
-        with request.urlopen(req, timeout=timeout) as resp:
-            response = json.loads(resp.read().decode('utf-8'))
-            return response
+        client = MCPClient(server="indexer", timeout=timeout)
+        return client.call_tool(tool_name, **params)
+    except MCPError as e:
+        return {"error": f"MCP call failed: {str(e)}"}
     except Exception as e:
         return {"error": f"MCP call failed: {str(e)}"}
-
-
-def parse_mcp_response(result: dict) -> Optional[dict]:
-    """
-    Parse MCP response and extract the actual result.
-
-    Supports both text and json content items from FastMCP.
-    """
-    if "error" in result:
-        return None
-
-    res = result.get("result", {})
-    content = res.get("content", [])
-
-    # Direct dict response
-    if isinstance(res, dict) and not content and any(k in res for k in ("ok", "total", "status")):
-        return res
-
-    if not content:
-        return None
-
-    item = content[0] if content else {}
-
-    # Prefer typed JSON content
-    if isinstance(item, dict) and "json" in item:
-        return item.get("json")
-
-    # Fallback: parse text as JSON
-    text = item.get("text", "") if isinstance(item, dict) else ""
-    if not text:
-        return None
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"raw": text}
 
 
 def index(
@@ -270,14 +209,12 @@ def run_indexing(
 
     elapsed = time.time() - start_time
 
-    # Parse response
-    if "error" in result:
-        console.print(f"[red]Error:[/red] {result['error']}")
-        raise typer.Exit(1)
+    # MCPClient returns already-parsed results
+    data = result
 
-    data = parse_mcp_response(result)
-    if not data:
-        console.print("[red]Error:[/red] No data returned from indexer")
+    # Check for error
+    if "error" in data:
+        console.print(f"[red]Error:[/red] {data['error']}")
         raise typer.Exit(1)
 
     # Check if operation succeeded

@@ -18,8 +18,6 @@ import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
-from urllib import request
-from urllib.error import HTTPError, URLError
 
 try:
     from rich.console import Console
@@ -31,9 +29,10 @@ except ImportError:
     RICH_AVAILABLE = False
     print("Warning: 'rich' library not found. Install with: pip install rich", file=sys.stderr)
 
+from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
-# MCP configuration
-MCP_INDEXER_URL = os.environ.get("MCP_INDEXER_URL", "http://localhost:8003/mcp")
+
+# Default configuration
 DEFAULT_TIMEOUT = 60  # context_answer may take longer than search
 DEFAULT_BUDGET = 4000
 DEFAULT_TEMPERATURE = 0.2
@@ -47,7 +46,7 @@ def call_mcp_context_answer(
     collection: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> Dict[str, Any]:
-    """Call MCP context_answer tool via HTTP JSON-RPC.
+    """Call MCP context_answer tool via MCPClient with session handshake.
 
     Args:
         query: Question to answer
@@ -58,7 +57,7 @@ def call_mcp_context_answer(
         timeout: Request timeout in seconds
 
     Returns:
-        Dict containing the MCP response
+        Dict containing the parsed result
     """
     # Build parameters
     params = {
@@ -73,53 +72,17 @@ def call_mcp_context_answer(
     if collection:
         params["collection"] = collection
     else:
-        # Use env default or fallback to "codebase"
         params["collection"] = os.environ.get("COLLECTION_NAME", "codebase")
 
-    # Build JSON-RPC payload
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "context_answer",
-            "arguments": params
-        }
-    }
-
     try:
-        req = request.Request(
-            MCP_INDEXER_URL,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream"
-            }
-        )
-
-        with request.urlopen(req, timeout=timeout) as resp:
-            response_data = resp.read().decode("utf-8")
-            return json.loads(response_data)
-
-    except HTTPError as e:
-        error_body = ""
-        try:
-            error_body = e.read().decode("utf-8")
-        except Exception:
-            pass
+        client = MCPClient(server="indexer", timeout=timeout)
+        return client.call_tool("context_answer", **params)
+    except MCPError as e:
         return {
             "error": {
                 "code": e.code,
-                "message": f"HTTP {e.code}: {e.reason}",
-                "data": error_body
-            }
-        }
-    except URLError as e:
-        return {
-            "error": {
-                "code": -1,
-                "message": f"Connection failed: {e.reason}",
-                "data": str(e)
+                "message": str(e),
+                "data": e.data
             }
         }
     except Exception as e:
@@ -132,49 +95,6 @@ def call_mcp_context_answer(
         }
 
 
-def parse_mcp_response(response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Parse MCP response and extract result data.
-
-    Args:
-        response: Raw MCP JSON-RPC response
-
-    Returns:
-        Parsed result data or None if error/no data
-    """
-    # Check for JSON-RPC error
-    if "error" in response:
-        return None
-
-    # Extract result
-    result = response.get("result", {})
-
-    # FastMCP wraps results in content array
-    content = result.get("content", [])
-
-    # Check for direct result (no content wrapper)
-    if isinstance(result, dict) and not content:
-        if any(k in result for k in ("answer", "citations", "query")):
-            return result
-
-    if not content:
-        return None
-
-    # Get first content item
-    item = content[0] if content else {}
-
-    # Prefer JSON content
-    if isinstance(item, dict) and "json" in item:
-        return item["json"]
-
-    # Fallback to text parsing
-    text = item.get("text", "") if isinstance(item, dict) else ""
-    if not text:
-        return None
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"raw": text}
 
 
 def format_citation_plain(idx: int, citation: Dict[str, Any]) -> str:
@@ -330,8 +250,8 @@ def answer_command(
     Returns:
         Exit code (0 for success, non-zero for error)
     """
-    # Call MCP context_answer
-    response = call_mcp_context_answer(
+    # Call MCP context_answer (MCPClient handles session handshake and parsing)
+    data = call_mcp_context_answer(
         query=query,
         budget_tokens=budget,
         temperature=temperature,
@@ -340,13 +260,13 @@ def answer_command(
     )
 
     # Handle errors
-    if "error" in response:
-        error = response["error"]
+    if "error" in data:
+        error = data["error"]
         error_msg = error.get("message", "Unknown error")
 
         # Check for common errors
-        if "Connection refused" in error_msg or "Connection failed" in error_msg:
-            print(f"Error: Cannot connect to MCP indexer at {MCP_INDEXER_URL}", file=sys.stderr)
+        if "Connection refused" in error_msg or "Connection failed" in str(error_msg):
+            print("Error: Cannot connect to MCP indexer", file=sys.stderr)
             print("Make sure the indexer service is running on port 8003", file=sys.stderr)
         elif "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
             print(f"Error: Request timed out after {DEFAULT_TIMEOUT}s", file=sys.stderr)
@@ -354,13 +274,6 @@ def answer_command(
         else:
             print(f"Error: {error_msg}", file=sys.stderr)
 
-        return 1
-
-    # Parse response
-    data = parse_mcp_response(response)
-
-    if data is None:
-        print("Error: Failed to parse MCP response", file=sys.stderr)
         return 1
 
     # Handle raw JSON output
