@@ -2,14 +2,14 @@
 Index command for ctx CLI - Index codebase into Qdrant.
 
 Supports:
-- Normal indexing: Index a directory (default: current directory)
+- Normal indexing: Index the mounted workspace root (/work)
+- Subdirectory indexing: Index a subdirectory within the mounted workspace
 - Watch mode: Monitor for changes and reindex automatically
 - Recreate: Drop and recreate collection
 """
 
 import os
 import sys
-import json
 import time
 import signal
 import subprocess
@@ -26,6 +26,98 @@ console = Console()
 
 # Configuration
 WATCH_SCRIPT = Path(__file__).resolve().parent.parent.parent / "watch_index.py"
+
+def _find_dotenv(start: Optional[Path] = None, max_parents: int = 3) -> Optional[Path]:
+    """Find a `.env` file by searching current/parent directories."""
+    current = (start or Path.cwd()).resolve()
+    for _ in range(max_parents + 1):
+        candidate = current / ".env"
+        if candidate.exists():
+            return candidate
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def _load_env_file(env_path: Path) -> dict:
+    """Parse KEY=VALUE lines from a .env file (no interpolation)."""
+    env_vars: dict = {}
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            if key:
+                env_vars[key] = value
+    except Exception:
+        return {}
+    return env_vars
+
+
+def _detect_host_index_root() -> Optional[Path]:
+    """
+    Best-effort detection of the host path mounted into the indexer container as `/work`.
+
+    Prefers:
+      1) `HOST_INDEX_PATH` from the current process environment
+      2) `HOST_INDEX_PATH` from a nearby `.env` file
+    """
+    raw = os.environ.get("HOST_INDEX_PATH", "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        return (p if p.is_absolute() else (Path.cwd() / p)).resolve()
+
+    env_path = _find_dotenv()
+    if not env_path:
+        return None
+    env_vars = _load_env_file(env_path)
+    raw = str(env_vars.get("HOST_INDEX_PATH", "")).strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return (p if p.is_absolute() else (env_path.parent / p)).resolve()
+
+
+def _index_tool_for_path(
+    *,
+    target_path: Path,
+    recreate: bool,
+    explicit_path: bool,
+) -> tuple[str, dict, str]:
+    """
+    Resolve which MCP tool to call for indexing and construct its params.
+
+    Returns:
+      (tool_name, params, display_path)
+    """
+    cwd = Path.cwd().resolve()
+
+    # Backwards-compatible behavior: `ctx index` (no explicit path) indexes `/work`.
+    # Also treat `ctx index .` the same way.
+    if (not explicit_path) or (target_path == cwd):
+        return "qdrant_index_root", {"recreate": recreate}, str(target_path)
+
+    host_root = _detect_host_index_root() or cwd
+    try:
+        rel = target_path.resolve().relative_to(host_root)
+    except ValueError as e:
+        raise ValueError(
+            f"Path is outside the mounted workspace.\n"
+            f"Target: {target_path}\n"
+            f"Mounted root (HOST_INDEX_PATH): {host_root}\n\n"
+            f"To index that path, update your docker-compose mount (HOST_INDEX_PATH) or pass a path under the mounted root."
+        ) from e
+
+    if str(rel) in (".", ""):
+        return "qdrant_index_root", {"recreate": recreate}, str(target_path)
+
+    return "qdrant_index", {"subdir": rel.as_posix(), "recreate": recreate}, str(target_path)
 
 
 def check_services_running() -> tuple[bool, str]:
@@ -87,6 +179,8 @@ def index(
         ctx index --watch               # Watch mode with auto-reindex
         ctx index --collection myrepo   # Use specific collection
     """
+    explicit_path = path is not None
+
     # Check if services are running
     is_running, error_msg = check_services_running()
     if not is_running:
@@ -99,32 +193,33 @@ def index(
             title="Service Not Available",
             border_style="red"
         ))
-        sys.exit(1)
+        return 1
 
     # Resolve target path
     target_path = Path(path if path else os.getcwd()).resolve()
     if not target_path.exists():
         console.print(f"[red]Error:[/red] Path does not exist: {target_path}")
-        sys.exit(1)
+        return 1
 
     if not target_path.is_dir():
         console.print(f"[red]Error:[/red] Path is not a directory: {target_path}")
-        sys.exit(1)
+        return 1
 
     # Watch mode uses subprocess
     if watch:
-        run_watch_mode(target_path, collection, repo)
-        return
+        return run_watch_mode(target_path, collection, repo)
 
     # Normal indexing mode
-    run_indexing(target_path, recreate, collection, repo)
+    return run_indexing(target_path, recreate, collection, repo, explicit_path=explicit_path)
 
 
 def run_indexing(
     target_path: Path,
     recreate: bool,
     collection: Optional[str],
-    repo: Optional[str]
+    repo: Optional[str],
+    *,
+    explicit_path: bool,
 ):
     """
     Run one-time indexing operation.
@@ -135,21 +230,15 @@ def run_indexing(
         collection: Collection name (optional)
         repo: Repository name (optional)
     """
-    # Determine if we're indexing root or subdirectory
-    cwd = Path(os.getcwd()).resolve()
-
-    # Decide which tool to call
-    if target_path == cwd or str(target_path).endswith(str(cwd)):
-        # Indexing workspace root
-        tool_name = "qdrant_index_root"
-        params = {"recreate": recreate}
-    else:
-        # Indexing subdirectory
-        tool_name = "qdrant_index"
-        params = {
-            "subdir": str(target_path),
-            "recreate": recreate
-        }
+    try:
+        tool_name, params, display_path = _index_tool_for_path(
+            target_path=target_path,
+            recreate=recreate,
+            explicit_path=explicit_path,
+        )
+    except ValueError as e:
+        console.print(Panel(str(e), title="Invalid Path", border_style="red"))
+        return 1
 
     # Add optional parameters
     if collection:
@@ -159,7 +248,7 @@ def run_indexing(
 
     # Show start message
     console.print(Panel(
-        f"[cyan]Indexing:[/cyan] {target_path}\n"
+        f"[cyan]Indexing:[/cyan] {display_path}\n"
         f"[cyan]Collection:[/cyan] {collection or 'auto-detect'}\n"
         f"[cyan]Recreate:[/cyan] {recreate}",
         title="Starting Indexing",
@@ -190,13 +279,13 @@ def run_indexing(
     # Check for error
     if "error" in data:
         console.print(f"[red]Error:[/red] {data['error']}")
-        sys.exit(1)
+        return 1
 
     # Check if operation succeeded
     if not data.get("ok", False):
         error_msg = data.get("error", "Unknown error")
         console.print(f"[red]Indexing failed:[/red] {error_msg}")
-        sys.exit(1)
+        return 1
 
     # Extract statistics
     total_files = data.get("total_files", 0)
@@ -213,6 +302,7 @@ def run_indexing(
         title="Indexing Complete",
         border_style="green"
     ))
+    return 0
 
 
 def run_watch_mode(
@@ -230,7 +320,7 @@ def run_watch_mode(
     """
     if not WATCH_SCRIPT.exists():
         console.print(f"[red]Error:[/red] Watch script not found: {WATCH_SCRIPT}")
-        sys.exit(1)
+        return 1
 
     # Build environment for watch script
     env = os.environ.copy()
@@ -287,11 +377,13 @@ def run_watch_mode(
             except subprocess.TimeoutExpired:
                 proc.kill()
         console.print("[green]Watch mode stopped[/green]")
+        return 0
     except Exception as e:
         console.print(f"[red]Error running watch mode:[/red] {e}")
         if proc:
             proc.kill()
-        sys.exit(1)
+        return 1
+    return int(proc.returncode or 0) if proc else 0
 
 
 def register_command(subparsers):
@@ -338,13 +430,12 @@ def register_command(subparsers):
     # Set the function to be called when this command is invoked
     def run_index(args):
         """Wrapper to call index function with argparse args."""
-        index(
+        return index(
             path=args.path,
             watch=args.watch,
             recreate=args.recreate,
             collection=args.collection,
             repo=args.repo
         )
-        return 0
 
     parser.set_defaults(func=run_index)

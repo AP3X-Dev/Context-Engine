@@ -5,9 +5,9 @@
 Context-Engine CLI - Main entry point.
 
 Usage:
-  ctx-cli status [--json] [--verbose]
-  ctx-cli --version
-  ctx-cli --help
+  ctx status [--json] [--verbose]
+  ctx --version
+  ctx --help
 """
 
 import sys
@@ -24,14 +24,14 @@ from scripts.ctx_cli import __version__
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="ctx-cli",
+        prog="ctx",
         description="Context-Engine CLI - Unified interface for MCP tools",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ctx-cli status              Show stack status
-  ctx-cli status --json       Output status as JSON
-  ctx-cli status --verbose    Show detailed service information
+  ctx status              Show stack status
+  ctx status --json       Output status as JSON
+  ctx status --verbose    Show detailed service information
 
 For more information, visit: https://github.com/m1rl0k/context-engine
         """

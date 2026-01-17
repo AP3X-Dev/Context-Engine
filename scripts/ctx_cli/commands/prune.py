@@ -7,7 +7,6 @@ Removes entries for:
 """
 
 import re
-import sys
 import time
 from typing import Optional
 

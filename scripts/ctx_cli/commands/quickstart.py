@@ -25,7 +25,7 @@ from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 from rich.live import Live
 
@@ -312,7 +312,7 @@ def step_up(build: bool, wait_timeout: int) -> int:
         return 1
 
 
-def step_index(skip_index: bool, recreate: bool) -> int:
+def step_index(skip_index: bool, recreate: bool, paths: list[str] = None) -> int:
     """
     Step 3: Index the codebase.
 
@@ -321,6 +321,7 @@ def step_index(skip_index: bool, recreate: bool) -> int:
     Args:
         skip_index: Skip indexing step
         recreate: Recreate collection (user explicitly requested)
+        paths: List of paths to index (if None, uses current directory)
 
     Returns:
         Exit code (0 for success)
@@ -337,7 +338,115 @@ def step_index(skip_index: bool, recreate: bool) -> int:
         border_style="cyan"
     ))
 
-    workspace_path = Path.cwd()
+    # Determine paths to index
+    if not paths:
+        # No paths provided - ask user
+        cwd = Path.cwd()
+        console.print(f"[yellow]No paths specified.[/yellow]")
+        console.print(f"[dim]Current directory: {cwd}[/dim]\n")
+
+        try:
+            response = console.input(
+                "[bold]Index current directory?[/bold] [dim](Y/n)[/dim] "
+            )
+        except (EOFError, KeyboardInterrupt):
+            response = "n"
+
+        if response.lower().strip() in ("n", "no"):
+            # Ask for paths
+            console.print("\n[bold]Enter paths to index[/bold] [dim](comma-separated, or one per line)[/dim]")
+            console.print("[dim]Press Enter twice when done:[/dim]\n")
+
+            input_paths = []
+            try:
+                while True:
+                    line = console.input("  [cyan]>[/cyan] ").strip()
+                    if not line:
+                        if input_paths:
+                            break
+                        continue
+                    # Handle comma-separated paths
+                    for p in line.split(","):
+                        p = p.strip()
+                        if p:
+                            input_paths.append(p)
+            except (EOFError, KeyboardInterrupt):
+                pass
+
+            if not input_paths:
+                console.print("\n[red]✗[/red] No paths provided. Skipping indexing.\n")
+                return 0
+
+            paths = input_paths
+        else:
+            paths = [str(cwd)]
+
+    # Validate and resolve paths
+    resolved_paths = []
+    for p in paths:
+        path = Path(p).expanduser().resolve()
+        if not path.exists():
+            console.print(f"[red]✗[/red] Path does not exist: {p}")
+            return 1
+        if not path.is_dir():
+            console.print(f"[red]✗[/red] Not a directory: {p}")
+            return 1
+        resolved_paths.append(path)
+
+    # Determine the dev-workspace directory (where repos are mounted)
+    # Priority: 1) HOST_INDEX_PATH env, 2) ./dev-workspace relative to docker-compose
+    compose_dir = find_docker_compose()
+    if compose_dir:
+        compose_dir = compose_dir.parent
+    else:
+        compose_dir = Path.cwd()
+
+    dev_workspace = Path(os.environ.get("HOST_INDEX_PATH", compose_dir / "dev-workspace")).resolve()
+
+    # Check if paths need to be symlinked into dev-workspace
+    paths_to_index = []
+    for path in resolved_paths:
+        # Check if path is already under dev-workspace
+        try:
+            path.relative_to(dev_workspace)
+            # Path is already in dev-workspace
+            paths_to_index.append(path)
+        except ValueError:
+            # Path is outside dev-workspace - need to symlink
+            repo_name = path.name
+            target_link = dev_workspace / repo_name
+
+            # Create dev-workspace if needed
+            dev_workspace.mkdir(parents=True, exist_ok=True)
+
+            if target_link.exists() or target_link.is_symlink():
+                if target_link.is_symlink() and target_link.resolve() == path:
+                    console.print(f"[dim]Already linked: {repo_name}[/dim]")
+                else:
+                    console.print(f"[yellow]![/yellow] {repo_name} already exists in dev-workspace, skipping symlink")
+            else:
+                # Create symlink
+                console.print(f"[cyan]→[/cyan] Linking {path} → dev-workspace/{repo_name}")
+                target_link.symlink_to(path)
+
+            paths_to_index.append(target_link)
+
+    resolved_paths = paths_to_index
+
+    # Generate collection names for each path
+    # Each repo gets its own collection
+    path_collections = []
+    for path in resolved_paths:
+        collection_name = suggest_collection_name(path)
+        path_collections.append((path, collection_name))
+
+    # Show what will be indexed
+    console.print(f"\n[dim]Indexing {len(resolved_paths)} repo(s):[/dim]")
+    for p, coll in path_collections:
+        console.print(f"  [cyan]•[/cyan] {p.name} → collection: [yellow]{coll}[/yellow]")
+    console.print()
+
+    workspace_path = resolved_paths[0] if len(resolved_paths) == 1 else Path.cwd()
     start_time = time.time()
 
     try:
@@ -405,6 +514,12 @@ def step_index(skip_index: bool, recreate: bool) -> int:
         else:
             console.print("[dim]No existing index found, creating new index...[/dim]\n")
 
+        # Index each path
+        total_files_all = 0
+        changed_files_all = 0
+        deleted_files_all = 0
+        skipped_files_all = 0
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -413,38 +528,61 @@ def step_index(skip_index: bool, recreate: bool) -> int:
             console=console,
             transient=True,
         ) as progress:
-            task = progress.add_task("[cyan]Indexing files...", total=None)
-
-            # Call MCP indexing tool - let indexer auto-detect collection
-            result = client.call_tool(
-                "qdrant_index_root",
-                recreate=recreate,
+            task = progress.add_task(
+                f"[cyan]Indexing {len(resolved_paths)} path(s)...",
+                total=len(resolved_paths)
             )
 
-            progress.update(task, completed=True)
+            for i, path in enumerate(resolved_paths):
+                progress.update(task, description=f"[cyan]Indexing {path.name}...")
+
+                # Call MCP indexing tool with specific path
+                # The path should be relative to dev-workspace (which is /work in container)
+                try:
+                    # Get relative path from dev-workspace
+                    rel_path = path.relative_to(dev_workspace)
+                    subdir = str(rel_path)
+                except ValueError:
+                    # Path is dev-workspace itself
+                    subdir = ""
+
+                if subdir:
+                    # Index specific subdirectory
+                    result = client.call_tool(
+                        "qdrant_index",
+                        subdir=subdir,
+                        recreate=recreate if i == 0 else False,
+                    )
+                else:
+                    # Index root
+                    result = client.call_tool(
+                        "qdrant_index_root",
+                        recreate=recreate if i == 0 else False,
+                    )
+
+                # Accumulate statistics
+                if result.get("ok", False):
+                    total_files_all += result.get("total_files", 0)
+                    changed_files_all += result.get("changed", 0)
+                    deleted_files_all += result.get("deleted", 0)
+                    skipped_files_all += result.get("skipped", 0)
+                else:
+                    error_msg = result.get("error", "Unknown error")
+                    console.print(f"\n[red]✗[/red] Failed to index {path}: {error_msg}")
+                    return 1
+
+                progress.update(task, advance=1)
 
         elapsed = time.time() - start_time
 
-        # Check for errors
-        if "error" in result or not result.get("ok", False):
-            error_msg = result.get("error", "Unknown error")
-            console.print(f"\n[red]✗[/red] Indexing failed: {error_msg}\n")
-            return 1
-
-        # Extract statistics
-        total_files = result.get("total_files", 0)
-        changed_files = result.get("changed", 0)
-        deleted_files = result.get("deleted", 0)
-        skipped_files = result.get("skipped", 0)
-
         # Display results
-        if total_files > 0 or changed_files > 0:
+        if total_files_all > 0 or changed_files_all > 0:
             console.print(
-                f"[green]✓[/green] Indexed [cyan]{total_files:,}[/cyan] files in [cyan]{elapsed:.1f}s[/cyan]"
+                f"[green]✓[/green] Indexed [cyan]{total_files_all:,}[/cyan] files in [cyan]{elapsed:.1f}s[/cyan]"
             )
-            console.print(f"  Changed: [yellow]{changed_files}[/yellow]  "
-                         f"Deleted: [red]{deleted_files}[/red]  "
-                         f"Skipped: [dim]{skipped_files}[/dim]\n")
+            console.print(f"  Changed: [yellow]{changed_files_all}[/yellow]  "
+                         f"Deleted: [red]{deleted_files_all}[/red]  "
+                         f"Skipped: [dim]{skipped_files_all}[/dim]\n")
         else:
             console.print(
                 f"[green]✓[/green] Index check complete in [cyan]{elapsed:.1f}s[/cyan]\n"
@@ -585,11 +723,14 @@ def run_quickstart(args) -> int:
     console.print(f"[green]✓[/green] Found {compose_path}")
     console.print()
 
+    # Get paths from args (may be None or empty list)
+    paths = getattr(args, "paths", None) or []
+
     # Execute steps
     steps = [
         ("init", lambda: step_init(args.force, skip_interactive=True)),
         ("up", lambda: step_up(args.build, args.wait)),
-        ("index", lambda: step_index(args.no_index, args.recreate)),
+        ("index", lambda: step_index(args.no_index, args.recreate, paths)),
         ("warmup", lambda: step_warmup(args.no_warmup)),
     ]
 
@@ -641,8 +782,17 @@ def register_command(subparsers):
         help="One command setup - init, start, index, and warmup",
         description=(
             "The ONE COMMAND to rule them all. Detects environment, starts services, "
-            "indexes the codebase, and warms up models for optimal performance."
+            "indexes the codebase, and warms up models for optimal performance.\n\n"
+            "If no paths are provided, you will be prompted to confirm indexing the "
+            "current directory or enter paths to index."
         )
+    )
+
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        default=[],
+        help="Paths to index (default: prompts for current directory)"
     )
 
     parser.add_argument(
@@ -689,6 +839,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Context-Engine Quickstart")
 
+    parser.add_argument("paths", nargs="*", default=[],
+                       help="Paths to index (default: prompts for current directory)")
     parser.add_argument("--force", "-f", action="store_true",
                        help="Force overwrite of existing configuration")
     parser.add_argument("--build", action="store_true",
