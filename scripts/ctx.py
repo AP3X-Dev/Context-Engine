@@ -743,13 +743,14 @@ def _generate_plan(enhanced_prompt: str, context: str, note: str) -> str:
             from refrag_glm import GLMRefragClient  # type: ignore
 
             client = GLMRefragClient()
+            # GLM reasoning models need higher token limits (they use 150+ for internal reasoning)
             response = client.client.chat.completions.create(
                 model=os.environ.get("GLM_MODEL", "glm-4.6"),
                 messages=[
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
                 ],
-                max_tokens=200,
+                max_tokens=2048,  # Generous limit for reasoning models
                 temperature=0.3,
                 stream=False,
             )
