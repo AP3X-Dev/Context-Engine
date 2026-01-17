@@ -33,7 +33,7 @@ Examples:
   ctx-cli status --json       Output status as JSON
   ctx-cli status --verbose    Show detailed service information
 
-For more information, visit: https://github.com/context-engine/context-engine
+For more information, visit: https://github.com/m1rl0k/context-engine
         """
     )
 
