@@ -49,6 +49,13 @@ This will:
 |---------|-------------|
 | `ctx search <query> [options]` | Semantic code search |
 | `ctx answer <query> [options]` | LLM-generated answers with citations |
+| `ctx memory store <info> [--tags]` | Store knowledge in memory |
+| `ctx memory find <query> [--kind]` | Search stored memories |
+| `ctx graph callers <symbol>` | Find who calls a symbol |
+| `ctx graph definition <symbol>` | Find where symbol is defined |
+| `ctx graph importers <symbol>` | Find what imports a module |
+| `ctx graph callees <symbol>` | Find what a symbol calls |
+| `ctx pattern <query> [--mode]` | Find structurally similar code |
 
 ### Indexing
 
@@ -92,6 +99,19 @@ ctx logs indexer -f
 # Search the codebase
 ctx search "database connection" --language python --snippet
 ctx answer "how does the indexing pipeline work?"
+
+# Memory operations
+ctx memory store "JWT tokens are used for auth" --kind explanation --tags topic=auth
+ctx memory find "authentication" --limit 5
+
+# Symbol graph navigation
+ctx graph callers authenticate --depth 2
+ctx graph definition MCPClient --language python
+ctx graph importers qdrant_client
+
+# Pattern search
+ctx pattern "try: ... except: pass" --snippet
+ctx pattern "retry with backoff" --mode description
 
 # Manage collections
 ctx collections list

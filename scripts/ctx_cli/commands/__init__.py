@@ -15,6 +15,9 @@ Available commands:
   - init: Interactive setup wizard
   - search: Search the codebase
   - answer: Get natural language answer with citations
+  - memory: Store and search knowledge entries
+  - graph: Navigate symbol relationships (callers, definitions, imports)
+  - pattern: Find structurally similar code patterns
   - index: Index codebase into Qdrant
   - prune: Remove stale entries from index
   - collections: Manage Qdrant collections
@@ -23,7 +26,7 @@ Available commands:
   - completion: Shell completion scripts
 """
 
-from . import status, init, answer, index, prune, completion, lifecycle, search, config, logs, warmup, collections, bridge, quickstart, doctor
+from . import status, init, answer, index, prune, completion, lifecycle, search, config, logs, warmup, collections, bridge, quickstart, doctor, memory, graph, pattern
 
 # List of all command modules
 COMMANDS = [
@@ -35,6 +38,9 @@ COMMANDS = [
     init,
     search,
     answer,
+    memory,      # Memory store/find
+    graph,       # Symbol graph navigation
+    pattern,     # Pattern search
     index,
     prune,
     collections,
