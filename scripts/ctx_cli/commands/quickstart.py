@@ -496,6 +496,26 @@ def step_index(
             paths_to_index.append(path)
             continue
 
+        # Check if this is the Context-Engine source repo itself (where compose lives)
+        # The source repo is mounted via HOST_INDEX_PATH, not via dev-workspace import
+        if path == compose_root:
+            # Check if HOST_INDEX_PATH points to the source repo (correct for self-indexing)
+            env_host_path = os.environ.get("HOST_INDEX_PATH", "")
+            if env_host_path in (".", "./", str(compose_root)):
+                # Source repo is correctly configured for indexing
+                console.print(f"[green]✓[/green] Context-Engine source repo detected")
+                paths_to_index.append(path)
+                continue
+            else:
+                # HOST_INDEX_PATH points to dev-workspace, not source
+                # Source repo cannot be indexed with current config
+                console.print(
+                    f"[yellow]![/yellow] This is the Context-Engine source repo.\n"
+                    f"  Current HOST_INDEX_PATH points to: [cyan]{env_host_path or './dev-workspace'}[/cyan]\n"
+                    f"  To index the source repo itself, set HOST_INDEX_PATH=. in .env\n"
+                )
+                return 0  # Skip - can't index source with current config
+
         # Check if this path is already imported into dev-workspace
         existing = _find_existing_import(path, dev_workspace)
         if existing:
