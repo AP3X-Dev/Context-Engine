@@ -69,10 +69,12 @@ def call_mcp_context_answer(
     if expand:
         params["expand"] = True
 
+    # Only set collection if explicitly provided or in environment
     if collection:
         params["collection"] = collection
-    else:
-        params["collection"] = os.environ.get("COLLECTION_NAME", "codebase")
+    elif os.environ.get("COLLECTION_NAME"):
+        params["collection"] = os.environ["COLLECTION_NAME"]
+    # Otherwise let the server auto-detect from workspace
 
     try:
         client = MCPClient(server="indexer", timeout=timeout)
@@ -164,7 +166,7 @@ def format_answer_rich(
 
     # Display citations
     if citations:
-        console.print("[bold]📚 Sources:[/bold]")
+        console.print("[bold]Sources:[/bold]")
         for idx, citation in enumerate(citations, 1):
             path = citation.get("path", "unknown")
             start = citation.get("start_line", "?")
@@ -259,16 +261,20 @@ def answer_command(
         collection=collection,
     )
 
-    # Handle errors
+    # Handle errors (error can be a string or dict)
     if "error" in data:
         error = data["error"]
-        error_msg = error.get("message", "Unknown error")
+        # Handle both string and dict error formats
+        if isinstance(error, str):
+            error_msg = error
+        else:
+            error_msg = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
 
         # Check for common errors
-        if "Connection refused" in error_msg or "Connection failed" in str(error_msg):
+        if "Connection refused" in str(error_msg) or "Connection failed" in str(error_msg):
             print("Error: Cannot connect to MCP indexer", file=sys.stderr)
             print("Make sure the indexer service is running on port 8003", file=sys.stderr)
-        elif "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+        elif "timed out" in str(error_msg).lower() or "timeout" in str(error_msg).lower():
             print(f"Error: Request timed out after {DEFAULT_TIMEOUT}s", file=sys.stderr)
             print("Try reducing --budget or waiting for indexer to finish processing", file=sys.stderr)
         else:
