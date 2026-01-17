@@ -218,16 +218,17 @@ def is_multi_repo_mode() -> bool:
 def logical_repo_reuse_enabled() -> bool:
     """Feature flag for logical-repo / collection reuse.
 
-    Controlled by LOGICAL_REPO_REUSE env var: 1/true/yes/on => enabled.
-    When disabled, behavior falls back to legacy per-repo collection logic
-    and does not write logical_repo_id into workspace state.
+    Controlled by LOGICAL_REPO_REUSE env var. Defaults to ON (enabled).
+    Set to 0/false/no/off to disable.
+
+    When enabled, repos with the same git remote origin URL share collections,
+    preventing duplicate indexing when the same repo is uploaded multiple times.
     """
-    return os.environ.get("LOGICAL_REPO_REUSE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    val = os.environ.get("LOGICAL_REPO_REUSE", "1").strip().lower()
+    # Explicit disable
+    if val in {"0", "false", "no", "off"}:
+        return False
+    return True
 
 _state_lock = threading.Lock()
 # Track last-used timestamps for cleanup of idle workspace locks

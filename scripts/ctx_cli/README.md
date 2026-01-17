@@ -61,11 +61,21 @@ This will:
 
 | Command | Description |
 |---------|-------------|
-| `ctx index [path] [--watch]` | Index codebase |
+| `ctx index [path] [--watch]` | Index codebase (local/mounted) |
+| `ctx sync [path] [--watch]` | Upload/sync to remote server |
 | `ctx prune [--collection]` | Remove stale entries |
 | `ctx collections list` | List all collections |
 | `ctx collections create NAME` | Create new collection |
 | `ctx collections delete NAME` | Delete collection |
+
+### Remote Sync (VS Code Extension Equivalent)
+
+| Command | Description |
+|---------|-------------|
+| `ctx sync` | Force sync current directory |
+| `ctx sync --watch` | Watch mode with auto-sync |
+| `ctx sync --git-history` | Include git commit metadata |
+| `ctx sync --endpoint URL` | Use custom upload endpoint |
 
 ### IDE Integration
 

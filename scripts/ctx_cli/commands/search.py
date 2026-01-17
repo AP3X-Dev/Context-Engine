@@ -102,51 +102,6 @@ def call_mcp_search(
         }
 
 
-def parse_mcp_response(response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Parse MCP response and extract result data.
-
-    Args:
-        response: Raw MCP JSON-RPC response
-
-    Returns:
-        Parsed result data or None if error/no data
-    """
-    # Check for JSON-RPC error
-    if "error" in response:
-        return None
-
-    # Extract result
-    result = response.get("result", {})
-
-    # FastMCP wraps results in content array
-    content = result.get("content", [])
-
-    # Check for direct result (no content wrapper)
-    if isinstance(result, dict) and not content:
-        if any(k in result for k in ("results", "total", "query")):
-            return result
-
-    if not content:
-        return None
-
-    # Get first content item
-    item = content[0] if content else {}
-
-    # Prefer JSON content
-    if isinstance(item, dict) and "json" in item:
-        return item["json"]
-
-    # Fallback to text parsing
-    text = item.get("text", "") if isinstance(item, dict) else ""
-    if not text:
-        return None
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"raw": text}
-
-
 def format_result_plain(idx: int, hit: Dict[str, Any], include_snippet: bool = False) -> str:
     """Format a single search result as plain text.
 
@@ -340,7 +295,7 @@ def search_command(
         # Check for common errors
         if "Connection failed" in error_msg or "Connection refused" in str(error_msg):
             print("Error: Cannot connect to MCP indexer", file=sys.stderr)
-            print("Make sure the indexer service is running on port 8003", file=sys.stderr)
+            print("Hint: Run 'ctx up' to start services, or 'ctx status' to diagnose", file=sys.stderr)
         else:
             print(f"Error: {error_msg}", file=sys.stderr)
 

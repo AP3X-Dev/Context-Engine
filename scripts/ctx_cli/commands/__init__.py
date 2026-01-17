@@ -19,6 +19,7 @@ Available commands:
   - graph: Navigate symbol relationships (callers, definitions, imports)
   - pattern: Find structurally similar code patterns
   - index: Index codebase into Qdrant
+  - sync: Upload/sync workspace to remote Context-Engine
   - prune: Remove stale entries from index
   - collections: Manage Qdrant collections
   - bridge: Manage MCP bridge and generate IDE configs
@@ -26,7 +27,7 @@ Available commands:
   - completion: Shell completion scripts
 """
 
-from . import status, init, answer, index, prune, completion, lifecycle, search, config, logs, warmup, collections, bridge, quickstart, doctor, memory, graph, pattern
+from . import status, init, answer, index, prune, completion, lifecycle, search, config, logs, warmup, collections, bridge, quickstart, doctor, memory, graph, pattern, sync
 
 # List of all command modules
 COMMANDS = [
@@ -42,6 +43,7 @@ COMMANDS = [
     graph,       # Symbol graph navigation
     pattern,     # Pattern search
     index,
+    sync,        # Remote upload/sync (like VS Code extension)
     prune,
     collections,
     warmup,

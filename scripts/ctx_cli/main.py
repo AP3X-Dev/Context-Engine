@@ -20,6 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from scripts.ctx_cli.commands import register_all_commands
 from scripts.ctx_cli import __version__
 
+try:
+    from scripts.ctx_cli.utils.mcp_client import MCPError
+except ImportError:
+    MCPError = Exception  # Fallback if import fails
+
 
 def main():
     """Main CLI entry point."""
@@ -62,9 +67,21 @@ For more information, visit: https://github.com/m1rl0k/context-engine
         parser.print_help()
         return 0
 
-    # Execute the command
+    # Execute the command with centralized error handling
     if hasattr(args, "func"):
-        return args.func(args)
+        try:
+            return args.func(args)
+        except MCPError as e:
+            print(f"Error: {e.message}", file=sys.stderr)
+            if e.data:
+                print(f"Details: {e.data}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("\nInterrupted", file=sys.stderr)
+            return 130
+        except Exception as e:
+            print(f"Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
     else:
         parser.print_help()
         return 1
