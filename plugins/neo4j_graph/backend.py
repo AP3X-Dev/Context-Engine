@@ -614,6 +614,14 @@ class Neo4jGraphBackend(GraphBackend):
 
             logger.info(f"Auto-backfill complete: {total_edges} edges from {total_points} points")
 
+            # Compute PageRank after populating edges
+            if total_edges > 0:
+                try:
+                    pr_count = self.compute_pagerank(collection)
+                    logger.info(f"Auto-backfill: computed PageRank for {pr_count} nodes")
+                except Exception as e:
+                    logger.warning(f"Auto-backfill: PageRank computation failed: {e}")
+
         except Exception as e:
             logger.error(f"Auto-backfill failed: {e}")
 
@@ -1105,3 +1113,64 @@ class Neo4jGraphBackend(GraphBackend):
         except Exception as e:
             logger.debug(f"Failed to resolve import {import_name}: {e}")
             return None
+
+    def compute_pagerank(
+        self,
+        graph_store: str,
+        repo: Optional[str] = None,
+        timeout: int = 120,
+    ) -> int:
+        """Compute PageRank for code symbols (importance scoring).
+
+        Uses simple in-degree approximation as a fallback since GDS may not be available.
+        All nodes get a base rank (0.001), nodes with incoming edges get rank proportional
+        to in-degree.
+
+        Args:
+            graph_store: Graph store name (collection)
+            repo: Optional repository filter
+            timeout: Transaction timeout in seconds
+
+        Returns:
+            Count of nodes updated
+        """
+        driver = self._get_driver()
+        db = self._get_database()
+        collection = self._get_collection(graph_store)
+
+        try:
+            with driver.session(database=db) as session:
+                # Simple in-degree approximation with OPTIONAL MATCH
+                # Ensures ALL nodes get a base rank, not just those with incoming edges
+                with session.begin_transaction(timeout=timeout) as tx:
+                    if repo and repo != "*":
+                        result = tx.run("""
+                            MATCH (n:Symbol {collection: $collection})
+                            WHERE n.repo = $repo
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            WITH n, count(r) AS in_degree
+                            SET n.pagerank = CASE WHEN in_degree > 0
+                                                  THEN toFloat(in_degree) / 100.0
+                                                  ELSE 0.001 END
+                            RETURN count(n) AS cnt
+                        """, collection=collection, repo=repo)
+                    else:
+                        result = tx.run("""
+                            MATCH (n:Symbol {collection: $collection})
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            WITH n, count(r) AS in_degree
+                            SET n.pagerank = CASE WHEN in_degree > 0
+                                                  THEN toFloat(in_degree) / 100.0
+                                                  ELSE 0.001 END
+                            RETURN count(n) AS cnt
+                        """, collection=collection)
+
+                    record = result.single()
+                    cnt = record["cnt"] if record else 0
+                    tx.commit()
+                    logger.info(f"Computed PageRank for {cnt} nodes in {collection}")
+                    return cnt
+
+        except Exception as e:
+            logger.error(f"Failed to compute PageRank: {e}")
+            return 0

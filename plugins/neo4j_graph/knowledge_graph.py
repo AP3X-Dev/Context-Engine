@@ -446,20 +446,27 @@ class Neo4jKnowledgeGraph:
 
             except Exception:
                 # Fallback: simple in-degree approximation with timeout
+                # Uses OPTIONAL MATCH to give base rank to ALL nodes, not just those with incoming edges
                 with session.begin_transaction(timeout=timeout) as tx:
                     if repo:
                         result = tx.run("""
-                            MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            MATCH (n:Symbol)
                             WHERE n.repo = $repo
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
                             WITH n, count(r) AS in_degree
-                            SET n.pagerank = toFloat(in_degree) / 100.0
+                            SET n.pagerank = CASE WHEN in_degree > 0
+                                                  THEN toFloat(in_degree) / 100.0
+                                                  ELSE 0.001 END
                             RETURN count(n) AS cnt
                         """, repo=repo)
                     else:
                         result = tx.run("""
-                            MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            MATCH (n:Symbol)
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
                             WITH n, count(r) AS in_degree
-                            SET n.pagerank = toFloat(in_degree) / 100.0
+                            SET n.pagerank = CASE WHEN in_degree > 0
+                                                  THEN toFloat(in_degree) / 100.0
+                                                  ELSE 0.001 END
                             RETURN count(n) AS cnt
                         """)
                     cnt = result.single()["cnt"]
