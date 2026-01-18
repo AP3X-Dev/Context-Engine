@@ -22,6 +22,27 @@ This will:
 3. Index your codebase
 4. Warm up embedding models
 
+### Quickstart Options
+
+| Flag | Description |
+|------|-------------|
+| `--no-llama` | Skip the local LLM container (for users without GPU or using cloud APIs like OpenAI/GLM) |
+| `--no-index` | Skip initial codebase indexing |
+| `--no-warmup` | Skip model warmup step |
+| `--build` | Rebuild Docker containers before starting |
+| `--recreate` | Recreate Qdrant collection (drops existing data) |
+| `--import-repos` | Copy external repos into dev-workspace for indexing |
+
+**Example: Lightweight setup without local LLM:**
+```bash
+ctx quickstart --no-llama
+```
+
+This is ideal when:
+- You don't have a GPU or sufficient RAM for local LLM inference
+- You're using cloud LLM APIs (OpenAI, GLM, MiniMax) configured in `.env`
+- You want faster startup and lower resource usage
+
 ## Commands
 
 ### Getting Started
