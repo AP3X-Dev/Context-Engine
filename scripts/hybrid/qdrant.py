@@ -772,6 +772,7 @@ def multi_granular_query(
         return results, {}
 
     # Two-stage query: prefetch with entity/relation, then rerank with dense
+    # NOTE: query_points uses 'query_filter' not 'filter' (Qdrant 1.7+ API)
     try:
         ef = max(EF_SEARCH, 32 + 4 * per_query)
         search_params = _get_search_params(ef)
@@ -781,7 +782,7 @@ def multi_granular_query(
             prefetch=prefetch_queries,
             query=dense_vec,
             using=vec_name,
-            filter=flt,
+            query_filter=flt,
             limit=per_query,
             search_params=search_params,
             with_payload=True,
@@ -789,20 +790,22 @@ def multi_granular_query(
         final_results = _coerce_points(getattr(qp, "points", qp))
 
         # Run separate entity/relation queries to capture stage scores for fusion
+        # NOTE: query_points uses 'query_filter' not 'filter' (Qdrant 1.7+ API)
         if entity_vec is not None:
             try:
                 entity_qp = client.query_points(
                     collection_name=collection,
                     query=entity_vec,
                     using=ENTITY_DENSE_NAME,
-                    filter=flt,
+                    query_filter=flt,
                     limit=per_query * 2,  # Get more for fusion
                     search_params=search_params,
                     with_payload=True,
                 )
                 stage_results["entity"] = _coerce_points(getattr(entity_qp, "points", entity_qp))
-            except Exception:
-                pass
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"Entity query failed: {e}")
 
         if relation_vec is not None:
             try:
@@ -810,14 +813,15 @@ def multi_granular_query(
                     collection_name=collection,
                     query=relation_vec,
                     using=RELATION_DENSE_NAME,
-                    filter=flt,
+                    query_filter=flt,
                     limit=per_query * 2,
                     search_params=search_params,
                     with_payload=True,
                 )
                 stage_results["relation"] = _coerce_points(getattr(relation_qp, "points", relation_qp))
-            except Exception:
-                pass
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"Relation query failed: {e}")
 
         return final_results, stage_results
 
