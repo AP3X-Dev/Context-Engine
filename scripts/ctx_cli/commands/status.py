@@ -45,12 +45,21 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
     """
     Check Docker Compose service status.
 
+    Works from any directory by using docker ps with label filters
+    instead of docker compose ps (which requires docker-compose.yml).
+
     Returns:
         Tuple of (all_running, services_list)
     """
     try:
+        # Use docker ps with filter for context-engine project containers
+        # This works from any directory, unlike docker compose ps
         result = subprocess.run(
-            ["docker", "compose", "ps", "--format", "json"],
+            [
+                "docker", "ps", "-a",
+                "--filter", "label=com.docker.compose.project=context-engine",
+                "--format", "json"
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -60,17 +69,25 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
         if result.returncode != 0:
             return False, []
 
-        # Parse JSON output - docker compose ps returns JSONL (one JSON object per line)
+        # Parse JSON output - docker ps returns JSONL (one JSON object per line)
         services = []
         for line in result.stdout.strip().split('\n'):
             if line.strip():
                 try:
-                    services.append(json.loads(line))
+                    container = json.loads(line)
+                    # Map docker ps format to docker compose ps format for compatibility
+                    services.append({
+                        "Name": container.get("Names", ""),
+                        "Service": container.get("Labels", "").split("com.docker.compose.service=")[-1].split(",")[0] if "com.docker.compose.service=" in container.get("Labels", "") else container.get("Names", ""),
+                        "State": "running" if container.get("State") == "running" else container.get("State", ""),
+                        "Status": container.get("Status", ""),
+                        "Image": container.get("Image", ""),
+                    })
                 except json.JSONDecodeError:
                     continue
 
         # Check if all services are running
-        all_running = all(
+        all_running = len(services) > 0 and all(
             svc.get("State") == "running"
             for svc in services
         )
