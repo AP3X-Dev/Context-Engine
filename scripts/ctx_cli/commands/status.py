@@ -56,9 +56,11 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
         # This works from any directory, unlike docker compose ps
         # Use Go template format for compatibility with all Docker versions
         # (--format json requires Docker 24.0+, Go template works everywhere)
+        # NOTE: We use "docker ps" without -a to only show RUNNING containers.
+        # This excludes stopped one-off containers like ctx-reset-indexer.
         result = subprocess.run(
             [
-                "docker", "ps", "-a",
+                "docker", "ps",
                 "--filter", "label=com.docker.compose.project=context-engine",
                 "--format", '{{json .}}'
             ],

@@ -569,14 +569,16 @@ class Neo4jKnowledgeGraph:
         escaped_name = _escape_regex(name)
 
         with driver.session(database=self._database) as session:
+            # Use COALESCE for optional properties to avoid Neo4j warnings
             result = session.run(f"""
                 MATCH (n{type_filter})
                 WHERE n.name =~ $pattern {repo_filter}
-                RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
-                       n.path AS path, n.start_line AS start_line,
-                       n.signature AS signature, n.docstring AS docstring,
-                       n.pagerank AS importance
-                ORDER BY n.pagerank DESC
+                RETURN COALESCE(n.id, n.name) AS id, n.name AS name, labels(n)[0] AS type,
+                       n.path AS path, COALESCE(n.start_line, 0) AS start_line,
+                       COALESCE(n.signature, '') AS signature,
+                       COALESCE(n.docstring, '') AS docstring,
+                       COALESCE(n.pagerank, 0.0) AS importance
+                ORDER BY COALESCE(n.pagerank, 0.0) DESC
                 LIMIT 20
             """, pattern=f"(?i).*{escaped_name}.*", repo=repo)
             return [dict(r) for r in result]
@@ -597,17 +599,18 @@ class Neo4jKnowledgeGraph:
         caller_repo_filter = "AND caller.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
+            # Use COALESCE for optional properties to avoid Neo4j warnings
             result = session.run(f"""
                 MATCH (target {{name: $name}})
                 {target_repo_filter}
                 MATCH (caller)-[:CALLS*1..{safe_depth}]->(target)
                 WHERE caller <> target {caller_repo_filter}
                 RETURN DISTINCT
-                    caller.id AS id, caller.name AS name, labels(caller)[0] AS type,
-                    caller.path AS path, caller.start_line AS start_line,
-                    caller.signature AS signature,
+                    COALESCE(caller.id, caller.name) AS id, caller.name AS name, labels(caller)[0] AS type,
+                    caller.path AS path, COALESCE(caller.start_line, 0) AS start_line,
+                    COALESCE(caller.signature, '') AS signature,
                     size((caller)-[:CALLS]->()) AS call_count
-                ORDER BY caller.pagerank DESC
+                ORDER BY COALESCE(caller.pagerank, 0.0) DESC
                 LIMIT $limit
             """, name=symbol_name, repo=repo, limit=limit)
             return [dict(r) for r in result]
@@ -628,16 +631,17 @@ class Neo4jKnowledgeGraph:
         callee_repo_filter = "AND callee.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
+            # Use COALESCE for optional properties to avoid Neo4j warnings
             result = session.run(f"""
                 MATCH (source {{name: $name}})
                 {source_repo_filter}
                 MATCH (source)-[:CALLS*1..{safe_depth}]->(callee)
                 WHERE source <> callee {callee_repo_filter}
                 RETURN DISTINCT
-                    callee.id AS id, callee.name AS name, labels(callee)[0] AS type,
-                    callee.path AS path, callee.start_line AS start_line,
-                    callee.signature AS signature
-                ORDER BY callee.pagerank DESC
+                    COALESCE(callee.id, callee.name) AS id, callee.name AS name, labels(callee)[0] AS type,
+                    callee.path AS path, COALESCE(callee.start_line, 0) AS start_line,
+                    COALESCE(callee.signature, '') AS signature
+                ORDER BY COALESCE(callee.pagerank, 0.0) DESC
                 LIMIT $limit
             """, name=symbol_name, repo=repo, limit=limit)
             return [dict(r) for r in result]
@@ -926,13 +930,14 @@ class Neo4jKnowledgeGraph:
         repo_filter = "WHERE n.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
+            # Use COALESCE for optional properties to avoid Neo4j warnings
             result = session.run(f"""
                 MATCH (n) {repo_filter}
                 WITH count(n) AS total,
                      sum(CASE WHEN 'File' IN labels(n) THEN 1 ELSE 0 END) AS files,
                      sum(CASE WHEN 'Class' IN labels(n) THEN 1 ELSE 0 END) AS classes,
                      sum(CASE WHEN 'Function' IN labels(n) THEN 1 ELSE 0 END) AS functions,
-                     avg(n.pagerank) AS avg_pr,
+                     avg(COALESCE(n.pagerank, 0.0)) AS avg_pr,
                      count(DISTINCT n.community_id) AS communities
                 MATCH ()-[r]->()
                 RETURN total, files, classes, functions, avg_pr, communities,
