@@ -391,7 +391,7 @@ services:
 
   # Llama.cpp decoder service - same as base compose
   llamacpp:
-    image: ghcr.io/ggerganov/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server
     container_name: llama-decoder-dev-remote
     environment:
       - LLAMA_ARG_MODEL=/models/model.gguf

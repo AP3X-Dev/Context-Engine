@@ -35,12 +35,43 @@ This single command:
 4. Indexes your codebase
 5. Warms up models for fast queries
 
-Options:
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--no-llama` | Skip the local LLM container (llamacpp) - for users without GPU or using cloud APIs |
+| `--no-index` | Skip initial codebase indexing |
+| `--no-warmup` | Skip model warmup step |
+| `--build` | Rebuild Docker containers before starting |
+| `--recreate` | Recreate Qdrant collection (drops existing data) |
+| `--import-repos` | Copy external repos into dev-workspace for indexing |
+| `--wait N` | Health check timeout in seconds (default: 30) |
+
+### Examples
+
 ```bash
-ctx quickstart --build          # Rebuild containers before starting
-ctx quickstart --skip-warmup    # Skip model warmup step
-ctx quickstart /path/to/repo    # Index a specific path
+# Full setup with all features
+ctx quickstart
+
+# Lightweight setup without local LLM (uses cloud APIs instead)
+ctx quickstart --no-llama
+
+# Rebuild containers and reindex from scratch
+ctx quickstart --build --recreate
+
+# Index a specific path
+ctx quickstart /path/to/repo
 ```
+
+### When to use `--no-llama`
+
+Use this flag when:
+- You don't have a GPU or sufficient RAM for local LLM inference
+- You're using cloud LLM APIs (OpenAI, GLM, MiniMax) configured in `.env`
+- You want faster startup and lower resource usage
+- You're running on a CI/CD server or resource-constrained environment
+
+The local LLM (llamacpp) powers features like `ctx enhance` and query expansion. When skipped, these features will use cloud APIs if configured, or be unavailable.
 
 ## Service Management
 

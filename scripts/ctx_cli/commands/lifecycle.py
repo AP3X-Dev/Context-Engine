@@ -57,6 +57,12 @@ def run_up(args) -> int:
     if args.build:
         compose_args.append("--build")
 
+    # Handle --no-llama flag
+    no_llama = getattr(args, "no_llama", False)
+    if no_llama:
+        compose_args.extend(["--scale", "llamacpp=0"])
+        _print("[dim]Skipping local LLM container (--no-llama)[/dim]\n")
+
     try:
         # Start services
         run_docker_compose("up", *compose_args)
@@ -231,6 +237,11 @@ def register_command(subparsers):
         default=30,
         help="Health check timeout in seconds (default: 30)"
     )
+    parser_up.add_argument(
+        "--no-llama",
+        action="store_true",
+        help="Skip the local LLM container (llamacpp)"
+    )
     parser_up.set_defaults(func=run_up)
 
     # Down command
@@ -262,5 +273,10 @@ def register_command(subparsers):
         type=int,
         default=30,
         help="Health check timeout in seconds (default: 30)"
+    )
+    parser_restart.add_argument(
+        "--no-llama",
+        action="store_true",
+        help="Skip the local LLM container (llamacpp)"
     )
     parser_restart.set_defaults(func=run_restart)
