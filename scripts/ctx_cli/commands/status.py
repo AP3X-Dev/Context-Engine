@@ -28,6 +28,16 @@ from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 import socket
 
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich import box
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
 
@@ -530,64 +540,151 @@ def print_status_table(
             collection_info.get("updated_at")
         )
 
-    # Build the table
-    print("┌" + "─" * 46 + "┐")
-    print("│ Context-Engine Status" + " " * 24 + "│")
-    print("├" + "─" * 46 + "┤")
+    # Build the display using Rich if available
+    if RICH_AVAILABLE:
+        console = Console()
 
-    stack_symbol = "✓" if docker_ok else "✗"
-    print(f"│ Stack:      {stack_symbol} {'Running' if docker_ok else 'Stopped'} ({running_count}/{total_count} services)" + " " * (46 - len(f"Stack:      {stack_symbol} {'Running' if docker_ok else 'Stopped'} ({running_count}/{total_count} services)") - 2) + "│")
+        # Build status table
+        table = Table(
+            show_header=False,
+            box=box.ROUNDED,
+            border_style="cyan",
+            padding=(0, 1),
+            expand=False,
+        )
+        table.add_column("Label", style="bold", width=12)
+        table.add_column("Value", width=40)
 
-    print(f"│ Collection: {collection_name}" + " " * (46 - len(f"Collection: {collection_name}") - 2) + "│")
-    print(f"│ Documents:  {points_count} indexed" + " " * (46 - len(f"Documents:  {points_count} indexed") - 2) + "│")
+        # Stack status
+        if docker_ok:
+            stack_text = Text()
+            stack_text.append("● ", style="green")
+            stack_text.append(f"Running ", style="green bold")
+            stack_text.append(f"({running_count}/{total_count} services)", style="dim")
+        else:
+            stack_text = Text()
+            stack_text.append("● ", style="red")
+            stack_text.append("Stopped", style="red bold")
+        table.add_row("Stack", stack_text)
 
-    # Graph info (edges from Qdrant _graph and/or Neo4j)
-    if graph_info:
-        backend = graph_info.get("backend", "none")
-        if backend != "none":
-            # Build edge count display
+        # Collection
+        table.add_row("Collection", Text(collection_name, style="cyan"))
+
+        # Documents
+        table.add_row("Documents", Text(f"{points_count} indexed", style="yellow"))
+
+        # Graph info
+        if graph_info and graph_info.get("backend", "none") != "none":
             edge_parts = []
-
-            # Qdrant graph edges
             if "qdrant_graph" in graph_info:
                 qdrant_edges = graph_info["qdrant_graph"].get("edge_count", 0)
                 if qdrant_edges > 0:
                     edge_parts.append(f"{qdrant_edges:,} qdrant")
-
-            # Neo4j edges
             if "neo4j" in graph_info and graph_info["neo4j"].get("connected"):
                 neo4j_edges = graph_info["neo4j"].get("edge_count", 0)
                 if neo4j_edges > 0:
                     edge_parts.append(f"{neo4j_edges:,} neo4j")
-
             if edge_parts:
-                graph_text = " + ".join(edge_parts)
-                print(f"│ Graph:      {graph_text}" + " " * max(0, 46 - len(f"Graph:      {graph_text}") - 2) + "│")
+                table.add_row("Graph", Text(" + ".join(edge_parts), style="magenta"))
 
-    print(f"│ Last index: {last_indexed}" + " " * (46 - len(f"Last index: {last_indexed}") - 2) + "│")
+        # Last indexed
+        table.add_row("Last index", Text(last_indexed, style="dim"))
 
-    # Model warmup status
-    if warmup_info:
-        embedding_ready = warmup_info.get("embedding_ready", False)
-        reranker_ready = warmup_info.get("reranker_ready", False)
-        models_symbol = "✓" if (embedding_ready and reranker_ready) else "⚠"
-        models_text = "Ready" if (embedding_ready and reranker_ready) else "Loading"
-        print(f"│ Models:     {models_symbol} {models_text}" + " " * (46 - len(f"Models:     {models_symbol} {models_text}") - 2) + "│")
+        # Model warmup status
+        if warmup_info:
+            embedding_ready = warmup_info.get("embedding_ready", False)
+            reranker_ready = warmup_info.get("reranker_ready", False)
+            if embedding_ready and reranker_ready:
+                models_text = Text()
+                models_text.append("● ", style="green")
+                models_text.append("Ready", style="green")
+            else:
+                models_text = Text()
+                models_text.append("◐ ", style="yellow")
+                models_text.append("Loading", style="yellow")
+            table.add_row("Models", models_text)
 
-    # Indexing progress
-    if workspace_info:
-        indexing_status = workspace_info.get("indexing_status", "unknown")
-        if indexing_status == "indexing":
-            progress = workspace_info.get("indexing_progress", {})
-            current = progress.get("current", 0)
-            total = progress.get("total", 0)
-            percent = (current / total * 100) if total > 0 else 0
-            progress_text = f"Indexing: {current}/{total} ({percent:.0f}%)"
-            print(f"│ Progress:   {progress_text}" + " " * (46 - len(f"Progress:   {progress_text}") - 2) + "│")
+        # Indexing progress
+        if workspace_info:
+            indexing_status = workspace_info.get("indexing_status", "unknown")
+            if indexing_status == "indexing":
+                progress = workspace_info.get("indexing_progress", {})
+                current = progress.get("current", 0)
+                total = progress.get("total", 0)
+                percent = (current / total * 100) if total > 0 else 0
+                progress_text = Text(f"Indexing: {current}/{total} ({percent:.0f}%)", style="blue")
+                table.add_row("Progress", progress_text)
 
-    print(f"│ Health:     {health_symbol} {health_text}" + " " * (46 - len(f"Health:     {health_symbol} {health_text}") - 2) + "│")
+        # Health
+        if all_healthy:
+            health_val = Text()
+            health_val.append("● ", style="green")
+            health_val.append("All checks passed", style="green")
+        else:
+            health_val = Text()
+            health_val.append("● ", style="red")
+            health_val.append(health_text, style="red")
+        table.add_row("Health", health_val)
 
-    print("└" + "─" * 46 + "┘")
+        # Print with title panel
+        console.print()
+        console.print(Panel(
+            table,
+            title="[bold cyan]Context-Engine Status[/bold cyan]",
+            border_style="cyan",
+            padding=(0, 1),
+        ))
+        console.print()
+    else:
+        # Fallback to basic ASCII display
+        print("┌" + "─" * 46 + "┐")
+        print("│ Context-Engine Status" + " " * 24 + "│")
+        print("├" + "─" * 46 + "┤")
+
+        stack_symbol = "✓" if docker_ok else "✗"
+        print(f"│ Stack:      {stack_symbol} {'Running' if docker_ok else 'Stopped'} ({running_count}/{total_count} services)" + " " * (46 - len(f"Stack:      {stack_symbol} {'Running' if docker_ok else 'Stopped'} ({running_count}/{total_count} services)") - 2) + "│")
+
+        print(f"│ Collection: {collection_name}" + " " * (46 - len(f"Collection: {collection_name}") - 2) + "│")
+        print(f"│ Documents:  {points_count} indexed" + " " * (46 - len(f"Documents:  {points_count} indexed") - 2) + "│")
+
+        if graph_info:
+            backend = graph_info.get("backend", "none")
+            if backend != "none":
+                edge_parts = []
+                if "qdrant_graph" in graph_info:
+                    qdrant_edges = graph_info["qdrant_graph"].get("edge_count", 0)
+                    if qdrant_edges > 0:
+                        edge_parts.append(f"{qdrant_edges:,} qdrant")
+                if "neo4j" in graph_info and graph_info["neo4j"].get("connected"):
+                    neo4j_edges = graph_info["neo4j"].get("edge_count", 0)
+                    if neo4j_edges > 0:
+                        edge_parts.append(f"{neo4j_edges:,} neo4j")
+                if edge_parts:
+                    graph_text = " + ".join(edge_parts)
+                    print(f"│ Graph:      {graph_text}" + " " * max(0, 46 - len(f"Graph:      {graph_text}") - 2) + "│")
+
+        print(f"│ Last index: {last_indexed}" + " " * (46 - len(f"Last index: {last_indexed}") - 2) + "│")
+
+        if warmup_info:
+            embedding_ready = warmup_info.get("embedding_ready", False)
+            reranker_ready = warmup_info.get("reranker_ready", False)
+            models_symbol = "✓" if (embedding_ready and reranker_ready) else "⚠"
+            models_text = "Ready" if (embedding_ready and reranker_ready) else "Loading"
+            print(f"│ Models:     {models_symbol} {models_text}" + " " * (46 - len(f"Models:     {models_symbol} {models_text}") - 2) + "│")
+
+        if workspace_info:
+            indexing_status = workspace_info.get("indexing_status", "unknown")
+            if indexing_status == "indexing":
+                progress = workspace_info.get("indexing_progress", {})
+                current = progress.get("current", 0)
+                total = progress.get("total", 0)
+                percent = (current / total * 100) if total > 0 else 0
+                progress_text = f"Indexing: {current}/{total} ({percent:.0f}%)"
+                print(f"│ Progress:   {progress_text}" + " " * (46 - len(f"Progress:   {progress_text}") - 2) + "│")
+
+        print(f"│ Health:     {health_symbol} {health_text}" + " " * (46 - len(f"Health:     {health_symbol} {health_text}") - 2) + "│")
+
+        print("└" + "─" * 46 + "┘")
 
     # Verbose mode: show per-service details
     if verbose and services:
