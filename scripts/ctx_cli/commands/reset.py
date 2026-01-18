@@ -328,7 +328,14 @@ def reset(
                 indexer_env[var] = os.environ[var]
 
         # Run indexer detached (-d) so CLI doesn't block
-        indexer_cmd = compose_cmd + ["run", "-d", "--name", "ctx-reset-indexer"]
+        # Use --rm to auto-remove container on exit; first remove any stale container with same name
+        # to ensure idempotent operation across multiple runs
+        subprocess.run(
+            ["docker", "rm", "-f", "ctx-reset-indexer"],
+            capture_output=True,
+            check=False,  # Ignore error if container doesn't exist
+        )
+        indexer_cmd = compose_cmd + ["run", "-d", "--rm", "--name", "ctx-reset-indexer"]
         for k, v in indexer_env.items():
             indexer_cmd.extend(["-e", f"{k}={v}"])
         indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])

@@ -707,7 +707,8 @@ class Neo4jGraphBackend(GraphBackend):
                         MERGE (importer:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
                         ON CREATE SET importer.language = edge.language,
                                       importer.indexed_at = timestamp()
-                        ON MATCH SET importer.language = COALESCE(importer.language, edge.language)
+                        // Prefer incoming language value (consistent with CALLS upsert behavior)
+                        ON MATCH SET importer.language = COALESCE(edge.language, importer.language)
                         MERGE (imported:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
                         ON CREATE SET imported.indexed_at = timestamp()
                         MERGE (importer)-[r:IMPORTS {edge_id: edge.edge_id}]->(imported)
