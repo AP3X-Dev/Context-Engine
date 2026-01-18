@@ -350,6 +350,23 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 def _compute_logical_repo_id(workspace_path: str) -> str:
+    """Compute a stable logical repo ID for git worktrees and multi-repo setups.
+
+    IMPORTANT: Logical repo reuse is OPT-IN only (MULTI_REPO_MODE=1 required).
+
+    Risks when enabled:
+    - Mutates every workspace state file (.codebase/repos/*/state.json)
+    - Reroutes watchers/uploads through reuse logic
+    - Missing or stale logical_repo_id can route events to the WRONG Qdrant collection
+    - Walks and rewrites state files on lookup (storage/performance impact)
+
+    Operators should only enable after validating their multi-repo topology
+    and understanding that env COLLECTION_NAME takes precedence and can
+    collapse multiple uploads into a single collection if set globally.
+
+    Returns:
+        A stable ID like "git:<hash>" for git repos or "fs:<hash>" for non-git paths.
+    """
     try:
         p = Path(workspace_path).resolve()
     except Exception:
@@ -1724,8 +1741,17 @@ def get_remote_config(cli_path: Optional[str] = None) -> Dict[str, str]:
 
     logical_repo_id = _compute_logical_repo_id(workspace_path)
 
-    # Prefer COLLECTION_NAME from environment if set (passed by sync command)
-    # Otherwise auto-generate from repo name
+    # COLLECTION_NAME precedence (important for multi-repo mode):
+    #
+    # 1. If COLLECTION_NAME env is set, it ALWAYS wins - all uploads go to that collection.
+    #    This is intentional for single-collection deployments but can collapse multiple
+    #    repos into one collection if set globally with MULTI_REPO_MODE=1.
+    #
+    # 2. If COLLECTION_NAME is not set, auto-generate from repo name via get_collection_name().
+    #    This respects multi-repo topology when MULTI_REPO_MODE=1.
+    #
+    # Operators using MULTI_REPO_MODE=1 with logical repo reuse should NOT set a global
+    # COLLECTION_NAME, or they risk routing all uploads to a single collection.
     collection_name = os.environ.get("COLLECTION_NAME", "").strip()
     if not collection_name:
         repo_name = _extract_repo_name_from_path(workspace_path)
