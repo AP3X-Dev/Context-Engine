@@ -139,6 +139,9 @@ from scripts.hybrid_qdrant import (
     lex_query,
     sparse_lex_query,
     dense_query,
+    multi_granular_query,
+    # Multi-granular config
+    MULTI_GRANULAR_VECTORS,
     # Filter sanitization
     _sanitize_filter_obj,
 )
@@ -226,6 +229,10 @@ from scripts.hybrid_ranking import (
     _compute_query_stats,
     _adaptive_weights,
     _bm25_token_weights_from_results,
+    # Multi-granular fusion
+    fuse_multi_granular_scores,
+    ENTITY_DENSE_WEIGHT,
+    RELATION_DENSE_WEIGHT,
     # MMR diversification
     _mmr_diversify,
     # Micro-span budgeting
@@ -1353,11 +1360,13 @@ def _run_hybrid_search_impl(
     _USE_ADAPT = _env_truthy(os.environ.get("HYBRID_ADAPTIVE_WEIGHTS"), True)
     if _USE_ADAPT:
         try:
-            _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W = _adaptive_weights(_compute_query_stats(qlist))
+            _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W, _AD_ENT_W, _AD_REL_W = _adaptive_weights(_compute_query_stats(qlist))
         except Exception:
             _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W = DENSE_WEIGHT, LEX_VECTOR_WEIGHT, LEXICAL_WEIGHT
+            _AD_ENT_W, _AD_REL_W = ENTITY_DENSE_WEIGHT, RELATION_DENSE_WEIGHT
     else:
         _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W = DENSE_WEIGHT, LEX_VECTOR_WEIGHT, LEXICAL_WEIGHT
+        _AD_ENT_W, _AD_REL_W = ENTITY_DENSE_WEIGHT, RELATION_DENSE_WEIGHT
 
     # Force graph injection for graph intent even if disabled by env
     _graph_injection_active = _env_truthy(os.environ.get("HYBRID_GRAPH_INJECTION", "1"), True)
@@ -1618,6 +1627,60 @@ def _run_hybrid_search_impl(
     if os.environ.get("DEBUG_HYBRID_SEARCH"):
         total_dense_results = sum(len(rs) for rs in result_sets)
         logger.debug(f"Dense query returned {total_dense_results} total results across {len(result_sets)} queries")
+
+    # --- Multi-Granular Vector Search (entity/relation embeddings) ---
+    # When enabled, uses entity_dense and relation_dense vectors for improved retrieval
+    _mg_entity_results: List[Any] = []
+    _mg_relation_results: List[Any] = []
+    if MULTI_GRANULAR_VECTORS and embedded and not _DENSE_PRESERVING:
+        try:
+            # For queries, use the same embedding for entity/relation vectors.
+            # The indexed vectors contain domain-specific content (signatures/calls),
+            # and the query embedding will match based on semantic similarity.
+            for i, dense_vec in enumerate(embedded):
+                query_text = qlist_for_embed[i] if i < len(qlist_for_embed) else None
+                try:
+                    mg_results, mg_stages = multi_granular_query(
+                        client,
+                        vec_name,
+                        dense_vec,
+                        entity_vec=dense_vec,  # Query embedding for entity search
+                        relation_vec=dense_vec,  # Query embedding for relation search
+                        flt=flt_gated,
+                        per_query=_scaled_per_query,
+                        collection_name=collection,
+                        prefetch_limit=max(100, _scaled_per_query * 3),
+                        query_text=query_text,
+                    )
+                    # Collect stage results for fusion
+                    if mg_stages.get("entity"):
+                        _mg_entity_results.extend(mg_stages["entity"])
+                    if mg_stages.get("relation"):
+                        _mg_relation_results.extend(mg_stages["relation"])
+                except Exception as mg_err:
+                    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                        logger.debug(f"Multi-granular query failed for query {i}: {mg_err}")
+
+            # Fuse entity/relation scores into score_map with adaptive weights
+            if _mg_entity_results or _mg_relation_results:
+                fuse_multi_granular_scores(
+                    score_map,
+                    _mg_entity_results,
+                    _mg_relation_results,
+                    rrf_k=_scaled_rrf_k,
+                    entity_weight=_AD_ENT_W,
+                    relation_weight=_AD_REL_W,
+                )
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(
+                        f"Multi-granular fusion: entity={len(_mg_entity_results)}, "
+                        f"relation={len(_mg_relation_results)}, "
+                        f"weights=(ent={_AD_ENT_W:.2f}, rel={_AD_REL_W:.2f})"
+                    )
+            _dt("multi_granular_query")
+        except Exception as e:
+            if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                logger.debug(f"Multi-granular search failed: {e}")
 
     # --- Graph-Guided Candidate Injection ---
     if os.environ.get("DEBUG_HYBRID_SEARCH"):

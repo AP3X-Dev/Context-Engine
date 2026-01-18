@@ -71,7 +71,7 @@ ENTITY_DENSE_DIM = _safe_int_env("ENTITY_DENSE_DIM", 768)
 
 # Relation dense vector: embeds call/import relationships
 RELATION_DENSE_NAME = os.environ.get("RELATION_DENSE_NAME", "relation_dense")
-RELATION_DENSE_DIM = _safe_int_env("RELATION_DENSE_DIM", 384)
+RELATION_DENSE_DIM = _safe_int_env("RELATION_DENSE_DIM", 768)  # Same as embedding model output
 
 
 # ---------------------------------------------------------------------------
