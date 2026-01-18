@@ -388,6 +388,7 @@ class ContextEngineRetriever:
                 rerank_top_n=rerank_top_n if self.rerank_enabled else None,
                 rerank_return_m=top_k if self.rerank_enabled else None,
                 mode=self.mode,
+                output_format="json",  # Ensure dict results, not TOON strings
             )
             # Extract scores
             doc_scores = {}

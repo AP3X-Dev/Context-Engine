@@ -815,17 +815,24 @@ class Neo4jGraphBackend(GraphBackend):
         repo: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Find all callers of a symbol using Cypher."""
+        """Find all callers of a symbol using Cypher.
+
+        Supports both exact matches and class-level queries (includes methods).
+        For "MyClass", also matches callers of "MyClass.method" etc.
+        """
         driver = self._get_driver()
         db = self._get_database()
         collection = self._get_collection(graph_store)
+        # Pattern for class + methods: exact match OR starts with "Class."
+        symbol_prefix = f"{symbol}."
 
         try:
             with driver.session(database=db) as session:
                 if repo and repo != "*":
                     result = session.run("""
-                        MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {name: $symbol, collection: $collection})
-                        WHERE r.collection = $collection AND (r.repo = $repo OR callee.repo = $repo)
+                        MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
+                        WHERE (callee.name = $symbol OR callee.name STARTS WITH $symbol_prefix)
+                              AND r.collection = $collection AND (r.repo = $repo OR callee.repo = $repo)
                         RETURN caller.name as caller_symbol,
                                callee.name as callee_symbol,
                                r.caller_path as caller_path,
@@ -836,11 +843,12 @@ class Neo4jGraphBackend(GraphBackend):
                                r.edge_id as edge_id,
                                r.caller_point_id as caller_point_id
                         LIMIT $limit
-                    """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+                    """, {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit})
                 else:
                     result = session.run("""
-                        MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {name: $symbol, collection: $collection})
-                        WHERE r.collection = $collection
+                        MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
+                        WHERE (callee.name = $symbol OR callee.name STARTS WITH $symbol_prefix)
+                              AND r.collection = $collection
                         RETURN caller.name as caller_symbol,
                                callee.name as callee_symbol,
                                r.caller_path as caller_path,
@@ -851,7 +859,7 @@ class Neo4jGraphBackend(GraphBackend):
                                r.edge_id as edge_id,
                                r.caller_point_id as caller_point_id
                         LIMIT $limit
-                    """, {"symbol": symbol, "collection": collection, "limit": limit})
+                    """, {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit})
 
                 return [dict(record) for record in result]
 
@@ -866,17 +874,24 @@ class Neo4jGraphBackend(GraphBackend):
         repo: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Find all symbols called by a symbol using Cypher."""
+        """Find all symbols called by a symbol using Cypher.
+
+        Supports both exact matches and class-level queries (includes methods).
+        For "MyClass", also matches "MyClass.method" etc.
+        """
         driver = self._get_driver()
         db = self._get_database()
         collection = self._get_collection(graph_store)
+        # Pattern for class + methods: exact match OR starts with "Class."
+        symbol_prefix = f"{symbol}."
 
         try:
             with driver.session(database=db) as session:
                 if repo and repo != "*":
                     result = session.run("""
-                        MATCH (caller:Symbol {name: $symbol, collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
-                        WHERE r.collection = $collection AND (r.repo = $repo OR caller.repo = $repo)
+                        MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
+                        WHERE (caller.name = $symbol OR caller.name STARTS WITH $symbol_prefix)
+                              AND r.collection = $collection AND (r.repo = $repo OR caller.repo = $repo)
                         RETURN caller.name as caller_symbol,
                                callee.name as callee_symbol,
                                r.caller_path as caller_path,
@@ -888,11 +903,12 @@ class Neo4jGraphBackend(GraphBackend):
                                r.edge_id as edge_id,
                                r.caller_point_id as caller_point_id
                         LIMIT $limit
-                    """, {"symbol": symbol, "repo": repo, "collection": collection, "limit": limit})
+                    """, {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit})
                 else:
                     result = session.run("""
-                        MATCH (caller:Symbol {name: $symbol, collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
-                        WHERE r.collection = $collection
+                        MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
+                        WHERE (caller.name = $symbol OR caller.name STARTS WITH $symbol_prefix)
+                              AND r.collection = $collection
                         RETURN caller.name as caller_symbol,
                                callee.name as callee_symbol,
                                r.caller_path as caller_path,
@@ -904,7 +920,7 @@ class Neo4jGraphBackend(GraphBackend):
                                r.edge_id as edge_id,
                                r.caller_point_id as caller_point_id
                         LIMIT $limit
-                    """, {"symbol": symbol, "collection": collection, "limit": limit})
+                    """, {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit})
 
                 return [dict(record) for record in result]
 
@@ -919,17 +935,24 @@ class Neo4jGraphBackend(GraphBackend):
         repo: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Find all files that import a module using Cypher."""
+        """Find all files that import a module using Cypher.
+
+        Supports both exact matches and submodule queries.
+        For "mypackage", also matches importers of "mypackage.submodule" etc.
+        """
         driver = self._get_driver()
         db = self._get_database()
         collection = self._get_collection(graph_store)
+        # Pattern for module + submodules: exact match OR starts with "module."
+        module_prefix = f"{module}."
 
         try:
             with driver.session(database=db) as session:
                 if repo and repo != "*":
                     result = session.run("""
-                        MATCH (importer:Symbol {collection: $collection})-[r:IMPORTS]->(imported:Symbol {name: $module, collection: $collection})
-                        WHERE r.collection = $collection AND (r.repo = $repo OR imported.repo = $repo)
+                        MATCH (importer:Symbol {collection: $collection})-[r:IMPORTS]->(imported:Symbol {collection: $collection})
+                        WHERE (imported.name = $module OR imported.name STARTS WITH $module_prefix)
+                              AND r.collection = $collection AND (r.repo = $repo OR imported.repo = $repo)
                         RETURN importer.name as caller_symbol,
                                imported.name as callee_symbol,
                                r.caller_path as caller_path,
@@ -938,11 +961,12 @@ class Neo4jGraphBackend(GraphBackend):
                                r.edge_id as edge_id,
                                r.caller_point_id as caller_point_id
                         LIMIT $limit
-                    """, {"module": module, "repo": repo, "collection": collection, "limit": limit})
+                    """, {"module": module, "module_prefix": module_prefix, "repo": repo, "collection": collection, "limit": limit})
                 else:
                     result = session.run("""
-                        MATCH (importer:Symbol {collection: $collection})-[r:IMPORTS]->(imported:Symbol {name: $module, collection: $collection})
-                        WHERE r.collection = $collection
+                        MATCH (importer:Symbol {collection: $collection})-[r:IMPORTS]->(imported:Symbol {collection: $collection})
+                        WHERE (imported.name = $module OR imported.name STARTS WITH $module_prefix)
+                              AND r.collection = $collection
                         RETURN importer.name as caller_symbol,
                                imported.name as callee_symbol,
                                r.caller_path as caller_path,
@@ -951,7 +975,7 @@ class Neo4jGraphBackend(GraphBackend):
                                r.edge_id as edge_id,
                                r.caller_point_id as caller_point_id
                         LIMIT $limit
-                    """, {"module": module, "collection": collection, "limit": limit})
+                    """, {"module": module, "module_prefix": module_prefix, "collection": collection, "limit": limit})
 
                 return [dict(record) for record in result]
 
