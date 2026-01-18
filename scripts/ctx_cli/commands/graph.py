@@ -32,7 +32,137 @@ except ImportError:
     RICH_AVAILABLE = False
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
-from scripts.ctx_cli.utils.config import resolve_collection
+from scripts.ctx_cli.utils.config import resolve_collection, is_neo4j_enabled
+
+# Lazy import for graph backfill (avoids loading qdrant_client unless needed)
+_graph_backfill_tick = None
+
+
+def _get_graph_backfill_tick():
+    """Lazy load graph_backfill_tick to avoid import overhead."""
+    global _graph_backfill_tick
+    if _graph_backfill_tick is None:
+        from scripts.ingest.pipeline import graph_backfill_tick
+        _graph_backfill_tick = graph_backfill_tick
+    return _graph_backfill_tick
+
+
+def call_graph_backfill(
+    collection: Optional[str] = None,
+    repo: Optional[str] = None,
+    max_points: int = 1000,
+) -> Dict[str, Any]:
+    """Call graph_backfill_tick directly (no MCP, connects to Qdrant from host)."""
+    import os
+
+    try:
+        from qdrant_client import QdrantClient
+
+        # Resolve collection from env or arg
+        coll = collection or os.environ.get("COLLECTION_NAME", "codebase")
+
+        # Connect to Qdrant (localhost for CLI running on host)
+        qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+        client = QdrantClient(url=qdrant_url)
+
+        # Get the backfill function
+        backfill_tick = _get_graph_backfill_tick()
+
+        # Run backfill
+        processed = backfill_tick(
+            client=client,
+            collection=coll,
+            repo_name=repo,
+            max_points=max_points,
+        )
+
+        return {
+            "ok": True,
+            "processed": processed,
+            "collection": coll,
+            "repo": repo,
+        }
+
+    except ImportError as e:
+        return {"ok": False, "error": f"Missing dependency: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def backfill_command(args) -> int:
+    """Execute graph backfill command."""
+    console = Console() if RICH_AVAILABLE else None
+
+    # Show graph backend status
+    if is_neo4j_enabled():
+        if console:
+            console.print(Panel("[cyan]Neo4j graph backend enabled[/cyan]", title="Graph Backend"))
+        else:
+            print("Graph backend: Neo4j (NEO4J_GRAPH=1)")
+    else:
+        if console:
+            console.print(Panel("[yellow]Using Qdrant graph backend[/yellow]\n[dim]Set NEO4J_GRAPH=1 to use Neo4j[/dim]", title="Graph Backend"))
+        else:
+            print("Graph backend: Qdrant (set NEO4J_GRAPH=1 for Neo4j)")
+
+    total_processed = 0
+    iterations = 0
+    max_iterations = args.iterations if hasattr(args, 'iterations') else 10
+
+    if console:
+        console.print(f"\n[dim]Running backfill (max {args.max_points} points per iteration, up to {max_iterations} iterations)...[/dim]\n")
+    else:
+        print(f"Running backfill (max {args.max_points} points per iteration)...")
+
+    while iterations < max_iterations:
+        iterations += 1
+        result = call_graph_backfill(
+            collection=args.collection,
+            repo=args.repo,
+            max_points=args.max_points,
+        )
+
+        if args.json:
+            print(json.dumps(result, indent=2))
+            if not result.get("ok"):
+                return 1
+            if result.get("processed", 0) == 0:
+                break
+            total_processed += result.get("processed", 0)
+            continue
+
+        if "error" in result or not result.get("ok"):
+            msg = result.get("error", {}).get("message") if isinstance(result.get("error"), dict) else result.get("error", "Unknown error")
+            if console:
+                console.print(Panel(f"[red]{msg}[/red]", title="[bold red]Error[/bold red]"))
+            else:
+                print(f"Error: {msg}", file=sys.stderr)
+            return 1
+
+        processed = result.get("processed", 0)
+        total_processed += processed
+
+        if console:
+            console.print(f"  [green]✓[/green] Iteration {iterations}: processed {processed} points")
+        else:
+            print(f"  Iteration {iterations}: processed {processed} points")
+
+        # Stop if no more points to process
+        if processed == 0:
+            break
+
+    # Summary
+    if console:
+        console.print(Panel(
+            f"[green]Backfill complete[/green]\n\n"
+            f"Total processed: [cyan]{total_processed}[/cyan] points\n"
+            f"Iterations: [cyan]{iterations}[/cyan]",
+            title="[bold green]Summary[/bold green]"
+        ))
+    else:
+        print(f"\nBackfill complete: {total_processed} points in {iterations} iterations")
+
+    return 0
 
 
 def call_symbol_graph(
@@ -202,6 +332,22 @@ def register_command(subparsers):
     imp_parser = graph_subs.add_parser("importers", help="Find what imports this module/symbol")
     _add_common_args(imp_parser)
     imp_parser.set_defaults(func=graph_command, query_type="importers")
+
+    # backfill subcommand
+    backfill_parser = graph_subs.add_parser(
+        "backfill",
+        help="Populate graph edges from existing indexed code",
+        description=(
+            "Backfill graph edges from existing indexed points. "
+            "Use after enabling NEO4J_GRAPH=1 or to rebuild graph from scratch."
+        )
+    )
+    backfill_parser.add_argument("--collection", "-c", help="Collection name (default: COLLECTION_NAME)")
+    backfill_parser.add_argument("--repo", "-r", help="Filter by repository name")
+    backfill_parser.add_argument("--max-points", type=int, default=1000, help="Max points per iteration (default: 1000)")
+    backfill_parser.add_argument("--iterations", type=int, default=10, help="Max iterations (default: 10)")
+    backfill_parser.add_argument("--json", "-j", action="store_true", help="Output as JSON")
+    backfill_parser.set_defaults(func=backfill_command)
 
     # Default behavior
     graph_parser.set_defaults(func=lambda args: graph_parser.print_help() or 0)

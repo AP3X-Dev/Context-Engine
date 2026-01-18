@@ -419,12 +419,19 @@ class RemoteUploadClient:
                 container = PurePosixPath(container_root)
                 if relative.parts:
                     container = container.joinpath(*relative.parts)
+                else:
+                    # When host_path == host_root, relative is empty
+                    # Use the repo name (last component of host_path) as container subdirectory
+                    repo_name = host_path_obj.name
+                    if repo_name:
+                        container = container.joinpath(repo_name)
                 return str(container)
             except ValueError:
                 pass
             except Exception:
                 pass
 
+        # Fallback: strip drive/anchor and map to /work/<repo-name>
         try:
             container = PurePosixPath(container_root)
             usable_parts = [part for part in host_path_obj.parts if part not in (host_path_obj.anchor, host_path_obj.drive)]

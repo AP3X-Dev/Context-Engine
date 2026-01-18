@@ -7,8 +7,101 @@ Provides a high-level interface for managing Docker Compose operations.
 import subprocess
 import time
 import socket
+import os
 from typing import Optional, Tuple, List
 from pathlib import Path
+
+
+def _coerce_bool(value: Optional[str], default: bool = False) -> bool:
+    """Convert string environment values to boolean."""
+    if value is None:
+        return default
+    v = str(value).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _load_env_file(path: Path) -> dict:
+    """Load environment variables from a .env file."""
+    env = {}
+    if not path.exists():
+        return env
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    env[key] = value
+    except Exception:
+        pass
+    return env
+
+
+def is_neo4j_enabled(compose_root: Optional[Path] = None) -> bool:
+    """
+    Check if Neo4j graph backend is enabled.
+
+    Checks:
+        1. NEO4J_GRAPH environment variable
+        2. .env file in compose root
+
+    Args:
+        compose_root: Directory containing docker-compose.yml
+
+    Returns:
+        True if NEO4J_GRAPH=1 is set
+    """
+    # Check environment first
+    env_val = os.environ.get("NEO4J_GRAPH")
+    if env_val is not None:
+        return _coerce_bool(env_val, default=False)
+
+    # Check .env file
+    if compose_root is None:
+        compose_root = Path(__file__).resolve().parent.parent.parent.parent
+
+    env_path = compose_root / ".env"
+    if env_path.exists():
+        env_vars = _load_env_file(env_path)
+        env_val = env_vars.get("NEO4J_GRAPH")
+        if env_val is not None:
+            return _coerce_bool(env_val, default=False)
+
+    return False
+
+
+def get_compose_files(compose_root: Optional[Path] = None) -> List[str]:
+    """
+    Get list of compose files to use based on configuration.
+
+    Returns base docker-compose.yml plus any optional overlays
+    (e.g., docker-compose.neo4j.yml if Neo4j is enabled).
+
+    Args:
+        compose_root: Directory containing docker-compose.yml
+
+    Returns:
+        List of compose file arguments (e.g., ["-f", "docker-compose.yml", "-f", "docker-compose.neo4j.yml"])
+    """
+    if compose_root is None:
+        compose_root = Path(__file__).resolve().parent.parent.parent.parent
+
+    files = ["-f", "docker-compose.yml"]
+
+    # Add Neo4j overlay if enabled
+    neo4j_compose = compose_root / "docker-compose.neo4j.yml"
+    if is_neo4j_enabled(compose_root) and neo4j_compose.exists():
+        files.extend(["-f", "docker-compose.neo4j.yml"])
+
+    return files
 
 
 def run_docker_compose(
@@ -38,7 +131,9 @@ def run_docker_compose(
         # Default to project root (2 levels up from this file)
         cwd = Path(__file__).resolve().parent.parent.parent.parent
 
-    cmd = ["docker", "compose", command, *args]
+    # Build command with compose files (includes Neo4j overlay if enabled)
+    compose_files = get_compose_files(cwd)
+    cmd = ["docker", "compose", *compose_files, command, *args]
 
     if capture_output:
         result = subprocess.run(
@@ -198,7 +293,9 @@ class DockerComposeManager:
         Returns:
             CompletedProcess result
         """
-        cmd = ["docker", "compose", command, *args]
+        # Build command with compose files (includes Neo4j overlay if enabled)
+        compose_files = get_compose_files(self.cwd)
+        cmd = ["docker", "compose", *compose_files, command, *args]
 
         return subprocess.run(
             cmd,

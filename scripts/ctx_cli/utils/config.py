@@ -30,20 +30,95 @@ HEALTH_CHECKS = [
 ]
 
 
+def _coerce_bool(value: Optional[str], default: bool = False) -> bool:
+    """Convert string environment values to boolean."""
+    if value is None:
+        return default
+    v = str(value).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _load_env_file_simple(path: Path) -> Dict[str, str]:
+    """Load environment variables from a .env file."""
+    env: Dict[str, str] = {}
+    if not path.exists():
+        return env
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    env[key] = value
+    except Exception:
+        pass
+    return env
+
+
+def is_neo4j_enabled() -> bool:
+    """
+    Check if Neo4j graph backend is enabled.
+
+    Checks:
+        1. NEO4J_GRAPH environment variable
+        2. .env file in project root
+
+    Returns:
+        True if NEO4J_GRAPH=1 is set
+    """
+    # Check environment first
+    env_val = os.environ.get("NEO4J_GRAPH")
+    if env_val is not None:
+        return _coerce_bool(env_val, default=False)
+
+    # Check .env file in project root
+    project_root = Path(__file__).resolve().parent.parent.parent.parent
+    env_path = project_root / ".env"
+    if env_path.exists():
+        env_vars = _load_env_file_simple(env_path)
+        env_val = env_vars.get("NEO4J_GRAPH")
+        if env_val is not None:
+            return _coerce_bool(env_val, default=False)
+
+    return False
+
+
 def get_health_checks() -> List[Dict[str, Any]]:
     """
     Get health check configuration with environment overrides.
+
+    Includes Neo4j if NEO4J_GRAPH=1 is set.
 
     Environment variables:
         QDRANT_PORT: Override Qdrant port
         MCP_INDEXER_PORT: Override Indexer port
         MCP_MEMORY_PORT: Override Memory port
+        NEO4J_GRAPH: Enable Neo4j health check
 
     Returns:
         List of health check configurations
     """
+    # Start with base checks
+    base_checks = list(HEALTH_CHECKS)
+
+    # Add Neo4j if enabled
+    if is_neo4j_enabled():
+        base_checks.append({
+            "name": "Neo4j",
+            "port": DEFAULT_PORTS["neo4j_http"],
+            "host": "localhost"
+        })
+
     checks = []
-    for check in HEALTH_CHECKS:
+    for check in base_checks:
         check_copy = check.copy()
         name_lower = check["name"].lower()
 
@@ -54,6 +129,8 @@ def get_health_checks() -> List[Dict[str, Any]]:
             port_override = os.environ.get("MCP_INDEXER_PORT")
         elif name_lower == "memory":
             port_override = os.environ.get("MCP_MEMORY_PORT")
+        elif name_lower == "neo4j":
+            port_override = os.environ.get("NEO4J_HTTP_PORT")
         else:
             port_override = None
 

@@ -41,6 +41,7 @@ from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 from scripts.ctx_cli.utils.docker import (
     run_docker_compose,
     wait_for_health_check,
+    is_neo4j_enabled,
 )
 from scripts.ctx_cli.utils.config import get_health_checks
 from scripts.ctx_cli.utils.env import load_env_file, find_env_file
@@ -325,6 +326,10 @@ def step_up(build: bool, wait_timeout: int, no_llama: bool = False) -> int:
         compose_args.extend(["--scale", "llamacpp=0"])
         console.print("[dim]Skipping local LLM container (--no-llama)[/dim]")
 
+    # Check if Neo4j is enabled
+    if is_neo4j_enabled():
+        console.print("[cyan]Neo4j graph backend enabled[/cyan] (NEO4J_GRAPH=1)")
+
     try:
         # Start services (quiet=True suppresses docker compose warnings)
         run_docker_compose("up", *compose_args, quiet=True)
@@ -461,7 +466,7 @@ def step_index(
                     f"[bold]Index dev-workspace?[/bold] [dim](Y/n)[/dim] "
                 )
             except (EOFError, KeyboardInterrupt):
-                response = "y"
+                response = "n"  # Default to skip on interrupt for less surprising behavior
 
             if response.lower().strip() not in ("n", "no"):
                 paths = [str(dev_workspace)]

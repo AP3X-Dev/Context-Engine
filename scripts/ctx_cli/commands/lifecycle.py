@@ -24,6 +24,7 @@ except ImportError:
 from scripts.ctx_cli.utils.docker import (
     run_docker_compose,
     wait_for_health_check,
+    is_neo4j_enabled,
 )
 from scripts.ctx_cli.utils.config import get_health_checks
 
@@ -62,6 +63,10 @@ def run_up(args) -> int:
     if no_llama:
         compose_args.extend(["--scale", "llamacpp=0"])
         _print("[dim]Skipping local LLM container (--no-llama)[/dim]\n")
+
+    # Check if Neo4j is enabled
+    if is_neo4j_enabled():
+        _print("[cyan]Neo4j graph backend enabled[/cyan] (NEO4J_GRAPH=1)\n")
 
     try:
         # Start services
