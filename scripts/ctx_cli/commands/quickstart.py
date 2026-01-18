@@ -433,49 +433,98 @@ def step_index(
 
     # Determine paths to index
     explicit_paths = bool(paths)
+    compose_root = _resolve_compose_root()
+    dev_workspace = _resolve_dev_workspace(compose_root)
+    cwd = Path.cwd()
+
     if not paths:
-        # No paths provided - ask user
-        cwd = Path.cwd()
-        console.print(f"[yellow]No paths specified.[/yellow]")
-        console.print(f"[dim]Current directory: {cwd}[/dim]\n")
+        # No paths provided - detect smart defaults
+        # Check if HOST_INDEX_PATH (dev_workspace) has content to index
+        dev_workspace_has_content = False
+        if dev_workspace.exists():
+            # Check for actual content (not just .gitkeep)
+            contents = [f for f in dev_workspace.iterdir() if f.name != ".gitkeep"]
+            dev_workspace_has_content = len(contents) > 0
 
-        try:
-            response = console.input(
-                "[bold]Index current directory?[/bold] [dim](Y/n)[/dim] "
-            )
-        except (EOFError, KeyboardInterrupt):
-            response = "n"
+        # Determine the best default path
+        if dev_workspace_has_content and dev_workspace != cwd:
+            # HOST_INDEX_PATH has content - offer to index it
+            console.print(f"[green]✓[/green] Detected HOST_INDEX_PATH: [cyan]{dev_workspace}[/cyan]")
+            if dev_workspace.exists():
+                contents = [f.name for f in dev_workspace.iterdir() if f.name != ".gitkeep"]
+                if contents:
+                    console.print(f"[dim]  Contains: {', '.join(contents[:5])}{'...' if len(contents) > 5 else ''}[/dim]")
+            console.print()
 
-        if response.lower().strip() in ("n", "no"):
-            # Ask for paths
-            console.print("\n[bold]Enter paths to index[/bold] [dim](comma-separated, or one per line)[/dim]")
-            console.print("[dim]Press Enter twice when done:[/dim]\n")
-
-            input_paths = []
             try:
-                while True:
-                    line = console.input("  [cyan]>[/cyan] ").strip()
-                    if not line:
-                        if input_paths:
-                            break
-                        continue
-                    # Handle comma-separated paths
-                    for p in line.split(","):
-                        p = p.strip()
-                        if p:
-                            input_paths.append(p)
+                response = console.input(
+                    f"[bold]Index dev-workspace?[/bold] [dim](Y/n)[/dim] "
+                )
             except (EOFError, KeyboardInterrupt):
-                pass
+                response = "y"
 
-            if not input_paths:
-                console.print("\n[red]✗[/red] No paths provided. Skipping indexing.\n")
-                return 0
+            if response.lower().strip() not in ("n", "no"):
+                paths = [str(dev_workspace)]
+                explicit_paths = False
+            else:
+                # User declined, ask for custom paths
+                paths = None
 
-            paths = input_paths
-            explicit_paths = True
-        else:
-            paths = [str(cwd)]
-            explicit_paths = False
+        elif cwd == compose_root:
+            # User is in the Context-Engine source directory
+            console.print(f"[yellow]![/yellow] You're in the Context-Engine source directory.")
+            console.print(f"[dim]  HOST_INDEX_PATH is set to: {dev_workspace}[/dim]\n")
+
+            if dev_workspace_has_content:
+                console.print(f"[dim]  dev-workspace has content to index.[/dim]")
+                paths = [str(dev_workspace)]
+            else:
+                console.print(f"[dim]  dev-workspace is empty. Add repos there or provide paths to index.[/dim]\n")
+                paths = None
+
+        if paths is None:
+            # Ask user for paths
+            console.print(f"[yellow]No paths specified.[/yellow]")
+            console.print(f"[dim]Current directory: {cwd}[/dim]")
+            console.print(f"[dim]HOST_INDEX_PATH: {dev_workspace}[/dim]\n")
+
+            try:
+                response = console.input(
+                    "[bold]Index current directory?[/bold] [dim](Y/n)[/dim] "
+                )
+            except (EOFError, KeyboardInterrupt):
+                response = "n"
+
+            if response.lower().strip() in ("n", "no"):
+                # Ask for paths
+                console.print("\n[bold]Enter paths to index[/bold] [dim](comma-separated, or one per line)[/dim]")
+                console.print("[dim]Press Enter twice when done:[/dim]\n")
+
+                input_paths = []
+                try:
+                    while True:
+                        line = console.input("  [cyan]>[/cyan] ").strip()
+                        if not line:
+                            if input_paths:
+                                break
+                            continue
+                        # Handle comma-separated paths
+                        for p in line.split(","):
+                            p = p.strip()
+                            if p:
+                                input_paths.append(p)
+                except (EOFError, KeyboardInterrupt):
+                    pass
+
+                if not input_paths:
+                    console.print("\n[red]✗[/red] No paths provided. Skipping indexing.\n")
+                    return 0
+
+                paths = input_paths
+                explicit_paths = True
+            else:
+                paths = [str(cwd)]
+                explicit_paths = False
 
     # Validate and resolve paths
     resolved_paths = []
@@ -489,8 +538,6 @@ def step_index(
             return 1
         resolved_paths.append(path)
 
-    compose_root = _resolve_compose_root()
-    dev_workspace = _resolve_dev_workspace(compose_root)
     multi_repo_mode = _multi_repo_mode_enabled(compose_root)
 
     # Ensure all indexed paths are visible to containers under `/work` (dev_workspace).
