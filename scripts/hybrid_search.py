@@ -1641,7 +1641,9 @@ def _run_hybrid_search_impl(
             for i, dense_vec in enumerate(embedded):
                 query_text = qlist_for_embed[i] if i < len(qlist_for_embed) else None
                 try:
-                    mg_results, mg_stages = multi_granular_query(
+                    # We only need mg_stages for per-query RRF fusion; the combined
+                    # mg_results is not used since we fuse entity/relation separately.
+                    _, mg_stages = multi_granular_query(
                         client,
                         vec_name,
                         dense_vec,

@@ -54,11 +54,13 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
     try:
         # Use docker ps with filter for context-engine project containers
         # This works from any directory, unlike docker compose ps
+        # Use Go template format for compatibility with all Docker versions
+        # (--format json requires Docker 24.0+, Go template works everywhere)
         result = subprocess.run(
             [
                 "docker", "ps", "-a",
                 "--filter", "label=com.docker.compose.project=context-engine",
-                "--format", "json"
+                "--format", '{{json .}}'
             ],
             capture_output=True,
             text=True,
@@ -69,22 +71,40 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
         if result.returncode != 0:
             return False, []
 
-        # Parse JSON output - docker ps returns JSONL (one JSON object per line)
+        # Parse JSONL output - docker ps returns one JSON object per line
         services = []
-        for line in result.stdout.strip().split('\n'):
-            if line.strip():
-                try:
-                    container = json.loads(line)
-                    # Map docker ps format to docker compose ps format for compatibility
-                    services.append({
-                        "Name": container.get("Names", ""),
-                        "Service": container.get("Labels", "").split("com.docker.compose.service=")[-1].split(",")[0] if "com.docker.compose.service=" in container.get("Labels", "") else container.get("Names", ""),
-                        "State": "running" if container.get("State") == "running" else container.get("State", ""),
-                        "Status": container.get("Status", ""),
-                        "Image": container.get("Image", ""),
-                    })
-                except json.JSONDecodeError:
-                    continue
+        output = result.stdout.strip()
+        if not output:
+            return False, []
+
+        for line in output.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # Validate line looks like JSON before parsing
+            if not (line.startswith('{') and line.endswith('}')):
+                # Not JSON - Docker might be using different format
+                continue
+            try:
+                container = json.loads(line)
+                # Map docker ps format to docker compose ps format for compatibility
+                labels = container.get("Labels", "")
+                service_name = container.get("Names", "")
+                if "com.docker.compose.service=" in labels:
+                    # Extract service name from labels
+                    for part in labels.split(","):
+                        if part.startswith("com.docker.compose.service="):
+                            service_name = part.split("=", 1)[1]
+                            break
+                services.append({
+                    "Name": container.get("Names", ""),
+                    "Service": service_name,
+                    "State": "running" if container.get("State") == "running" else container.get("State", ""),
+                    "Status": container.get("Status", ""),
+                    "Image": container.get("Image", ""),
+                })
+            except json.JSONDecodeError:
+                continue
 
         # Check if all services are running
         all_running = len(services) > 0 and all(
@@ -94,7 +114,7 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
 
         return all_running, services
 
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
         return False, []
 
 
