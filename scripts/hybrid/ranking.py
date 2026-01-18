@@ -17,6 +17,8 @@ __all__ = [
     "_detect_implementation_intent", "_IMPL_INTENT_PATTERNS",
     "_detect_score_variance",
     "clear_collection_stats_cache", "clear_symbol_extent_cache",
+    # Multi-granular fusion
+    "fuse_multi_granular_scores", "ENTITY_DENSE_WEIGHT", "RELATION_DENSE_WEIGHT",
 ]
 
 import os
@@ -60,6 +62,10 @@ LEX_VECTOR_WEIGHT = _safe_float(
     os.environ.get("HYBRID_LEX_VECTOR_WEIGHT", str(LEXICAL_WEIGHT)), LEXICAL_WEIGHT
 )
 PSEUDO_BOOST = _safe_float(os.environ.get("HYBRID_PSEUDO_BOOST", "0.0"), 0.0)
+
+# Multi-granular vector weights
+ENTITY_DENSE_WEIGHT = _safe_float(os.environ.get("HYBRID_ENTITY_DENSE_WEIGHT", "0.8"), 0.8)
+RELATION_DENSE_WEIGHT = _safe_float(os.environ.get("HYBRID_RELATION_DENSE_WEIGHT", "0.6"), 0.6)
 
 # Large codebase scaling
 LARGE_COLLECTION_THRESHOLD = _safe_int(os.environ.get("HYBRID_LARGE_THRESHOLD", "10000"), 10000)
@@ -583,6 +589,64 @@ def _adaptive_weights(stats: Dict[str, Any]) -> Tuple[float, float, float]:
     lx_scale = max(0.80, min(1.20, lx_scale))
 
     return base_d * dens_scale, base_lv * lv_scale, base_lx * lx_scale
+
+
+def fuse_multi_granular_scores(
+    score_map: Dict[str, Dict[str, Any]],
+    entity_results: List[Any],
+    relation_results: List[Any],
+    rrf_k: int = RRF_K,
+) -> None:
+    """Fuse entity_dense and relation_dense scores into the score_map using RRF.
+
+    Multi-granular fusion: adds entity and relation RRF scores
+    to the existing score map. Results are merged in-place.
+
+    Args:
+        score_map: Existing score map (will be modified in-place)
+        entity_results: Results from entity_dense query
+        relation_results: Results from relation_dense query
+        rrf_k: RRF k parameter for score calculation
+    """
+    # Process entity results
+    for rank, point in enumerate(entity_results, start=1):
+        try:
+            pid = str(point.id)
+            entity_rrf = rrf(rank, rrf_k) * ENTITY_DENSE_WEIGHT
+            if pid in score_map:
+                score_map[pid]["ent"] = entity_rrf
+                score_map[pid]["s"] = score_map[pid].get("s", 0) + entity_rrf
+            else:
+                # New entry from entity search
+                score_map[pid] = {
+                    "s": entity_rrf,
+                    "ent": entity_rrf,
+                    "d": 0.0,
+                    "lx": 0.0,
+                    "_point": point,
+                }
+        except Exception:
+            continue
+
+    # Process relation results
+    for rank, point in enumerate(relation_results, start=1):
+        try:
+            pid = str(point.id)
+            relation_rrf = rrf(rank, rrf_k) * RELATION_DENSE_WEIGHT
+            if pid in score_map:
+                score_map[pid]["rel"] = relation_rrf
+                score_map[pid]["s"] = score_map[pid].get("s", 0) + relation_rrf
+            else:
+                # New entry from relation search
+                score_map[pid] = {
+                    "s": relation_rrf,
+                    "rel": relation_rrf,
+                    "d": 0.0,
+                    "lx": 0.0,
+                    "_point": point,
+                }
+        except Exception:
+            continue
 
 
 def _bm25_token_weights_from_results(

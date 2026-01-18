@@ -24,6 +24,11 @@ from scripts.ingest.config import (
     LEX_SPLADE_MODE,
     MINI_VECTOR_NAME,
     MINI_VEC_DIM,
+    MULTI_GRANULAR_VECTORS,
+    ENTITY_DENSE_NAME,
+    ENTITY_DENSE_DIM,
+    RELATION_DENSE_NAME,
+    RELATION_DENSE_DIM,
     logical_repo_reuse_enabled,
 )
 
@@ -132,6 +137,20 @@ def _desired_vector_configs(
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
+                distance=models.Distance.COSINE,
+            )
+    except Exception:
+        pass
+
+    # Multi-granular vectors for improved retrieval
+    try:
+        if MULTI_GRANULAR_VECTORS:
+            vectors_cfg[ENTITY_DENSE_NAME] = models.VectorParams(
+                size=ENTITY_DENSE_DIM,
+                distance=models.Distance.COSINE,
+            )
+            vectors_cfg[RELATION_DENSE_NAME] = models.VectorParams(
+                size=RELATION_DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
     except Exception:
@@ -415,6 +434,26 @@ def ensure_collection(
                         distance=models.Distance.COSINE,
                     )
 
+                # Check for multi-granular vectors
+                try:
+                    has_entity = ENTITY_DENSE_NAME in cfg
+                    has_relation = RELATION_DENSE_NAME in cfg
+                except Exception:
+                    has_entity = False
+                    has_relation = False
+
+                if MULTI_GRANULAR_VECTORS and not has_entity:
+                    missing[ENTITY_DENSE_NAME] = models.VectorParams(
+                        size=ENTITY_DENSE_DIM,
+                        distance=models.Distance.COSINE,
+                    )
+
+                if MULTI_GRANULAR_VECTORS and not has_relation:
+                    missing[RELATION_DENSE_NAME] = models.VectorParams(
+                        size=RELATION_DENSE_DIM,
+                        distance=models.Distance.COSINE,
+                    )
+
                 if missing:
                     try:
                         update_cfg = _prepare_vector_update_config(missing)
@@ -453,6 +492,19 @@ def ensure_collection(
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
+                distance=models.Distance.COSINE,
+            )
+    except Exception:
+        pass
+    # Multi-granular vectors for new collection
+    try:
+        if MULTI_GRANULAR_VECTORS:
+            vectors_cfg[ENTITY_DENSE_NAME] = models.VectorParams(
+                size=ENTITY_DENSE_DIM,
+                distance=models.Distance.COSINE,
+            )
+            vectors_cfg[RELATION_DENSE_NAME] = models.VectorParams(
+                size=RELATION_DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
     except Exception:
