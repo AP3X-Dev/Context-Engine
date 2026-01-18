@@ -215,10 +215,10 @@ def reset(
     step = 0
 
     try:
-        # Step 1: Stop all services
+        # Step 1: Stop all services and remove volumes
         step += 1
         _print(f"\n[bold][{step}/{steps_total}] Stopping services...[/bold]")
-        _run_cmd(compose_cmd + ["down"], "Stopping all containers", check=False)
+        _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans"], "Stopping all containers", check=False)
         _print("[green]✓[/green] Services stopped")
 
         # Step 2: Build containers (unless skipped)
@@ -327,13 +327,15 @@ def reset(
             if var in os.environ:
                 indexer_env[var] = os.environ[var]
 
-        indexer_cmd = compose_cmd + ["run", "--rm"]
+        # Run indexer detached (-d) so CLI doesn't block
+        indexer_cmd = compose_cmd + ["run", "-d", "--name", "ctx-reset-indexer"]
         for k, v in indexer_env.items():
             indexer_cmd.extend(["-e", f"{k}={v}"])
         indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])
 
-        _run_cmd(indexer_cmd, "Indexing workspace")
-        _print("[green]✓[/green] Indexing complete")
+        _run_cmd(indexer_cmd, "Starting indexer (detached)")
+        _print("[green]✓[/green] Indexer started in background")
+        _print("[dim]  Monitor with: docker logs -f ctx-reset-indexer[/dim]")
 
         # Step 7: Download model and start services
         step += 1
