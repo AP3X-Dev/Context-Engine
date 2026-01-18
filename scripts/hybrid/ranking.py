@@ -17,6 +17,8 @@ __all__ = [
     "_detect_implementation_intent", "_IMPL_INTENT_PATTERNS",
     "_detect_score_variance",
     "clear_collection_stats_cache", "clear_symbol_extent_cache",
+    # Multi-granular fusion
+    "fuse_multi_granular_scores", "ENTITY_DENSE_WEIGHT", "RELATION_DENSE_WEIGHT",
 ]
 
 import os
@@ -60,6 +62,10 @@ LEX_VECTOR_WEIGHT = _safe_float(
     os.environ.get("HYBRID_LEX_VECTOR_WEIGHT", str(LEXICAL_WEIGHT)), LEXICAL_WEIGHT
 )
 PSEUDO_BOOST = _safe_float(os.environ.get("HYBRID_PSEUDO_BOOST", "0.0"), 0.0)
+
+# Multi-granular vector weights
+ENTITY_DENSE_WEIGHT = _safe_float(os.environ.get("HYBRID_ENTITY_DENSE_WEIGHT", "0.8"), 0.8)
+RELATION_DENSE_WEIGHT = _safe_float(os.environ.get("HYBRID_RELATION_DENSE_WEIGHT", "0.6"), 0.6)
 
 # Large codebase scaling
 LARGE_COLLECTION_THRESHOLD = _safe_int(os.environ.get("HYBRID_LARGE_THRESHOLD", "10000"), 10000)
@@ -546,43 +552,164 @@ def _compute_query_stats(queries: List[str]) -> Dict[str, Any]:
     has_question = any(("?" in q) for q in (queries or []))
     q0 = (queries[0].strip().lower() if queries else "")
     wh_start = q0.startswith(("how", "what", "why", "when", "where", "explain", "describe"))
+
+    # Detect graph-oriented queries (callers, imports, dependencies)
+    combined = " ".join(q.lower() for q in (queries or []))
+    graph_patterns = ("who calls", "what calls", "callers of", "calls to",
+                      "who imports", "what imports", "imports of", "imported by",
+                      "dependencies", "depends on", "used by", "uses of")
+    graph_hint = any(p in combined for p in graph_patterns)
+
     stats = {
         "total_tokens": total,
         "identifier_density": (id_like / max(1, total)),
         "avg_token_len": avg_tok_len,
         "avg_query_chars": (qchars / max(1, len(queries))) if queries else 0.0,
         "narrative_hint": bool(has_question or wh_start),
+        "graph_hint": graph_hint,
     }
     return stats
 
 
-def _adaptive_weights(stats: Dict[str, Any]) -> Tuple[float, float, float]:
-    """Return per-query weights (dense_w, lex_vec_w, lex_text_w) with gentle clamps.
-    
-    Dense/lex-vector vary within ±25%; lexical text component within ±20%.
+def _adaptive_weights(stats: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
+    """Return per-query weights (dense_w, lex_vec_w, lex_text_w, entity_w, relation_w).
+
+    Adjusts weights based on query characteristics:
+    - Identifier-heavy queries → boost entity_dense (symbol signatures)
+    - Narrative/semantic queries → boost dense, reduce entity
+    - Graph queries (callers/calls) → boost relation_dense
+
+    All weights vary within ±25-30% of base values.
     """
     base_d = DENSE_WEIGHT
     base_lv = LEX_VECTOR_WEIGHT
     base_lx = LEXICAL_WEIGHT
+    base_ent = ENTITY_DENSE_WEIGHT
+    base_rel = RELATION_DENSE_WEIGHT
 
     id_density = float(stats.get("identifier_density", 0.0) or 0.0)
     total = int(stats.get("total_tokens", 0) or 0)
     narrative_hint = 1.0 if stats.get("narrative_hint") else 0.0
     longish = 1.0 if total >= 8 else 0.0
 
+    # Detect graph-oriented queries (who calls X, what imports Y)
+    graph_hint = 1.0 if stats.get("graph_hint") else 0.0
+
     narrative_score = 0.6 * narrative_hint + 0.4 * longish
     id_score = id_density
     delta = max(-1.0, min(1.0, narrative_score - id_score))
 
+    # Original 3 weights
     dens_scale = 1.0 + 0.25 * delta
     lv_scale = 1.0 - 0.25 * delta
     lx_scale = 1.0 + 0.20 * (-delta)
 
+    # Entity weight: boost for identifier queries, reduce for narrative
+    # High id_density → entity is more useful (looking for specific symbols)
+    ent_scale = 1.0 - 0.30 * delta  # Opposite of dense (identifier-focused)
+
+    # Relation weight: boost for graph queries, moderate for identifiers
+    # Graph queries (callers/imports) benefit most from relation embeddings
+    rel_scale = 1.0 + 0.35 * graph_hint - 0.15 * delta
+
+    # Clamp all scales
     dens_scale = max(0.75, min(1.25, dens_scale))
     lv_scale = max(0.75, min(1.25, lv_scale))
     lx_scale = max(0.80, min(1.20, lx_scale))
+    ent_scale = max(0.70, min(1.35, ent_scale))
+    rel_scale = max(0.65, min(1.40, rel_scale))
 
-    return base_d * dens_scale, base_lv * lv_scale, base_lx * lx_scale
+    return (
+        base_d * dens_scale,
+        base_lv * lv_scale,
+        base_lx * lx_scale,
+        base_ent * ent_scale,
+        base_rel * rel_scale,
+    )
+
+
+def fuse_multi_granular_scores(
+    score_map: Dict[str, Dict[str, Any]],
+    entity_results: List[Any],
+    relation_results: List[Any],
+    rrf_k: int = RRF_K,
+    entity_weight: float | None = None,
+    relation_weight: float | None = None,
+) -> None:
+    """Fuse entity_dense and relation_dense scores into the score_map using RRF.
+
+    Multi-granular fusion: adds entity and relation RRF scores
+    to the existing score map. Results are merged in-place.
+
+    Args:
+        score_map: Existing score map (will be modified in-place)
+        entity_results: Results from entity_dense query
+        relation_results: Results from relation_dense query
+        rrf_k: RRF k parameter for score calculation
+        entity_weight: Adaptive weight for entity (None = use static default)
+        relation_weight: Adaptive weight for relation (None = use static default)
+    """
+    ent_w = entity_weight if entity_weight is not None else ENTITY_DENSE_WEIGHT
+    rel_w = relation_weight if relation_weight is not None else RELATION_DENSE_WEIGHT
+
+    # Process entity results
+    # Process entity results - accumulate scores for multi-query scenarios
+    for rank, point in enumerate(entity_results, start=1):
+        try:
+            pid = str(point.id)
+            entity_rrf = rrf(rank, rrf_k) * ent_w
+            if pid in score_map:
+                # Accumulate entity score (don't overwrite) for accurate contribution tracking
+                score_map[pid]["ent"] = score_map[pid].get("ent", 0.0) + entity_rrf
+                score_map[pid]["s"] = score_map[pid].get("s", 0) + entity_rrf
+            else:
+                # New entry from entity search - use "pt" key for consistency with score_map
+                score_map[pid] = {
+                    "pt": point,
+                    "s": entity_rrf,
+                    "ent": entity_rrf,
+                    "d": 0.0,
+                    "lx": 0.0,
+                    "sym_sub": 0.0,
+                    "sym_eq": 0.0,
+                    "fname": 0.0,
+                    "core": 0.0,
+                    "vendor": 0.0,
+                    "langb": 0.0,
+                    "rec": 0.0,
+                    "test": 0.0,
+                }
+        except Exception:
+            continue
+
+    # Process relation results - accumulate scores for multi-query scenarios
+    for rank, point in enumerate(relation_results, start=1):
+        try:
+            pid = str(point.id)
+            relation_rrf = rrf(rank, rrf_k) * rel_w
+            if pid in score_map:
+                # Accumulate relation score (don't overwrite) for accurate contribution tracking
+                score_map[pid]["rel"] = score_map[pid].get("rel", 0.0) + relation_rrf
+                score_map[pid]["s"] = score_map[pid].get("s", 0) + relation_rrf
+            else:
+                # New entry from relation search - use "pt" key for consistency with score_map
+                score_map[pid] = {
+                    "pt": point,
+                    "s": relation_rrf,
+                    "rel": relation_rrf,
+                    "d": 0.0,
+                    "lx": 0.0,
+                    "sym_sub": 0.0,
+                    "sym_eq": 0.0,
+                    "fname": 0.0,
+                    "core": 0.0,
+                    "vendor": 0.0,
+                    "langb": 0.0,
+                    "rec": 0.0,
+                    "test": 0.0,
+                }
+        except Exception:
+            continue
 
 
 def _bm25_token_weights_from_results(

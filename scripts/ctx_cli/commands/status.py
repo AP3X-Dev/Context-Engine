@@ -20,6 +20,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 import subprocess
 from datetime import datetime
@@ -40,17 +41,34 @@ except ImportError:
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
+# Compose project name - derives from COMPOSE_PROJECT_NAME env or defaults to "context-engine"
+# This ensures ctx status works even when docker-compose was started with -p or a different directory
+COMPOSE_PROJECT_NAME = os.environ.get("COMPOSE_PROJECT_NAME", "context-engine")
+
 
 def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
     """
     Check Docker Compose service status.
 
+    Works from any directory by using docker ps with label filters
+    instead of docker compose ps (which requires docker-compose.yml).
+
     Returns:
         Tuple of (all_running, services_list)
     """
     try:
+        # Use docker ps with filter for compose project containers
+        # This works from any directory, unlike docker compose ps
+        # Use Go template format for compatibility with all Docker versions
+        # (--format json requires Docker 24.0+, Go template works everywhere)
+        # NOTE: We use "docker ps" without -a to only show RUNNING containers.
+        # This excludes stopped one-off containers like ctx-reset-indexer.
         result = subprocess.run(
-            ["docker", "compose", "ps", "--format", "json"],
+            [
+                "docker", "ps",
+                "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT_NAME}",
+                "--format", '{{json .}}'
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -60,24 +78,50 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
         if result.returncode != 0:
             return False, []
 
-        # Parse JSON output - docker compose ps returns JSONL (one JSON object per line)
+        # Parse JSONL output - docker ps returns one JSON object per line
         services = []
-        for line in result.stdout.strip().split('\n'):
-            if line.strip():
-                try:
-                    services.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+        output = result.stdout.strip()
+        if not output:
+            return False, []
+
+        for line in output.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # Validate line looks like JSON before parsing
+            if not (line.startswith('{') and line.endswith('}')):
+                # Not JSON - Docker might be using different format
+                continue
+            try:
+                container = json.loads(line)
+                # Map docker ps format to docker compose ps format for compatibility
+                labels = container.get("Labels", "")
+                service_name = container.get("Names", "")
+                if "com.docker.compose.service=" in labels:
+                    # Extract service name from labels
+                    for part in labels.split(","):
+                        if part.startswith("com.docker.compose.service="):
+                            service_name = part.split("=", 1)[1]
+                            break
+                services.append({
+                    "Name": container.get("Names", ""),
+                    "Service": service_name,
+                    "State": "running" if container.get("State") == "running" else container.get("State", ""),
+                    "Status": container.get("Status", ""),
+                    "Image": container.get("Image", ""),
+                })
+            except json.JSONDecodeError:
+                continue
 
         # Check if all services are running
-        all_running = all(
+        all_running = len(services) > 0 and all(
             svc.get("State") == "running"
             for svc in services
         )
 
         return all_running, services
 
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
         return False, []
 
 

@@ -31,6 +31,12 @@ from scripts.ingest.config import (
     LEX_SPARSE_MODE,
     MINI_VECTOR_NAME,
     MINI_VEC_DIM,
+    # Multi-granular vectors
+    MULTI_GRANULAR_VECTORS,
+    ENTITY_DENSE_NAME,
+    ENTITY_DENSE_DIM,
+    RELATION_DENSE_NAME,
+    RELATION_DENSE_DIM,
     _env_truthy,
     is_multi_repo_mode,
     get_collection_name,
@@ -401,6 +407,98 @@ def _select_dense_text(
     return text
 
 
+def _select_entity_text(
+    *,
+    symbol: str = "",
+    symbol_path: str = "",
+    kind: str = "",
+    signature: str = "",
+    docstring: str = "",
+    parent: str = "",
+) -> str:
+    """Build text for entity_dense embedding (symbol signatures).
+
+    This embeds the "what" of the code: function/class names, signatures, types.
+    Format: "{kind} {name}: {signature}. {docstring_first_line}"
+    """
+    parts = []
+
+    # Kind and name
+    kind_str = (kind or "code").strip()
+    name = (symbol or "").strip()
+    if symbol_path and symbol_path != name:
+        name = symbol_path.strip()
+
+    if name:
+        parts.append(f"{kind_str} {name}")
+
+    # Signature (function definition, class inheritance)
+    sig = (signature or "").strip()
+    if sig:
+        # Truncate long signatures
+        if len(sig) > 200:
+            sig = sig[:200] + "..."
+        parts.append(sig)
+
+    # First line of docstring (intent summary)
+    doc = (docstring or "").strip()
+    if doc:
+        first_line = doc.split("\n")[0].strip()
+        if len(first_line) > 150:
+            first_line = first_line[:150] + "..."
+        if first_line:
+            parts.append(first_line)
+
+    # Parent context (e.g., "in class UserService")
+    if parent:
+        parts.append(f"in {parent}")
+
+    text = ". ".join(parts) if parts else ""
+    return text[:1000] if text else ""  # Cap at 1000 chars
+
+
+def _select_relation_text(
+    *,
+    symbol: str = "",
+    calls: list[str] | None = None,
+    imports: list[str] | None = None,
+) -> str:
+    """Build text for relation_dense embedding (call/import relationships).
+
+    This embeds the "how" code connects: what it calls, what it imports.
+    Format: "{symbol} calls {callees}; imports {modules}"
+
+    Relation embeddings enable graph-aware retrieval.
+    """
+    parts = []
+
+    # Symbol context
+    sym = (symbol or "").strip()
+    if sym:
+        parts.append(sym)
+
+    # Calls (what this code invokes)
+    call_list = [str(c).strip() for c in (calls or []) if str(c).strip()]
+    if call_list:
+        # Limit to first 20 calls to keep embedding focused
+        calls_str = ", ".join(call_list[:20])
+        if len(call_list) > 20:
+            calls_str += f" (+{len(call_list) - 20} more)"
+        parts.append(f"calls {calls_str}")
+
+    # Imports (dependencies)
+    import_list = [str(i).strip() for i in (imports or []) if str(i).strip()]
+    if import_list:
+        # Limit to first 15 imports
+        imports_str = ", ".join(import_list[:15])
+        if len(import_list) > 15:
+            imports_str += f" (+{len(import_list) - 15} more)"
+        parts.append(f"imports {imports_str}")
+
+    text = "; ".join(parts) if parts else ""
+    return text[:800] if text else ""  # Cap at 800 chars
+
+
 def build_information(
     language: str, path: Path, start: int, end: int, first_line: str
 ) -> str:
@@ -644,6 +742,9 @@ def _index_single_file_inner(
     batch_lex: List[list[float]] = []
     batch_lex_text: List[str] = []
     batch_code: List[str] = []  # Raw code for pattern vectors
+    # Multi-granular vector batches
+    batch_entity_texts: List[str] = []  # For entity_dense vectors
+    batch_relation_texts: List[str] = []  # For relation_dense vectors
 
     if allowed_vectors is None and allowed_sparse is None:
         allowed_vectors, allowed_sparse = get_collection_vector_names(client, collection)
@@ -652,6 +753,9 @@ def _index_single_file_inner(
     allow_mini = allowed_vectors is None or MINI_VECTOR_NAME in allowed_vectors
     allow_pattern = allowed_vectors is None or PATTERN_VECTOR_NAME in allowed_vectors
     allow_sparse = allowed_sparse is None or LEX_SPARSE_NAME in allowed_sparse
+    # Multi-granular vector support: only enable if collection actually has these vectors
+    allow_entity = allowed_vectors is None or ENTITY_DENSE_NAME in allowed_vectors
+    allow_relation = allowed_vectors is None or RELATION_DENSE_NAME in allowed_vectors
 
     # Check if pattern vectors are enabled
     pattern_vectors_on = os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -660,7 +764,14 @@ def _index_single_file_inner(
     use_mini = refrag_on and allow_mini
     use_sparse = LEX_SPARSE_MODE and allow_sparse
 
-    def make_point(pid, dense_vec, lex_vec, payload, lex_text: str = "", code_text: str = ""):
+    # Check if multi-granular vectors are enabled AND collection supports them
+    # This gates writes on allowed_vectors to avoid upsert failures on unknown vector names
+    use_multi_granular = MULTI_GRANULAR_VECTORS and allow_entity and allow_relation
+
+    def make_point(
+        pid, dense_vec, lex_vec, payload, lex_text: str = "", code_text: str = "",
+        entity_dense_vec: list | None = None, relation_dense_vec: list | None = None,
+    ):
         if vector_name:
             vecs = {vector_name: dense_vec}
             if allow_lex:
@@ -682,6 +793,12 @@ def _index_single_file_inner(
                 sparse_vec = _lex_sparse_vector_text(lex_text)
                 if sparse_vec.get("indices"):
                     vecs[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
+            # Add multi-granular vectors
+            if use_multi_granular:
+                if entity_dense_vec is not None:
+                    vecs[ENTITY_DENSE_NAME] = entity_dense_vec
+                if relation_dense_vec is not None:
+                    vecs[RELATION_DENSE_NAME] = relation_dense_vec
             return models.PointStruct(id=pid, vector=vecs, payload=payload)
         else:
             return models.PointStruct(id=pid, vector=dense_vec, payload=payload)
@@ -858,16 +975,77 @@ def _index_single_file_inner(
         batch_lex_text.append(aug_lex_text)
         batch_code.append(ch.get("text") or "")
 
+        # Generate multi-granular vector texts
+        if use_multi_granular:
+            entity_text = _select_entity_text(
+                symbol=ch.get("symbol") or "",
+                symbol_path=ch.get("symbol_path") or "",
+                kind=ch.get("kind") or "",
+                signature=ch.get("symbol_signature") or "",
+                docstring=ch.get("symbol_docstring") or "",
+                parent=ch.get("symbol_parent") or "",
+            )
+            relation_text = _select_relation_text(
+                symbol=ch.get("symbol") or "",
+                calls=ch.get("calls") or payload.get("metadata", {}).get("calls") or [],
+                imports=ch.get("imports") or payload.get("metadata", {}).get("imports") or [],
+            )
+            batch_entity_texts.append(entity_text)
+            batch_relation_texts.append(relation_text)
+        else:
+            batch_entity_texts.append("")
+            batch_relation_texts.append("")
+
     if batch_texts:
         vectors = embed_batch(model, batch_texts)
+
+        # Embed multi-granular vectors if enabled
+        entity_vectors: List[list] = []
+        relation_vectors: List[list] = []
+        if use_multi_granular and batch_entity_texts:
+            # Filter non-empty texts to embed, track indices
+            entity_to_embed = [(i, t) for i, t in enumerate(batch_entity_texts) if t.strip()]
+            relation_to_embed = [(i, t) for i, t in enumerate(batch_relation_texts) if t.strip()]
+
+            # Initialize with None for all positions
+            entity_vectors = [None] * len(batch_entity_texts)
+            relation_vectors = [None] * len(batch_relation_texts)
+
+            # Embed entity texts
+            if entity_to_embed:
+                try:
+                    entity_texts_only = [t for _, t in entity_to_embed]
+                    entity_vecs = embed_batch(model, entity_texts_only)
+                    for (orig_idx, _), vec in zip(entity_to_embed, entity_vecs):
+                        entity_vectors[orig_idx] = vec
+                except Exception as e:
+                    logger.warning(f"[MULTI_GRANULAR] Entity embedding failed: {e}")
+
+            # Embed relation texts
+            if relation_to_embed:
+                try:
+                    relation_texts_only = [t for _, t in relation_to_embed]
+                    relation_vecs = embed_batch(model, relation_texts_only)
+                    for (orig_idx, _), vec in zip(relation_to_embed, relation_vecs):
+                        relation_vectors[orig_idx] = vec
+                except Exception as e:
+                    logger.warning(f"[MULTI_GRANULAR] Relation embedding failed: {e}")
+        else:
+            # Pad with None if not using multi-granular
+            entity_vectors = [None] * len(batch_texts)
+            relation_vectors = [None] * len(batch_texts)
+
         for _idx, _m in enumerate(batch_meta):
             try:
                 _m["pid_str"] = str(batch_ids[_idx])
             except Exception:
                 pass
         points = [
-            make_point(i, v, lx, m, lt, ct)
-            for i, v, lx, m, lt, ct in zip(batch_ids, vectors, batch_lex, batch_meta, batch_lex_text, batch_code)
+            make_point(i, v, lx, m, lt, ct, entity_dense_vec=ev, relation_dense_vec=rv)
+            for i, v, lx, m, lt, ct, ev, rv in zip(
+                batch_ids, vectors, batch_lex, batch_meta, batch_lex_text, batch_code,
+                entity_vectors, relation_vectors
+            )
         ]
         upsert_points(client, collection, points)
 
@@ -1283,12 +1461,16 @@ def process_file_with_smart_reindexing(
     allow_mini = allowed_vectors is None or MINI_VECTOR_NAME in allowed_vectors
     allow_pattern = allowed_vectors is None or PATTERN_VECTOR_NAME in allowed_vectors
     allow_sparse = allowed_sparse is None or LEX_SPARSE_NAME in allowed_sparse
+    # Multi-granular vector support: only enable if collection actually has these vectors
+    allow_entity = allowed_vectors is None or ENTITY_DENSE_NAME in allowed_vectors
+    allow_relation = allowed_vectors is None or RELATION_DENSE_NAME in allowed_vectors
 
     pattern_vectors_on = os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}
     pattern_vectors_on = pattern_vectors_on and allow_pattern
     refrag_on = os.environ.get("REFRAG_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
     use_mini = refrag_on and allow_mini
     use_sparse = LEX_SPARSE_MODE and allow_sparse
+    use_multi_granular = MULTI_GRANULAR_VECTORS and allow_entity and allow_relation
 
     repo_id: str | None = None
     repo_rel_path: str | None = None
@@ -1448,6 +1630,9 @@ def process_file_with_smart_reindexing(
     embed_lex: list[list[float]] = []
     embed_lex_text: list[str] = []
     embed_code: list[str] = []  # Raw code for pattern vectors
+    # Multi-granular vector batches
+    embed_entity_texts: list[str] = []  # For entity_dense vectors
+    embed_relation_texts: list[str] = []  # For relation_dense vectors
 
     imports = ast_info.get("imports")
     calls = ast_info.get("calls")
@@ -1721,10 +1906,68 @@ def process_file_with_smart_reindexing(
         embed_lex_text.append(aug_lex_text)
         embed_code.append(code_text or "")
 
+        # Generate multi-granular vector texts
+        if use_multi_granular:
+            entity_text = _select_entity_text(
+                symbol=ch.get("symbol") or sym or "",
+                symbol_path=ch.get("symbol_path") or sym_path or "",
+                signature=ch.get("symbol_signature") or "",
+                docstring=ch.get("symbol_docstring") or "",
+                parent=ch.get("symbol_parent") or "",
+            )
+            relation_text = _select_relation_text(
+                calls=ch.get("calls") if ch.get("calls") else calls,
+                imports=ch.get("imports") if ch.get("imports") else imports,
+            )
+            embed_entity_texts.append(entity_text)
+            embed_relation_texts.append(relation_text)
+        else:
+            embed_entity_texts.append("")
+            embed_relation_texts.append("")
+
     new_points: list[models.PointStruct] = []
     if embed_texts:
         vectors = _embed_batch(model, embed_texts)
-        for pid, v, lx, pl, lt, ct in zip(embed_ids, vectors, embed_lex, embed_payloads, embed_lex_text, embed_code):
+
+        # Embed multi-granular vectors if enabled
+        entity_vectors: list[list] = []
+        relation_vectors: list[list] = []
+        if use_multi_granular and embed_entity_texts:
+            # Filter non-empty texts to embed, track indices
+            entity_to_embed = [(i, t) for i, t in enumerate(embed_entity_texts) if t.strip()]
+            relation_to_embed = [(i, t) for i, t in enumerate(embed_relation_texts) if t.strip()]
+
+            # Initialize with empty lists
+            entity_vectors = [[] for _ in embed_entity_texts]
+            relation_vectors = [[] for _ in embed_relation_texts]
+
+            # Batch embed entity texts
+            if entity_to_embed:
+                try:
+                    ent_indices, ent_texts = zip(*entity_to_embed)
+                    ent_vecs = _embed_batch(model, list(ent_texts))
+                    for idx, evec in zip(ent_indices, ent_vecs):
+                        entity_vectors[idx] = evec
+                except Exception:
+                    pass
+
+            # Batch embed relation texts
+            if relation_to_embed:
+                try:
+                    rel_indices, rel_texts = zip(*relation_to_embed)
+                    rel_vecs = _embed_batch(model, list(rel_texts))
+                    for idx, rvec in zip(rel_indices, rel_vecs):
+                        relation_vectors[idx] = rvec
+                except Exception:
+                    pass
+        else:
+            entity_vectors = [[] for _ in embed_texts]
+            relation_vectors = [[] for _ in embed_texts]
+
+        for pid, v, lx, pl, lt, ct, ev, rv in zip(
+            embed_ids, vectors, embed_lex, embed_payloads, embed_lex_text, embed_code,
+            entity_vectors, relation_vectors
+        ):
             if vector_name:
                 vecs = {vector_name: v}
                 if allow_lex:
@@ -1746,6 +1989,12 @@ def process_file_with_smart_reindexing(
                     sparse_vec = _lex_sparse_vector_text(lt)
                     if sparse_vec.get("indices"):
                         vecs[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
+                # Add multi-granular vectors
+                if use_multi_granular:
+                    if ev:
+                        vecs[ENTITY_DENSE_NAME] = ev
+                    if rv:
+                        vecs[RELATION_DENSE_NAME] = rv
                 new_points.append(models.PointStruct(id=pid, vector=vecs, payload=pl))
             else:
                 new_points.append(models.PointStruct(id=pid, vector=v, payload=pl))

@@ -660,6 +660,8 @@ class Neo4jGraphBackend(GraphBackend):
                 import_edges.append(edge_params)
 
         # Batch upsert CALLS edges using UNWIND
+        # ON CREATE SET: populate Symbol node properties when first created
+        # ON MATCH SET: update start_line if we now have a more specific value
         for i in range(0, len(calls_edges), batch_size):
             batch = calls_edges[i:i + batch_size]
             try:
@@ -667,7 +669,18 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (caller:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
+                        ON CREATE SET caller.start_line = edge.start_line,
+                                      caller.language = edge.language,
+                                      caller.indexed_at = timestamp()
+                        // On match, prefer non-zero/non-null incoming value if existing is 0/null
+                        // This ensures "more specific" values (actual line numbers) overwrite placeholders
+                        ON MATCH SET caller.start_line = CASE
+                                         WHEN edge.start_line IS NOT NULL AND edge.start_line > 0 THEN edge.start_line
+                                         ELSE COALESCE(caller.start_line, edge.start_line)
+                                     END,
+                                     caller.language = COALESCE(edge.language, caller.language)
                         MERGE (callee:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
+                        ON CREATE SET callee.indexed_at = timestamp()
                         MERGE (caller)-[r:CALLS {edge_id: edge.edge_id}]->(callee)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
@@ -684,6 +697,7 @@ class Neo4jGraphBackend(GraphBackend):
                 logger.error(f"Failed to upsert Neo4j CALLS edges batch: {e}")
 
         # Batch upsert IMPORTS edges using UNWIND
+        # ON CREATE SET: populate Symbol node properties when first created
         for i in range(0, len(import_edges), batch_size):
             batch = import_edges[i:i + batch_size]
             try:
@@ -691,7 +705,12 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (importer:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
+                        ON CREATE SET importer.language = edge.language,
+                                      importer.indexed_at = timestamp()
+                        // Prefer incoming language value (consistent with CALLS upsert behavior)
+                        ON MATCH SET importer.language = COALESCE(edge.language, importer.language)
                         MERGE (imported:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
+                        ON CREATE SET imported.indexed_at = timestamp()
                         MERGE (importer)-[r:IMPORTS {edge_id: edge.edge_id}]->(imported)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
@@ -705,7 +724,50 @@ class Neo4jGraphBackend(GraphBackend):
             except Exception as e:
                 logger.error(f"Failed to upsert Neo4j IMPORTS edges batch: {e}")
 
+        # Compute simple degree-based importance scores for new nodes
+        # This avoids requiring Neo4j GDS (Graph Data Science) library
+        if total > 0:
+            try:
+                self._compute_simple_pagerank(collection)
+            except Exception as e:
+                logger.warning(f"Failed to compute pagerank: {e}")
+
         return total
+
+    def _compute_simple_pagerank(self, collection: str) -> int:
+        """Compute degree-based importance scores (simple PageRank approximation).
+
+        This sets n.pagerank = (in_degree / max_in_degree) for all nodes.
+        No GDS library required - uses simple Cypher aggregation.
+        """
+        driver = self._get_driver()
+        db = self._get_database()
+
+        try:
+            with driver.session(database=db) as session:
+                # Two-pass approach:
+                # 1. Calculate max in-degree for normalization
+                # 2. Set pagerank as normalized in-degree
+                result = session.run("""
+                    MATCH (n:Symbol {collection: $collection})
+                    OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                    WITH n, count(r) AS in_degree
+                    WITH max(in_degree) AS max_degree
+                    MATCH (n2:Symbol {collection: $collection})
+                    OPTIONAL MATCH (n2)<-[r2:CALLS|IMPORTS]-()
+                    WITH n2, count(r2) AS in_degree, max_degree
+                    WHERE max_degree > 0
+                    SET n2.pagerank = toFloat(in_degree) / toFloat(max_degree)
+                    RETURN count(n2) AS updated
+                """, collection=collection)
+                record = result.single()
+                updated = record["updated"] if record else 0
+                if updated > 0:
+                    logger.debug(f"Updated pagerank for {updated} symbols in {collection}")
+                return updated
+        except Exception as e:
+            logger.warning(f"Pagerank computation failed: {e}")
+            return 0
 
     def delete_edges_by_path(
         self,

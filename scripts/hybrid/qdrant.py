@@ -66,6 +66,12 @@ from scripts.ingest.config import (
     LEX_VECTOR_DIM,
     LEX_SPARSE_NAME,
     LEX_SPARSE_MODE,
+    # Multi-granular vectors
+    MULTI_GRANULAR_VECTORS,
+    ENTITY_DENSE_NAME,
+    ENTITY_DENSE_DIM,
+    RELATION_DENSE_NAME,
+    RELATION_DENSE_DIM,
 )
 
 EF_SEARCH = _safe_int(os.environ.get("QDRANT_EF_SEARCH", "128"), 128)
@@ -682,6 +688,159 @@ def dense_query(
 
 
 # ---------------------------------------------------------------------------
+# Multi-Granular Query (Two-Stage Prefetch)
+# ---------------------------------------------------------------------------
+
+def multi_granular_query(
+    client,
+    vec_name: str,
+    dense_vec: List[float],
+    entity_vec: List[float] | None,
+    relation_vec: List[float] | None,
+    flt,
+    per_query: int,
+    collection_name: str | None = None,
+    *,
+    prefetch_limit: int = 100,
+    query_text: str | None = None,
+) -> Tuple[List[Any], Dict[str, List[Any]]]:
+    """Two-stage search with multi-granular vectors using Qdrant prefetch.
+
+    Uses entity_dense and relation_dense vectors for coarse prefetch,
+    then reranks with primary dense vector.
+
+    Args:
+        client: QdrantClient instance
+        vec_name: Primary dense vector name (e.g., "dense")
+        dense_vec: Primary dense embedding
+        entity_vec: Entity signature embedding (optional, for prefetch)
+        relation_vec: Relation pattern embedding (optional, for prefetch)
+        flt: Qdrant filter object
+        per_query: Number of results to return
+        collection_name: Target collection
+        prefetch_limit: How many candidates to fetch in prefetch stage
+        query_text: Optional query text for optimizer integration
+
+    Returns:
+        Tuple of (final_results, stage_results_dict)
+        stage_results_dict contains {"entity": [...], "relation": [...]} for fusion
+    """
+    if not MULTI_GRANULAR_VECTORS:
+        # Fall back to standard dense query
+        results = dense_query(client, vec_name, dense_vec, flt, per_query, collection_name, query_text)
+        return results, {}
+
+    collection = _collection(collection_name)
+    if collection is None:
+        return [], {}
+
+    # Build prefetch queries for entity and relation vectors
+    prefetch_queries = []
+    stage_results: Dict[str, List[Any]] = {"entity": [], "relation": []}
+
+    # Entity prefetch: coarse filter by symbol signatures
+    if entity_vec is not None:
+        try:
+            prefetch_queries.append(
+                models.Prefetch(
+                    query=entity_vec,
+                    using=ENTITY_DENSE_NAME,
+                    limit=prefetch_limit,
+                    filter=flt,
+                )
+            )
+        except Exception:
+            pass
+
+    # Relation prefetch: coarse filter by call patterns
+    if relation_vec is not None:
+        try:
+            prefetch_queries.append(
+                models.Prefetch(
+                    query=relation_vec,
+                    using=RELATION_DENSE_NAME,
+                    limit=prefetch_limit,
+                    filter=flt,
+                )
+            )
+        except Exception:
+            pass
+
+    # If no prefetch vectors, fall back to standard dense query
+    if not prefetch_queries:
+        results = dense_query(client, vec_name, dense_vec, flt, per_query, collection_name, query_text)
+        return results, {}
+
+    # Two-stage query: prefetch with entity/relation, then rerank with dense
+    # NOTE: query_points uses 'query_filter' not 'filter' (Qdrant 1.7+ API)
+    try:
+        ef = max(EF_SEARCH, 32 + 4 * per_query)
+        search_params = _get_search_params(ef)
+
+        qp = client.query_points(
+            collection_name=collection,
+            prefetch=prefetch_queries,
+            query=dense_vec,
+            using=vec_name,
+            query_filter=flt,
+            limit=per_query,
+            search_params=search_params,
+            with_payload=True,
+        )
+        final_results = _coerce_points(getattr(qp, "points", qp))
+
+        # Run separate entity/relation queries to capture stage scores for fusion
+        # NOTE: query_points uses 'query_filter' not 'filter' (Qdrant 1.7+ API)
+        if entity_vec is not None:
+            try:
+                entity_qp = client.query_points(
+                    collection_name=collection,
+                    query=entity_vec,
+                    using=ENTITY_DENSE_NAME,
+                    query_filter=flt,
+                    limit=per_query * 2,  # Get more for fusion
+                    search_params=search_params,
+                    with_payload=True,
+                )
+                stage_results["entity"] = _coerce_points(getattr(entity_qp, "points", entity_qp))
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"Entity query failed: {e}")
+
+        if relation_vec is not None:
+            try:
+                relation_qp = client.query_points(
+                    collection_name=collection,
+                    query=relation_vec,
+                    using=RELATION_DENSE_NAME,
+                    query_filter=flt,
+                    limit=per_query * 2,
+                    search_params=search_params,
+                    with_payload=True,
+                )
+                stage_results["relation"] = _coerce_points(getattr(relation_qp, "points", relation_qp))
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"Relation query failed: {e}")
+
+        return final_results, stage_results
+
+    except TypeError:
+        # Fallback if prefetch not supported (older Qdrant version)
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug("PREFETCH_NOT_SUPPORTED: Falling back to standard dense query")
+        results = dense_query(client, vec_name, dense_vec, flt, per_query, collection_name, query_text)
+        return results, {}
+
+    except Exception as e:
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(f"MULTI_GRANULAR_QUERY_FAILED: {e}")
+        # Fall back to standard dense query
+        results = dense_query(client, vec_name, dense_vec, flt, per_query, collection_name, query_text)
+        return results, {}
+
+
+# ---------------------------------------------------------------------------
 # Module exports
 # ---------------------------------------------------------------------------
 
@@ -717,6 +876,11 @@ __all__ = [
     "lex_query",
     "sparse_lex_query",
     "dense_query",
+    "multi_granular_query",
+    # Multi-granular config
+    "MULTI_GRANULAR_VECTORS",
+    "ENTITY_DENSE_NAME",
+    "RELATION_DENSE_NAME",
     # Constants
     "QDRANT_URL",
     "API_KEY",
