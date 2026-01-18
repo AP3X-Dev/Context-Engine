@@ -159,22 +159,48 @@ def reset(
     tokenizer_url = tokenizer_url or os.environ.get("TOKENIZER_URL", DEFAULT_TOKENIZER_URL)
     tokenizer_path = Path(tokenizer_path or os.environ.get("TOKENIZER_PATH", DEFAULT_TOKENIZER_PATH))
 
+    # Check if Neo4j is enabled
+    neo4j_enabled = os.environ.get("NEO4J_ENABLED", "").strip().lower() in ("1", "true", "yes") or \
+                    os.environ.get("NEO4J_GRAPH", "").strip().lower() in ("1", "true", "yes")
+
+    # Check if llamacpp is needed (only if REFRAG_RUNTIME is llamacpp or unset)
+    refrag_runtime = os.environ.get("REFRAG_RUNTIME", "").strip().lower()
+    llamacpp_needed = refrag_runtime in ("", "llamacpp")
+
+    # Build docker compose command prefix (with optional neo4j compose file)
+    compose_cmd = ["docker", "compose"]
+    if neo4j_enabled:
+        compose_cmd.extend(["-f", "docker-compose.yml", "-f", "docker-compose.neo4j.yml"])
+
     # Determine which containers to build/start based on mode
     if mode == "mcp":
         # HTTP MCPs only (Codex compatible) + upload_service for remote sync
-        build_containers = ["indexer", "mcp_http", "mcp_indexer_http", "watcher", "llamacpp", "upload_service"]
-        start_containers = ["mcp_http", "mcp_indexer_http", "watcher", "llamacpp", "upload_service"]
+        build_containers = ["indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "HTTP MCPs only (streamable)"
     elif mode == "sse":
         # SSE MCPs only (legacy)
-        build_containers = ["indexer", "mcp", "mcp_indexer", "watcher", "llamacpp"]
-        start_containers = ["mcp", "mcp_indexer", "watcher", "llamacpp"]
+        build_containers = ["indexer", "mcp", "mcp_indexer", "watcher"]
+        start_containers = ["mcp", "mcp_indexer", "watcher"]
         mode_desc = "SSE MCPs only (legacy)"
     else:
         # Dual mode (default)
-        build_containers = ["indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "llamacpp", "upload_service"]
-        start_containers = ["mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "llamacpp", "upload_service"]
+        build_containers = ["indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "Dual mode (SSE + HTTP)"
+
+    # Add llamacpp container if needed
+    if llamacpp_needed:
+        build_containers.append("llamacpp")
+        start_containers.append("llamacpp")
+    else:
+        mode_desc += f" (REFRAG_RUNTIME={refrag_runtime})"
+
+    # Add neo4j container if enabled
+    if neo4j_enabled:
+        build_containers.append("neo4j")
+        start_containers.insert(0, "neo4j")  # Start neo4j first (other services depend on it)
+        mode_desc += " + Neo4j"
 
     _print_panel(
         f"[cyan]Mode:[/cyan] {mode_desc}\n"
@@ -192,23 +218,26 @@ def reset(
         # Step 1: Stop all services
         step += 1
         _print(f"\n[bold][{step}/{steps_total}] Stopping services...[/bold]")
-        _run_cmd(["docker", "compose", "down"], "Stopping all containers", check=False)
+        _run_cmd(compose_cmd + ["down"], "Stopping all containers", check=False)
         _print("[green]✓[/green] Services stopped")
 
         # Step 2: Build containers (unless skipped)
         step += 1
         if not skip_build:
             _print(f"\n[bold][{step}/{steps_total}] Building containers...[/bold]")
-            cmd = ["docker", "compose", "build", "--no-cache"] + build_containers
+            cmd = compose_cmd + ["build", "--no-cache"] + build_containers
             _run_cmd(cmd, f"Building: {', '.join(build_containers)}")
             _print("[green]✓[/green] Containers built")
         else:
             _print(f"\n[bold][{step}/{steps_total}] Skipping container build[/bold]")
 
-        # Step 3: Start Qdrant and wait
+        # Step 3: Start Qdrant (and Neo4j if enabled) and wait
         step += 1
-        _print(f"\n[bold][{step}/{steps_total}] Starting Qdrant...[/bold]")
-        _run_cmd(["docker", "compose", "up", "-d", "qdrant"], "Starting Qdrant")
+        db_services = ["qdrant"]
+        if neo4j_enabled:
+            db_services.append("neo4j")
+        _print(f"\n[bold][{step}/{steps_total}] Starting {', '.join(db_services)}...[/bold]")
+        _run_cmd(compose_cmd + ["up", "-d"] + db_services, f"Starting {', '.join(db_services)}")
 
         # Use helper that normalizes Docker hostname to localhost for host CLI
         qdrant_url = get_qdrant_url_for_host()
@@ -219,7 +248,7 @@ def reset(
         step += 1
         _print(f"\n[bold][{step}/{steps_total}] Initializing payload indexes...[/bold]")
         _run_cmd(
-            ["docker", "compose", "run", "--rm", "init_payload"],
+            compose_cmd + ["run", "--rm", "init_payload"],
             "Running init_payload",
             check=False  # May fail if collection doesn't exist yet
         )
@@ -277,7 +306,20 @@ def reset(
                     except Exception:
                         pass
 
-        _print(f"[dim]Cleared {cache_cleared} cache entries[/dim]")
+        _print(f"[dim]Cleared {cache_cleared} host cache entries[/dim]")
+
+        # Also clear caches inside the container (critical for bind-mounted workspaces)
+        _print("[dim]Clearing container caches...[/dim]")
+        _run_cmd(
+            compose_cmd + ["run", "--rm", "--entrypoint", "sh", "indexer", "-c",
+             "find /work -path '*/.codebase/*/cache.json' -delete 2>/dev/null; "
+             "find /work -path '*/.codebase/cache.json' -delete 2>/dev/null; "
+             "find /work -path '*/.codebase/*/symbols' -type d -exec rm -rf {} + 2>/dev/null; "
+             "find /work -path '*/.codebase/symbols' -type d -exec rm -rf {} + 2>/dev/null; "
+             "echo 'Container caches cleared'"],
+            "Clearing container caches",
+            check=False,
+        )
 
         # Build env vars for indexer
         indexer_env = {}
@@ -285,7 +327,7 @@ def reset(
             if var in os.environ:
                 indexer_env[var] = os.environ[var]
 
-        indexer_cmd = ["docker", "compose", "run", "--rm"]
+        indexer_cmd = compose_cmd + ["run", "--rm"]
         for k, v in indexer_env.items():
             indexer_cmd.extend(["-e", f"{k}={v}"])
         indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])
@@ -303,7 +345,7 @@ def reset(
             _print(f"\n[bold][{step}/{steps_total}] Starting services...[/bold]")
 
         # Start services
-        cmd = ["docker", "compose", "up", "-d"] + start_containers
+        cmd = compose_cmd + ["up", "-d"] + start_containers
         _run_cmd(cmd, f"Starting: {', '.join(start_containers)}")
         _print("[green]✓[/green] Services started")
 
