@@ -1718,12 +1718,15 @@ def get_remote_config(cli_path: Optional[str] = None) -> Dict[str, str]:
 
     logical_repo_id = _compute_logical_repo_id(workspace_path)
 
-    # Use auto-generated collection name based on repo name
-    repo_name = _extract_repo_name_from_path(workspace_path)
-    # Fallback to directory name if repo detection fails
-    if not repo_name:
-        repo_name = Path(workspace_path).name
-    collection_name = get_collection_name(repo_name)
+    # Prefer COLLECTION_NAME from environment if set (passed by sync command)
+    # Otherwise auto-generate from repo name
+    collection_name = os.environ.get("COLLECTION_NAME", "").strip()
+    if not collection_name:
+        repo_name = _extract_repo_name_from_path(workspace_path)
+        # Fallback to directory name if repo detection fails
+        if not repo_name:
+            repo_name = Path(workspace_path).name
+        collection_name = get_collection_name(repo_name)
 
     return {
         "upload_endpoint": os.environ.get("REMOTE_UPLOAD_ENDPOINT", "http://localhost:8080"),

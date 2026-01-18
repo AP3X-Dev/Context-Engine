@@ -260,6 +260,7 @@ def daemon_start(
         _print(f"[green]✓[/green] Sync daemon started (PID: {proc.pid})")
         _print(f"[cyan]Path:[/cyan] {path}")
         _print(f"[cyan]Endpoint:[/cyan] {endpoint}")
+        _print(f"[cyan]Collection:[/cyan] {collection or 'auto-detect'}")
         _print(f"[cyan]Interval:[/cyan] {interval}s")
         _print(f"\n[dim]Use 'ctx sync --status' to check status[/dim]")
         _print(f"[dim]Use 'ctx sync --stop' to stop the daemon[/dim]")
@@ -356,6 +357,11 @@ def daemon_worker(
 # Main Sync Function
 # =============================================================================
 
+def _get_default_collection() -> Optional[str]:
+    """Get default collection from environment."""
+    return os.environ.get("COLLECTION_NAME") or None
+
+
 def sync(
     path: Optional[str] = None,
     endpoint: Optional[str] = None,
@@ -407,6 +413,7 @@ def sync(
 
     upload_endpoint = endpoint or _get_default_endpoint()
     effective_host_root = host_root or str(workspace_path)
+    effective_collection = collection or _get_default_collection()
 
     # Daemon mode
     if daemon:
@@ -420,7 +427,7 @@ def sync(
             git_since=git_since,
             host_root=effective_host_root,
             container_root=container_root,
-            collection=collection,
+            collection=effective_collection,
             timeout=timeout,
         )
 
@@ -449,8 +456,8 @@ def sync(
     env = os.environ.copy()
     env["HOST_ROOT"] = effective_host_root
     env["CONTAINER_ROOT"] = container_root
-    if collection:
-        env["COLLECTION_NAME"] = collection
+    if effective_collection:
+        env["COLLECTION_NAME"] = effective_collection
     if git_history:
         env["REMOTE_UPLOAD_GIT_MAX_COMMITS"] = str(git_max_commits)
         if git_since:
@@ -459,6 +466,7 @@ def sync(
     _print_panel(
         f"[cyan]Path:[/cyan] {workspace_path}\n"
         f"[cyan]Endpoint:[/cyan] {upload_endpoint}\n"
+        f"[cyan]Collection:[/cyan] {effective_collection or 'auto-detect'}\n"
         f"[cyan]Host Root:[/cyan] {effective_host_root}\n"
         f"[cyan]Container Root:[/cyan] {container_root}"
         + (f"\n[cyan]Git History:[/cyan] Enabled ({git_max_commits} commits)" if git_history else ""),

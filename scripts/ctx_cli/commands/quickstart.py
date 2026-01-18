@@ -298,13 +298,14 @@ def step_init(force: bool, skip_interactive: bool) -> int:
     return 0
 
 
-def step_up(build: bool, wait_timeout: int) -> int:
+def step_up(build: bool, wait_timeout: int, no_llama: bool = False) -> int:
     """
     Step 2: Start Docker services.
 
     Args:
         build: Rebuild containers
         wait_timeout: Health check timeout
+        no_llama: Skip the llamacpp (local LLM) container
 
     Returns:
         Exit code (0 for success)
@@ -319,6 +320,10 @@ def step_up(build: bool, wait_timeout: int) -> int:
     if build:
         compose_args.append("--build")
         console.print("[dim]Rebuilding containers...[/dim]")
+
+    if no_llama:
+        compose_args.extend(["--scale", "llamacpp=0"])
+        console.print("[dim]Skipping local LLM container (--no-llama)[/dim]")
 
     try:
         # Start services (quiet=True suppresses docker compose warnings)
@@ -924,9 +929,10 @@ def run_quickstart(args) -> int:
     paths = getattr(args, "paths", None) or []
 
     # Execute steps
+    no_llama = getattr(args, "no_llama", False)
     steps = [
         ("init", lambda: step_init(args.force, skip_interactive=True)),
-        ("up", lambda: step_up(args.build, args.wait)),
+        ("up", lambda: step_up(args.build, args.wait, no_llama=no_llama)),
         ("index", lambda: step_index(args.no_index, args.recreate, paths, args.import_repos)),
         ("warmup", lambda: step_warmup(args.no_warmup)),
     ]
@@ -1035,6 +1041,12 @@ def register_command(subparsers):
         help="Copy repos outside HOST_INDEX_PATH into dev-workspace so containers can index them"
     )
 
+    parser.add_argument(
+        "--no-llama",
+        action="store_true",
+        help="Skip the local LLM container (llamacpp) - for users without GPU or who use cloud LLM APIs"
+    )
+
     parser.set_defaults(func=run_quickstart)
 
 
@@ -1058,6 +1070,8 @@ if __name__ == "__main__":
                        help="Recreate collection")
     parser.add_argument("--import-repos", action="store_true",
                        help="Copy repos outside HOST_INDEX_PATH into dev-workspace for indexing")
+    parser.add_argument("--no-llama", action="store_true",
+                       help="Skip local LLM container (for users without GPU or using cloud APIs)")
 
     args = parser.parse_args()
     sys.exit(run_quickstart(args))
