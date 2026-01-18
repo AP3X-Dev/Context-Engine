@@ -653,12 +653,14 @@ def fuse_multi_granular_scores(
     rel_w = relation_weight if relation_weight is not None else RELATION_DENSE_WEIGHT
 
     # Process entity results
+    # Process entity results - accumulate scores for multi-query scenarios
     for rank, point in enumerate(entity_results, start=1):
         try:
             pid = str(point.id)
             entity_rrf = rrf(rank, rrf_k) * ent_w
             if pid in score_map:
-                score_map[pid]["ent"] = entity_rrf
+                # Accumulate entity score (don't overwrite) for accurate contribution tracking
+                score_map[pid]["ent"] = score_map[pid].get("ent", 0.0) + entity_rrf
                 score_map[pid]["s"] = score_map[pid].get("s", 0) + entity_rrf
             else:
                 # New entry from entity search - use "pt" key for consistency with score_map
@@ -680,13 +682,14 @@ def fuse_multi_granular_scores(
         except Exception:
             continue
 
-    # Process relation results
+    # Process relation results - accumulate scores for multi-query scenarios
     for rank, point in enumerate(relation_results, start=1):
         try:
             pid = str(point.id)
             relation_rrf = rrf(rank, rrf_k) * rel_w
             if pid in score_map:
-                score_map[pid]["rel"] = relation_rrf
+                # Accumulate relation score (don't overwrite) for accurate contribution tracking
+                score_map[pid]["rel"] = score_map[pid].get("rel", 0.0) + relation_rrf
                 score_map[pid]["s"] = score_map[pid].get("s", 0) + relation_rrf
             else:
                 # New entry from relation search - use "pt" key for consistency with score_map

@@ -20,6 +20,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 import subprocess
 from datetime import datetime
@@ -40,6 +41,10 @@ except ImportError:
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 
+# Compose project name - derives from COMPOSE_PROJECT_NAME env or defaults to "context-engine"
+# This ensures ctx status works even when docker-compose was started with -p or a different directory
+COMPOSE_PROJECT_NAME = os.environ.get("COMPOSE_PROJECT_NAME", "context-engine")
+
 
 def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
     """
@@ -52,7 +57,7 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
         Tuple of (all_running, services_list)
     """
     try:
-        # Use docker ps with filter for context-engine project containers
+        # Use docker ps with filter for compose project containers
         # This works from any directory, unlike docker compose ps
         # Use Go template format for compatibility with all Docker versions
         # (--format json requires Docker 24.0+, Go template works everywhere)
@@ -61,7 +66,7 @@ def check_docker_services() -> Tuple[bool, List[Dict[str, Any]]]:
         result = subprocess.run(
             [
                 "docker", "ps",
-                "--filter", "label=com.docker.compose.project=context-engine",
+                "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT_NAME}",
                 "--format", '{{json .}}'
             ],
             capture_output=True,

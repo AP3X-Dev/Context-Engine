@@ -672,8 +672,13 @@ class Neo4jGraphBackend(GraphBackend):
                         ON CREATE SET caller.start_line = edge.start_line,
                                       caller.language = edge.language,
                                       caller.indexed_at = timestamp()
-                        ON MATCH SET caller.start_line = COALESCE(caller.start_line, edge.start_line),
-                                     caller.language = COALESCE(caller.language, edge.language)
+                        // On match, prefer non-zero/non-null incoming value if existing is 0/null
+                        // This ensures "more specific" values (actual line numbers) overwrite placeholders
+                        ON MATCH SET caller.start_line = CASE
+                                         WHEN edge.start_line IS NOT NULL AND edge.start_line > 0 THEN edge.start_line
+                                         ELSE COALESCE(caller.start_line, edge.start_line)
+                                     END,
+                                     caller.language = COALESCE(edge.language, caller.language)
                         MERGE (callee:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
                         ON CREATE SET callee.indexed_at = timestamp()
                         MERGE (caller)-[r:CALLS {edge_id: edge.edge_id}]->(callee)

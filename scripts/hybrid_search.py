@@ -2747,6 +2747,9 @@ def _run_hybrid_search_impl(
             "impl_boost": round(float(m.get("impl", 0.0)), 4),
             "doc_penalty": round(float(m.get("doc", 0.0)), 4),
             "graph": round(float(m.get("graph", 0.0)), 4),
+            # Multi-granular fusion components (entity/relation dense vectors)
+            "entity_dense": round(float(m.get("ent", 0.0)), 4),
+            "relation_dense": round(float(m.get("rel", 0.0)), 4),
         }
 
         # Add reranker info to components if present
