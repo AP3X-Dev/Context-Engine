@@ -33,6 +33,7 @@ except ImportError:
 
 from scripts.ctx_cli.utils.mcp_client import MCPClient, MCPError
 from scripts.ctx_cli.utils.config import resolve_collection, is_neo4j_enabled
+from scripts.ctx_cli.utils.env import get_qdrant_url_for_host
 
 # Lazy import for graph backfill (avoids loading qdrant_client unless needed)
 _graph_backfill_tick = None
@@ -61,8 +62,8 @@ def call_graph_backfill(
         # Resolve collection from env or arg
         coll = collection or os.environ.get("COLLECTION_NAME", "codebase")
 
-        # Connect to Qdrant (localhost for CLI running on host)
-        qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+        # Connect to Qdrant (normalize Docker hostname to localhost for host CLI)
+        qdrant_url = get_qdrant_url_for_host()
         client = QdrantClient(url=qdrant_url)
 
         # Get the backfill function

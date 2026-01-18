@@ -17,6 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from scripts.ctx_cli.utils.env import get_qdrant_url_for_host
+
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -208,7 +210,8 @@ def reset(
         _print(f"\n[bold][{step}/{steps_total}] Starting Qdrant...[/bold]")
         _run_cmd(["docker", "compose", "up", "-d", "qdrant"], "Starting Qdrant")
 
-        qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+        # Use helper that normalizes Docker hostname to localhost for host CLI
+        qdrant_url = get_qdrant_url_for_host()
         if not _wait_for_qdrant(qdrant_url):
             return 1
 
@@ -230,9 +233,51 @@ def reset(
         else:
             _print(f"\n[bold][{step}/{steps_total}] Skipping tokenizer download[/bold]")
 
-        # Step 6: Run indexer with recreate
+        # Step 6: Clear caches and run indexer with recreate
         step += 1
-        _print(f"\n[bold][{step}/{steps_total}] Running indexer...[/bold]")
+        _print(f"\n[bold][{step}/{steps_total}] Clearing caches and running indexer...[/bold]")
+
+        # Clear local caches (host side) - use rglob to find all cache files
+        _print("[dim]Clearing local caches...[/dim]")
+        import shutil
+        cache_cleared = 0
+
+        # Clear all cache.json files under .codebase (including repos subdirs)
+        codebase_dir = Path(".codebase")
+        if codebase_dir.exists():
+            for cache_file in codebase_dir.rglob("cache.json"):
+                try:
+                    cache_file.unlink()
+                    cache_cleared += 1
+                except Exception:
+                    pass
+            # Clear all symbols directories
+            for symbols_dir in codebase_dir.rglob("symbols"):
+                if symbols_dir.is_dir():
+                    try:
+                        shutil.rmtree(symbols_dir, ignore_errors=True)
+                        cache_cleared += 1
+                    except Exception:
+                        pass
+
+        # Also clear dev-workspace caches (if present)
+        dev_workspace = Path("dev-workspace")
+        if dev_workspace.exists():
+            for cache_file in dev_workspace.rglob(".codebase/cache.json"):
+                try:
+                    cache_file.unlink()
+                    cache_cleared += 1
+                except Exception:
+                    pass
+            for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
+                if symbols_dir.is_dir():
+                    try:
+                        shutil.rmtree(symbols_dir, ignore_errors=True)
+                        cache_cleared += 1
+                    except Exception:
+                        pass
+
+        _print(f"[dim]Cleared {cache_cleared} cache entries[/dim]")
 
         # Build env vars for indexer
         indexer_env = {}

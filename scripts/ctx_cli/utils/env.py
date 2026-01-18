@@ -117,3 +117,23 @@ def get_env_value(
             return value
 
     return default
+
+
+def get_qdrant_url_for_host(env_path: Optional[Path] = None) -> str:
+    """
+    Get Qdrant URL suitable for host access (CLI running on host machine).
+
+    The .env file typically has QDRANT_URL=http://qdrant:6333 for Docker containers,
+    but when the CLI runs on the host, we need to use localhost instead.
+
+    Args:
+        env_path: Optional path to .env file
+
+    Returns:
+        Qdrant URL with Docker hostname normalized to localhost
+    """
+    url = get_env_value("QDRANT_URL", env_path, "http://localhost:6333")
+    # Normalize Docker internal hostname to localhost for host access
+    if url and "://qdrant:" in url:
+        url = url.replace("://qdrant:", "://localhost:")
+    return url or "http://localhost:6333"
