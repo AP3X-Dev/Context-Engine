@@ -1630,8 +1630,9 @@ def _run_hybrid_search_impl(
 
     # --- Multi-Granular Vector Search (entity/relation embeddings) ---
     # When enabled, uses entity_dense and relation_dense vectors for improved retrieval
-    _mg_entity_results: List[Any] = []
-    _mg_relation_results: List[Any] = []
+    # Apply RRF fusion per-query to maintain correct ranking semantics (not aggregated).
+    _mg_entity_count = 0
+    _mg_relation_count = 0
     if MULTI_GRANULAR_VECTORS and embedded and not _DENSE_PRESERVING:
         try:
             # For queries, use the same embedding for entity/relation vectors.
@@ -1652,31 +1653,33 @@ def _run_hybrid_search_impl(
                         prefetch_limit=max(100, _scaled_per_query * 3),
                         query_text=query_text,
                     )
-                    # Collect stage results for fusion
-                    if mg_stages.get("entity"):
-                        _mg_entity_results.extend(mg_stages["entity"])
-                    if mg_stages.get("relation"):
-                        _mg_relation_results.extend(mg_stages["relation"])
+                    # Apply RRF fusion per-query to maintain correct ranking semantics.
+                    # Previously, results were aggregated then fused, which gave later
+                    # queries artificially worse ranks. Now we fuse each query's results
+                    # separately so RRF ranks are computed correctly per-query.
+                    entity_results = mg_stages.get("entity") or []
+                    relation_results = mg_stages.get("relation") or []
+                    if entity_results or relation_results:
+                        fuse_multi_granular_scores(
+                            score_map,
+                            entity_results,
+                            relation_results,
+                            rrf_k=_scaled_rrf_k,
+                            entity_weight=_AD_ENT_W,
+                            relation_weight=_AD_REL_W,
+                        )
+                        _mg_entity_count += len(entity_results)
+                        _mg_relation_count += len(relation_results)
                 except Exception as mg_err:
                     if os.environ.get("DEBUG_HYBRID_SEARCH"):
                         logger.debug(f"Multi-granular query failed for query {i}: {mg_err}")
 
-            # Fuse entity/relation scores into score_map with adaptive weights
-            if _mg_entity_results or _mg_relation_results:
-                fuse_multi_granular_scores(
-                    score_map,
-                    _mg_entity_results,
-                    _mg_relation_results,
-                    rrf_k=_scaled_rrf_k,
-                    entity_weight=_AD_ENT_W,
-                    relation_weight=_AD_REL_W,
+            if os.environ.get("DEBUG_HYBRID_SEARCH") and (_mg_entity_count or _mg_relation_count):
+                logger.debug(
+                    f"Multi-granular fusion: entity={_mg_entity_count}, "
+                    f"relation={_mg_relation_count}, "
+                    f"weights=(ent={_AD_ENT_W:.2f}, rel={_AD_REL_W:.2f})"
                 )
-                if os.environ.get("DEBUG_HYBRID_SEARCH"):
-                    logger.debug(
-                        f"Multi-granular fusion: entity={len(_mg_entity_results)}, "
-                        f"relation={len(_mg_relation_results)}, "
-                        f"weights=(ent={_AD_ENT_W:.2f}, rel={_AD_REL_W:.2f})"
-                    )
             _dt("multi_granular_query")
         except Exception as e:
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
