@@ -70,6 +70,7 @@ from scripts.ingest.pseudo import (
 from scripts.ingest.metadata import (
     _git_metadata,
     _get_imports_calls,
+    _get_inheritance,
     _compute_host_and_container_paths,
 )
 from scripts.ingest.vectors import project_mini, extract_pattern_vector
@@ -97,6 +98,7 @@ if _NEO4J_GRAPH_ENABLED:
         ensure_graph_store as ensure_graph_collection,
         extract_call_edges as _extract_call_edges_adapter,
         extract_import_edges as _extract_import_edges_adapter,
+        extract_inheritance_edges as _extract_inheritance_edges_adapter,
         upsert_edges as _upsert_edges_adapter,
         delete_edges_by_path,
         GRAPH_COLLECTION_SUFFIX,
@@ -112,6 +114,10 @@ if _NEO4J_GRAPH_ENABLED:
 
     def extract_import_edges(**kwargs):
         edges = _extract_import_edges_adapter(**kwargs)
+        return [{"id": e.id, "payload": e.to_dict()} for e in edges]
+
+    def extract_inheritance_edges(**kwargs):
+        edges = _extract_inheritance_edges_adapter(**kwargs)
         return [{"id": e.id, "payload": e.to_dict()} for e in edges]
 
     def upsert_edges(client, graph_coll, edges, batch_size=100):
@@ -140,6 +146,7 @@ else:
         ensure_graph_collection,
         extract_call_edges,
         extract_import_edges,
+        extract_inheritance_edges,
         upsert_edges,
         delete_edges_by_path,
         get_graph_collection_name,
@@ -694,6 +701,8 @@ def _index_single_file_inner(
     calls = ast_info.get("calls")
     # Always get import_map for callee resolution (ast_info doesn't provide it)
     _, _, import_map = _get_imports_calls(language, text)
+    # Get class inheritance relationships
+    inheritance_map = _get_inheritance(language, text)
     if "imports" not in ast_info or "calls" not in ast_info:
         base_imports, base_calls, _ = _get_imports_calls(language, text)
         if "imports" not in ast_info:
@@ -876,6 +885,7 @@ def _index_single_file_inner(
                 "calls": ch.get("calls") if ch.get("calls") else calls,
                 # Import map for callee resolution: local_name -> qualified_path
                 "import_map": import_map if import_map else None,
+                "inheritance_map": inheritance_map if inheritance_map else None,
                 "symbol_start_line": ch.get("symbol_start_line"),
                 "symbol_end_line": ch.get("symbol_end_line"),
                 "symbol_signature": ch.get("symbol_signature"),
@@ -1125,6 +1135,21 @@ def _index_single_file_inner(
                             collection=collection,
                             qdrant_client=client,
                         ))
+
+                # Extract inheritance edges (INHERITS_FROM) for all classes
+                if inheritance_map:
+                    for class_name, base_classes in inheritance_map.items():
+                        if class_name and base_classes:
+                            all_edges.extend(extract_inheritance_edges(
+                                class_name=class_name,
+                                base_classes=base_classes,
+                                path=str(file_path),
+                                repo=repo_tag,
+                                language=language,
+                                import_paths=import_map,
+                                collection=collection,
+                                qdrant_client=client,
+                            ))
 
                 if all_edges:
                     upsert_edges(client, graph_coll, all_edges)
@@ -1644,6 +1669,8 @@ def process_file_with_smart_reindexing(
     calls = ast_info.get("calls")
     # Always get import_map for callee resolution (ast_info doesn't provide it)
     _, _, import_map = _get_imports_calls(language, text)
+    # Get class inheritance relationships
+    inheritance_map = _get_inheritance(language, text)
     if "imports" not in ast_info or "calls" not in ast_info:
         base_imports, base_calls, _ = _get_imports_calls(language, text)
         if "imports" not in ast_info:
@@ -1725,6 +1752,8 @@ def process_file_with_smart_reindexing(
                 "calls": ch.get("calls") if ch.get("calls") else calls,
                 # Import map for callee resolution: local_name -> qualified_path
                 "import_map": import_map if import_map else None,
+                # Inheritance map for class hierarchy: class_name -> [base_classes]
+                "inheritance_map": inheritance_map if inheritance_map else None,
                 "symbol_start_line": ch.get("symbol_start_line"),
                 "symbol_end_line": ch.get("symbol_end_line"),
                 "symbol_signature": ch.get("symbol_signature"),
@@ -2087,6 +2116,19 @@ def process_file_with_smart_reindexing(
                             repo=per_file_repo,
                         ))
 
+                # Extract inheritance edges (INHERITS_FROM) for all classes
+                if inheritance_map:
+                    for class_name, base_classes in inheritance_map.items():
+                        if class_name and base_classes:
+                            all_edges.extend(extract_inheritance_edges(
+                                class_name=class_name,
+                                base_classes=base_classes,
+                                path=fp,
+                                repo=per_file_repo,
+                                language=language,
+                                import_paths=import_map,
+                            ))
+
                 if all_edges:
                     upsert_edges(client, graph_coll, all_edges)
         except Exception as e:
@@ -2399,6 +2441,7 @@ def graph_backfill_tick(
                 calls = md.get("calls") or []
                 imports = md.get("imports") or []
                 import_map = md.get("import_map") or {}
+                inheritance_map = md.get("inheritance_map") or {}
 
                 repo = md.get("repo") or repo_name or ""
                 language = md.get("language")
@@ -2414,28 +2457,42 @@ def graph_backfill_tick(
                     paths_cleaned.add(path)
 
                 # Skip if no relationship data (but still mark as processed)
-                if not calls and not imports:
+                if not calls and not imports and not inheritance_map:
                     pass  # Still mark point below
-                # Extract edges - only if we have a true symbol identifier
-                elif symbol_path:
-                    if calls:
-                        all_edges.extend(extract_call_edges(
-                            symbol_path=symbol_path,
-                            calls=calls,
-                            path=path,
-                            repo=repo,
-                            language=language,
-                            import_paths=import_map,
-                        ))
+                else:
+                    # Extract edges - only if we have a true symbol identifier
+                    if symbol_path:
+                        if calls:
+                            all_edges.extend(extract_call_edges(
+                                symbol_path=symbol_path,
+                                calls=calls,
+                                path=path,
+                                repo=repo,
+                                language=language,
+                                import_paths=import_map,
+                            ))
 
-                    if imports:
-                        all_edges.extend(extract_import_edges(
-                            symbol_path=symbol_path,
-                            imports=imports,
-                            path=path,
-                            repo=repo,
-                            language=language,
-                        ))
+                        if imports:
+                            all_edges.extend(extract_import_edges(
+                                symbol_path=symbol_path,
+                                imports=imports,
+                                path=path,
+                                repo=repo,
+                                language=language,
+                            ))
+
+                    # Extract inheritance edges (INHERITS_FROM) for all classes
+                    if inheritance_map:
+                        for class_name, base_classes in inheritance_map.items():
+                            if class_name and base_classes:
+                                all_edges.extend(extract_inheritance_edges(
+                                    class_name=class_name,
+                                    base_classes=base_classes,
+                                    path=path,
+                                    repo=repo,
+                                    language=language,
+                                    import_paths=import_map,
+                                ))
                 points_to_mark.append(pt)
                 processed += 1
 

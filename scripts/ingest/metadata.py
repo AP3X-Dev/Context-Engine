@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 
 def _git_metadata(file_path: Path) -> Tuple[int, int, int]:
@@ -235,55 +235,78 @@ def _extract_calls(language: str, text: str) -> List[str]:
 
 
 # Tree-sitter node type mappings per language
-# Maps language -> {calls, constructors, member}
+# Maps language -> {calls, constructors, member, class_def, superclass}
 # - calls: list of call node types
 # - constructors: list of new/object creation node types
 # - member: node_type -> (object_field, property_field) for qualified names
+# - class_def: node types for class definitions
+# - superclass: field name or node types for base classes/inheritance
 _TS_LANG_CONFIG = {
     "python": {
         "calls": ["call"],
         "constructors": [],
         "member": {"attribute": ("object", "attribute")},
+        "class_def": ["class_definition"],
+        "superclass": {"field": "superclasses", "child_types": ["argument_list"]},
     },
     "javascript": {
         "calls": ["call_expression"],
         "constructors": ["new_expression"],
         "member": {"member_expression": ("object", "property")},
+        "class_def": ["class_declaration", "class"],
+        "superclass": {"field": "heritage", "child_types": ["class_heritage"]},
     },
     "typescript": {
         "calls": ["call_expression"],
         "constructors": ["new_expression"],
         "member": {"member_expression": ("object", "property")},
+        "class_def": ["class_declaration", "class"],
+        "superclass": {"field": "heritage", "child_types": ["class_heritage", "extends_clause"]},
     },
     "tsx": {
         "calls": ["call_expression"],
         "constructors": ["new_expression"],
         "member": {"member_expression": ("object", "property")},
+        "class_def": ["class_declaration", "class"],
+        "superclass": {"field": "heritage", "child_types": ["class_heritage", "extends_clause"]},
     },
     "jsx": {
         "calls": ["call_expression"],
         "constructors": ["new_expression"],
         "member": {"member_expression": ("object", "property")},
+        "class_def": ["class_declaration", "class"],
+        "superclass": {"field": "heritage", "child_types": ["class_heritage"]},
     },
     "go": {
         "calls": ["call_expression"],
         "constructors": [],
         "member": {"selector_expression": ("operand", "field")},
+        # Go uses struct embedding, not class inheritance
+        "class_def": [],
+        "superclass": None,
     },
     "rust": {
         "calls": ["call_expression", "macro_invocation"],
         "constructors": [],
         "member": {"field_expression": ("value", "field")},
+        # Rust uses impl blocks for traits, not class inheritance
+        "class_def": ["struct_item", "impl_item"],
+        "superclass": {"child_types": ["type_identifier"]},  # impl Trait for Type
     },
     "java": {
         "calls": ["method_invocation"],
         "constructors": ["object_creation_expression"],
         "member": {"method_invocation": ("object", "name")},
+        "class_def": ["class_declaration", "interface_declaration"],
+        "superclass": {"field": "superclass", "interfaces_field": "interfaces"},
     },
     "c": {
         "calls": ["call_expression"],
         "constructors": [],
         "member": {"field_expression": ("argument", "field")},
+        # C has no class inheritance
+        "class_def": [],
+        "superclass": None,
     },
     "cpp": {
         "calls": ["call_expression"],
@@ -292,36 +315,50 @@ _TS_LANG_CONFIG = {
             "field_expression": ("argument", "field"),
             "qualified_identifier": ("scope", "name"),
         },
+        "class_def": ["class_specifier", "struct_specifier"],
+        "superclass": {"child_types": ["base_class_clause"]},
     },
     "ruby": {
         "calls": ["call", "method_call"],
         "constructors": [],
         "member": {"call": ("receiver", "method")},
+        "class_def": ["class"],
+        "superclass": {"field": "superclass"},
     },
     "c_sharp": {
         "calls": ["invocation_expression"],
         "constructors": ["object_creation_expression"],
         "member": {"member_access_expression": ("expression", "name")},
+        "class_def": ["class_declaration", "interface_declaration"],
+        "superclass": {"field": "bases", "child_types": ["base_list"]},
     },
     "csharp": {
         "calls": ["invocation_expression"],
         "constructors": ["object_creation_expression"],
         "member": {"member_access_expression": ("expression", "name")},
+        "class_def": ["class_declaration", "interface_declaration"],
+        "superclass": {"field": "bases", "child_types": ["base_list"]},
     },
     "bash": {
         "calls": ["command"],
         "constructors": [],
         "member": {},
+        "class_def": [],
+        "superclass": None,
     },
     "shell": {
         "calls": ["command"],
         "constructors": [],
         "member": {},
+        "class_def": [],
+        "superclass": None,
     },
     "sh": {
         "calls": ["command"],
         "constructors": [],
         "member": {},
+        "class_def": [],
+        "superclass": None,
     },
 }
 
@@ -1016,6 +1053,110 @@ def _get_imports_calls(language: str, text: str) -> Tuple[List[str], List[str], 
     calls = _extract_calls(language, text)
     import_map = _build_import_map_generic(language, imports)
     return imports, calls, import_map
+
+
+# Type alias for inheritance info: {class_name: [base_class_names]}
+InheritanceMap = Dict[str, List[str]]
+
+
+def _get_inheritance(language: str, text: str) -> InheritanceMap:
+    """Extract class inheritance relationships using tree-sitter.
+
+    Returns:
+        Dict mapping class names to their list of base classes.
+        e.g., {"MyClass": ["BaseClass", "Mixin"], "Child": ["Parent"]}
+    """
+    from scripts.ingest.tree_sitter import _use_tree_sitter, _ts_parser
+
+    if not _use_tree_sitter():
+        return {}
+
+    config = _TS_LANG_CONFIG.get(language, _TS_DEFAULT_CONFIG)
+    class_def_types = set(config.get("class_def", []))
+    superclass_config = config.get("superclass")
+
+    if not class_def_types or superclass_config is None:
+        return {}
+
+    parser = _ts_parser(language)
+    if not parser:
+        return {}
+
+    data = text.encode("utf-8")
+    try:
+        tree = parser.parse(data)
+        if tree is None:
+            return {}
+        root = tree.root_node
+    except Exception:
+        return {}
+
+    def node_text(n):
+        return data[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
+
+    def is_valid_identifier(name: str) -> bool:
+        if not name or len(name) > 100:
+            return False
+        first = name[0]
+        if not (first.isalpha() or first == "_"):
+            return False
+        return all(c.isalnum() or c == "_" for c in name)
+
+    def extract_identifiers(node) -> List[str]:
+        """Recursively extract identifier names from a node."""
+        names = []
+        if node.type in ("identifier", "type_identifier"):
+            name = node_text(node)
+            if is_valid_identifier(name):
+                names.append(name)
+        for child in node.children:
+            names.extend(extract_identifiers(child))
+        return names
+
+    inheritance: InheritanceMap = {}
+
+    def walk(node):
+        if node.type in class_def_types:
+            # Get class name
+            name_node = node.child_by_field_name("name")
+            class_name = node_text(name_node) if name_node else ""
+
+            if class_name and is_valid_identifier(class_name):
+                bases = []
+
+                # Try field-based access first
+                if isinstance(superclass_config, dict):
+                    field_name = superclass_config.get("field")
+                    if field_name:
+                        superclass_node = node.child_by_field_name(field_name)
+                        if superclass_node:
+                            bases.extend(extract_identifiers(superclass_node))
+
+                    # Also check interfaces/implements field (Java)
+                    interfaces_field = superclass_config.get("interfaces_field")
+                    if interfaces_field:
+                        interfaces_node = node.child_by_field_name(interfaces_field)
+                        if interfaces_node:
+                            bases.extend(extract_identifiers(interfaces_node))
+
+                    # Check child node types
+                    child_types = superclass_config.get("child_types", [])
+                    if child_types:
+                        for child in node.children:
+                            if child.type in child_types:
+                                bases.extend(extract_identifiers(child))
+
+                if bases:
+                    # Filter out common non-base identifiers
+                    filtered = [b for b in bases if b.lower() not in ("object", "none", "null")]
+                    if filtered:
+                        inheritance[class_name] = filtered
+
+        for child in node.children:
+            walk(child)
+
+    walk(root)
+    return inheritance
 
 
 def _build_import_map_generic(language: str, imports: List[str]) -> ImportMap:

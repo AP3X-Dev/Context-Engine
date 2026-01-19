@@ -37,6 +37,7 @@ normalize_path = _graph_edges.normalize_path
 edge_id = _graph_edges.edge_id
 EDGE_TYPE_CALLS = _graph_edges.EDGE_TYPE_CALLS
 EDGE_TYPE_IMPORTS = _graph_edges.EDGE_TYPE_IMPORTS
+EDGE_TYPE_INHERITS_FROM = _graph_edges.EDGE_TYPE_INHERITS_FROM
 GRAPH_COLLECTION_SUFFIX = _graph_edges.GRAPH_COLLECTION_SUFFIX
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,100 @@ def extract_import_edges(
             callee_path=callee_path,
             edge_type=EDGE_TYPE_IMPORTS,
             repo=repo,
+            language=language,
+            caller_point_id=caller_point_id,
+        ))
+
+    return edges
+
+
+def extract_inheritance_edges(
+    class_name: str,
+    base_classes: List[str],
+    path: str,
+    repo: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    language: Optional[str] = None,
+    caller_point_id: Optional[str] = None,
+    import_paths: Optional[Dict[str, str]] = None,
+    collection: Optional[str] = None,
+) -> List[GraphEdge]:
+    """Extract inheritance edge objects from class definition.
+
+    Args:
+        class_name: The class name
+        base_classes: List of base class names
+        path: File path of the class definition
+        repo: Repository name
+        start_line: Starting line of the class definition
+        end_line: Ending line of the class definition
+        language: Programming language
+        caller_point_id: Qdrant point ID of class chunk
+        import_paths: Dict mapping imported names to their module paths
+        collection: Collection name for cross-file resolution
+
+    Returns GraphEdge objects representing INHERITS_FROM relationships.
+    """
+    if not class_name or not base_classes:
+        return []
+
+    norm_path = _normalize_path(path)
+    edges = []
+    import_paths = import_paths or {}
+
+    # Get symbol resolver for cross-file resolution
+    resolver = None
+    if collection and os.environ.get("RESOLVE_CROSS_FILE_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+        try:
+            from .symbol_resolver import get_symbol_resolver
+            resolver = get_symbol_resolver(collection)
+        except Exception as e:
+            logger.debug(f"Could not get symbol resolver for {collection}: {e}")
+
+    for base_class in base_classes:
+        if not base_class:
+            continue
+
+        # Resolve base class path
+        callee_path: Optional[str] = None
+        qualified_base = base_class
+
+        # 1. Check import_paths for qualified name
+        if base_class in import_paths:
+            qualified_base = import_paths[base_class]
+            if resolver:
+                try:
+                    resolved = resolver.resolve_symbol(qualified_base, repo)
+                    if resolved:
+                        callee_path = resolved
+                except Exception as e:
+                    logger.debug(f"Failed to resolve base class {qualified_base}: {e}")
+
+        # 2. Try cross-file resolution
+        if not callee_path and resolver:
+            try:
+                resolved = resolver.resolve_symbol(base_class, repo)
+                if resolved:
+                    callee_path = resolved
+            except Exception as e:
+                logger.debug(f"Failed to resolve base class {base_class}: {e}")
+
+        # 3. Fall back to external stub
+        if not callee_path:
+            callee_path = f"<external>/{qualified_base}"
+
+        eid = _edge_id(class_name, qualified_base, norm_path, EDGE_TYPE_INHERITS_FROM, repo)
+        edges.append(GraphEdge(
+            id=eid,
+            caller_symbol=class_name,
+            callee_symbol=qualified_base,
+            caller_path=norm_path,
+            callee_path=callee_path,
+            edge_type=EDGE_TYPE_INHERITS_FROM,
+            repo=repo,
+            start_line=start_line,
+            end_line=end_line,
             language=language,
             caller_point_id=caller_point_id,
         ))

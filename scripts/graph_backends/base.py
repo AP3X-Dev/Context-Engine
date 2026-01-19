@@ -21,6 +21,7 @@ class EdgeType(str, Enum):
     """Edge types for graph relationships."""
     CALLS = "calls"
     IMPORTS = "imports"
+    INHERITS_FROM = "inherits_from"
 
     def __str__(self) -> str:
         return self.value
@@ -187,6 +188,50 @@ class GraphBackend(ABC):
     ) -> List[Dict[str, Any]]:
         """Find all files that import a module."""
         pass
+
+    def get_base_classes(
+        self,
+        graph_store: str,
+        class_name: str,
+        repo: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Find all base classes (parents) of a class.
+
+        Args:
+            graph_store: Graph store identifier
+            class_name: Class to find base classes for
+            repo: Optional repo filter
+            limit: Maximum results
+
+        Returns:
+            List of edge payloads with base class info.
+
+        Note: Default implementation returns empty list. Backends may override.
+        """
+        return []
+
+    def get_subclasses(
+        self,
+        graph_store: str,
+        class_name: str,
+        repo: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Find all subclasses (children) of a class.
+
+        Args:
+            graph_store: Graph store identifier
+            class_name: Class to find subclasses for
+            repo: Optional repo filter
+            limit: Maximum results
+
+        Returns:
+            List of edge payloads with subclass info.
+
+        Note: Default implementation returns empty list. Backends may override.
+        """
+        return []
 
     def resolve_symbol(
         self,

@@ -38,6 +38,7 @@ __all__ = [
     "Neo4jGraphBackend",
     "EDGE_TYPE_CALLS",
     "EDGE_TYPE_IMPORTS",
+    "EDGE_TYPE_INHERITS_FROM",
 ]
 
 # Track all driver instances for cleanup
@@ -67,6 +68,7 @@ atexit.register(_cleanup_drivers)
 # Edge types (match Qdrant backend)
 EDGE_TYPE_CALLS = "calls"
 EDGE_TYPE_IMPORTS = "imports"
+EDGE_TYPE_INHERITS_FROM = "inherits_from"
 
 
 def _normalize_path(path: str) -> str:
@@ -94,6 +96,7 @@ class Neo4jGraphBackend(GraphBackend):
     - (:File {path, repo, collection})
     - [:CALLS {edge_id, collection, caller_path, start_line, end_line, repo}]
     - [:IMPORTS {edge_id, collection, caller_path, repo}]
+    - [:INHERITS_FROM {edge_id, collection, caller_path, start_line, end_line, repo}]
     """
 
     # Class-level cache for initialized databases (shared across instances)
@@ -492,6 +495,19 @@ class Neo4jGraphBackend(GraphBackend):
                     CREATE INDEX imports_caller_point_idx IF NOT EXISTS
                     FOR ()-[r:IMPORTS]-() ON (r.caller_point_id)
                 """)
+                # INHERITS_FROM relationship indexes
+                session.run("""
+                    CREATE INDEX inherits_edge_id_idx IF NOT EXISTS
+                    FOR ()-[r:INHERITS_FROM]-() ON (r.edge_id)
+                """)
+                session.run("""
+                    CREATE INDEX inherits_collection_idx IF NOT EXISTS
+                    FOR ()-[r:INHERITS_FROM]-() ON (r.collection)
+                """)
+                session.run("""
+                    CREATE INDEX inherits_caller_point_idx IF NOT EXISTS
+                    FOR ()-[r:INHERITS_FROM]-() ON (r.caller_point_id)
+                """)
 
             self._initialized_databases.add(db)
             logger.info(f"Neo4j graph store initialized: {db}")
@@ -513,7 +529,7 @@ class Neo4jGraphBackend(GraphBackend):
             db = self._get_database()
             with driver.session(database=db) as session:
                 result = session.run("""
-                    MATCH ()-[r:CALLS|IMPORTS {collection: $coll}]->()
+                    MATCH ()-[r:CALLS|IMPORTS|INHERITS_FROM {collection: $coll}]->()
                     RETURN count(r) AS cnt
                 """, coll=collection)
                 record = result.single()
@@ -572,7 +588,11 @@ class Neo4jGraphBackend(GraphBackend):
     def _perform_backfill(self, collection: str, qdrant_client) -> None:
         """Perform backfill from Qdrant to Neo4j."""
         try:
-            from scripts.graph_backends.ingest_adapter import extract_call_edges, extract_import_edges
+            from scripts.graph_backends.ingest_adapter import (
+                extract_call_edges,
+                extract_import_edges,
+                extract_inheritance_edges,
+            )
         except ImportError:
             logger.warning("ingest_adapter not available, cannot perform auto-backfill")
             return
@@ -612,6 +632,8 @@ class Neo4jGraphBackend(GraphBackend):
                     imports = meta.get("imports", []) or []
                     # Extract import_map for qualified callee resolution
                     import_map = meta.get("import_map", {}) or {}
+                    # Extract inheritance_map for class hierarchy edges
+                    inheritance_map = meta.get("inheritance_map", {}) or {}
 
                     # Extract edges using ingest_adapter for consistent resolution
                     call_edges = extract_call_edges(
@@ -648,6 +670,22 @@ class Neo4jGraphBackend(GraphBackend):
                         edge.caller_signature = symbol_signature
                         edge.caller_docstring = symbol_docstring
                     edges.extend(import_edges)
+
+                    # Extract inheritance edges (INHERITS_FROM) for class hierarchy
+                    if inheritance_map:
+                        for class_name, base_classes in inheritance_map.items():
+                            if class_name and base_classes:
+                                inherit_edges = extract_inheritance_edges(
+                                    class_name=class_name,
+                                    base_classes=base_classes,
+                                    path=path,
+                                    repo=repo,
+                                    language=language,
+                                    import_paths=import_map,
+                                    collection=collection,
+                                    qdrant_client=qdrant_client,
+                                )
+                                edges.extend(inherit_edges)
 
                     total_points += 1
 
@@ -697,6 +735,7 @@ class Neo4jGraphBackend(GraphBackend):
         # Group edges by type for efficient batch processing
         calls_edges: List[Dict[str, Any]] = []
         import_edges: List[Dict[str, Any]] = []
+        inherits_edges: List[Dict[str, Any]] = []
 
         for edge in edges:
             caller_path = _normalize_path(edge.caller_path)
@@ -727,6 +766,8 @@ class Neo4jGraphBackend(GraphBackend):
 
             if edge.edge_type == EDGE_TYPE_CALLS:
                 calls_edges.append(edge_params)
+            elif edge.edge_type == EDGE_TYPE_INHERITS_FROM:
+                inherits_edges.append(edge_params)
             else:
                 import_edges.append(edge_params)
 
@@ -818,6 +859,44 @@ class Neo4jGraphBackend(GraphBackend):
             except Exception as e:
                 logger.error(f"Failed to upsert Neo4j IMPORTS edges batch: {e}")
 
+        # Batch upsert INHERITS_FROM edges using UNWIND
+        for i in range(0, len(inherits_edges), batch_size):
+            batch = inherits_edges[i:i + batch_size]
+            try:
+                with driver.session(database=db) as session:
+                    result = session.run("""
+                        UNWIND $edges AS edge
+                        MERGE (child:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
+                        ON CREATE SET child.simple_name = edge.caller_simple, child.indexed_at = timestamp()
+                        ON MATCH SET child.simple_name = COALESCE(child.simple_name, edge.caller_simple),
+                                     child.start_line = COALESCE(edge.start_line, child.start_line),
+                                     child.language = COALESCE(edge.language, child.language),
+                                     child.signature = CASE
+                                         WHEN edge.caller_signature IS NOT NULL AND edge.caller_signature <> '' THEN edge.caller_signature
+                                         ELSE COALESCE(child.signature, edge.caller_signature)
+                                     END,
+                                     child.docstring = CASE
+                                         WHEN edge.caller_docstring IS NOT NULL AND edge.caller_docstring <> '' THEN edge.caller_docstring
+                                         ELSE COALESCE(child.docstring, edge.caller_docstring)
+                                     END
+                        MERGE (base:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
+                        ON CREATE SET base.simple_name = edge.callee_simple, base.indexed_at = timestamp()
+                        ON MATCH SET base.simple_name = COALESCE(base.simple_name, edge.callee_simple)
+                        MERGE (child)-[r:INHERITS_FROM {edge_id: edge.edge_id}]->(base)
+                        SET r.caller_path = edge.caller_path,
+                            r.callee_path = edge.callee_path,
+                            r.start_line = edge.start_line,
+                            r.end_line = edge.end_line,
+                            r.language = edge.language,
+                            r.repo = edge.repo,
+                            r.collection = edge.collection,
+                            r.caller_point_id = edge.caller_point_id
+                        RETURN count(r) AS cnt
+                    """, {"edges": batch})
+                    total += result.single()["cnt"]
+            except Exception as e:
+                logger.error(f"Failed to upsert Neo4j INHERITS_FROM edges batch: {e}")
+
         # Compute simple degree-based importance scores for new nodes
         # This avoids requiring Neo4j GDS (Graph Data Science) library
         if total > 0:
@@ -831,7 +910,7 @@ class Neo4jGraphBackend(GraphBackend):
     def resolve_unresolved_edges(self, collection: str) -> int:
         """Post-process: redirect edges from unresolved stubs to real definitions.
 
-        For each CALLS/IMPORTS edge pointing to an unresolved stub (<unresolved>/...),
+        For each CALLS/IMPORTS/INHERITS_FROM edge pointing to an unresolved stub (<unresolved>/...),
         find a real Symbol with matching simple_name and redirect the edge.
         Then delete orphaned stub nodes.
         """
@@ -883,13 +962,34 @@ class Neo4jGraphBackend(GraphBackend):
                 imports_resolved = record["resolved"] if record else 0
                 total_resolved += imports_resolved
 
+                # Redirect INHERITS_FROM edges similarly
+                result = session.run("""
+                    MATCH (child:Symbol)-[r:INHERITS_FROM]->(stub:Symbol)
+                    WHERE stub.collection = $collection
+                      AND stub.path STARTS WITH '<unresolved>'
+                    WITH child, r, stub
+                    MATCH (real:Symbol)
+                    WHERE real.collection = $collection
+                      AND real.simple_name = stub.simple_name
+                      AND NOT real.path STARTS WITH '<'
+                    WITH child, r, stub, real
+                    LIMIT 50000
+                    CREATE (child)-[r2:INHERITS_FROM]->(real)
+                    SET r2 = properties(r)
+                    DELETE r
+                    RETURN count(r2) AS resolved
+                """, collection=collection)
+                record = result.single()
+                inherits_resolved = record["resolved"] if record else 0
+                total_resolved += inherits_resolved
+
                 # Delete orphaned stub nodes (no incoming or outgoing edges)
                 result = session.run("""
                     MATCH (stub:Symbol)
                     WHERE stub.collection = $collection
                       AND stub.path STARTS WITH '<unresolved>'
-                      AND NOT (stub)<-[:CALLS|IMPORTS]-()
-                      AND NOT (stub)-[:CALLS|IMPORTS]->()
+                      AND NOT (stub)<-[:CALLS|IMPORTS|INHERITS_FROM]-()
+                      AND NOT (stub)-[:CALLS|IMPORTS|INHERITS_FROM]->()
                     DELETE stub
                     RETURN count(stub) AS deleted
                 """, collection=collection)
@@ -897,7 +997,7 @@ class Neo4jGraphBackend(GraphBackend):
                 deleted = record["deleted"] if record else 0
 
                 if total_resolved > 0:
-                    logger.info(f"Resolved {calls_resolved} CALLS + {imports_resolved} IMPORTS edges, deleted {deleted} orphan stubs")
+                    logger.info(f"Resolved {calls_resolved} CALLS + {imports_resolved} IMPORTS + {inherits_resolved} INHERITS_FROM edges, deleted {deleted} orphan stubs")
 
         except Exception as e:
             logger.error(f"Edge resolution failed: {e}")
@@ -909,6 +1009,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         This sets n.pagerank = (in_degree / max_in_degree) for all nodes.
         No GDS library required - uses simple Cypher aggregation.
+        Includes CALLS, IMPORTS, and INHERITS_FROM relationships.
         """
         driver = self._get_driver()
         db = self._get_database()
@@ -920,11 +1021,11 @@ class Neo4jGraphBackend(GraphBackend):
                 # 2. Set pagerank as normalized in-degree
                 result = session.run("""
                     MATCH (n:Symbol {collection: $collection})
-                    OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                    OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS|INHERITS_FROM]-()
                     WITH n, count(r) AS in_degree
                     WITH max(in_degree) AS max_degree
                     MATCH (n2:Symbol {collection: $collection})
-                    OPTIONAL MATCH (n2)<-[r2:CALLS|IMPORTS]-()
+                    OPTIONAL MATCH (n2)<-[r2:CALLS|IMPORTS|INHERITS_FROM]-()
                     WITH n2, count(r2) AS in_degree, max_degree
                     WHERE max_degree > 0
                     SET n2.pagerank = toFloat(in_degree) / toFloat(max_degree)
@@ -1153,6 +1254,114 @@ class Neo4jGraphBackend(GraphBackend):
             logger.error(f"Failed to get importers for {module}: {e}")
             raise  # Let caller handle the error
 
+    def get_base_classes(
+        self,
+        graph_store: str,
+        class_name: str,
+        repo: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Find all base classes (parents) of a class using Cypher.
+
+        Traverses INHERITS_FROM edges to find direct and indirect base classes.
+        """
+        driver = self._get_driver()
+        db = self._get_database()
+        collection = self._get_collection(graph_store)
+        # Pattern for class + methods: exact match OR starts with "class."
+        class_prefix = f"{class_name}."
+
+        try:
+            with driver.session(database=db) as session:
+                if repo and repo != "*":
+                    result = session.run("""
+                        MATCH (child:Symbol {collection: $collection})-[r:INHERITS_FROM]->(base:Symbol {collection: $collection})
+                        WHERE (child.name = $class_name OR child.name STARTS WITH $class_prefix)
+                              AND r.collection = $collection AND (r.repo = $repo OR child.repo = $repo)
+                        RETURN child.name as class_name,
+                               base.name as base_class,
+                               r.caller_path as caller_path,
+                               base.path as base_path,
+                               r.language as language,
+                               child.repo as repo,
+                               r.edge_id as edge_id
+                        LIMIT $limit
+                    """, {"class_name": class_name, "class_prefix": class_prefix, "repo": repo, "collection": collection, "limit": limit})
+                else:
+                    result = session.run("""
+                        MATCH (child:Symbol {collection: $collection})-[r:INHERITS_FROM]->(base:Symbol {collection: $collection})
+                        WHERE (child.name = $class_name OR child.name STARTS WITH $class_prefix)
+                              AND r.collection = $collection
+                        RETURN child.name as class_name,
+                               base.name as base_class,
+                               r.caller_path as caller_path,
+                               base.path as base_path,
+                               r.language as language,
+                               child.repo as repo,
+                               r.edge_id as edge_id
+                        LIMIT $limit
+                    """, {"class_name": class_name, "class_prefix": class_prefix, "collection": collection, "limit": limit})
+
+                return [dict(record) for record in result]
+
+        except Exception as e:
+            logger.error(f"Failed to get base classes for {class_name}: {e}")
+            raise
+
+    def get_subclasses(
+        self,
+        graph_store: str,
+        class_name: str,
+        repo: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Find all subclasses (children) of a class using Cypher.
+
+        Finds classes that inherit from the given class.
+        """
+        driver = self._get_driver()
+        db = self._get_database()
+        collection = self._get_collection(graph_store)
+        # Pattern for class + methods: exact match OR starts with "class."
+        class_prefix = f"{class_name}."
+
+        try:
+            with driver.session(database=db) as session:
+                if repo and repo != "*":
+                    result = session.run("""
+                        MATCH (child:Symbol {collection: $collection})-[r:INHERITS_FROM]->(base:Symbol {collection: $collection})
+                        WHERE (base.name = $class_name OR base.name STARTS WITH $class_prefix)
+                              AND r.collection = $collection AND (r.repo = $repo OR base.repo = $repo)
+                        RETURN child.name as class_name,
+                               base.name as base_class,
+                               r.caller_path as caller_path,
+                               child.path as class_path,
+                               r.language as language,
+                               child.repo as repo,
+                               r.edge_id as edge_id
+                        LIMIT $limit
+                    """, {"class_name": class_name, "class_prefix": class_prefix, "repo": repo, "collection": collection, "limit": limit})
+                else:
+                    result = session.run("""
+                        MATCH (child:Symbol {collection: $collection})-[r:INHERITS_FROM]->(base:Symbol {collection: $collection})
+                        WHERE (base.name = $class_name OR base.name STARTS WITH $class_prefix)
+                              AND r.collection = $collection
+                        RETURN child.name as class_name,
+                               base.name as base_class,
+                               r.caller_path as caller_path,
+                               child.path as class_path,
+                               r.language as language,
+                               child.repo as repo,
+                               r.edge_id as edge_id
+                        LIMIT $limit
+                    """, {"class_name": class_name, "class_prefix": class_prefix, "collection": collection, "limit": limit})
+
+                return [dict(record) for record in result]
+
+        except Exception as e:
+            logger.error(f"Failed to get subclasses for {class_name}: {e}")
+            raise
+
     def resolve_symbol(
         self,
         graph_store: str,
@@ -1309,13 +1518,14 @@ class Neo4jGraphBackend(GraphBackend):
             with driver.session(database=db) as session:
                 # Simple in-degree approximation with OPTIONAL MATCH
                 # Ensures ALL nodes get a base rank, not just those with incoming edges
+                # Includes CALLS, IMPORTS, and INHERITS_FROM relationships
                 with session.begin_transaction(timeout=timeout) as tx:
                     if repo and repo != "*":
                         # Scope relationships to same collection AND repo
                         result = tx.run("""
                             MATCH (n:Symbol {collection: $collection})
                             WHERE n.repo = $repo
-                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS {collection: $collection}]-(caller)
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS|INHERITS_FROM {collection: $collection}]-(caller)
                             WHERE caller.repo = $repo
                             WITH n, count(r) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
@@ -1327,7 +1537,7 @@ class Neo4jGraphBackend(GraphBackend):
                         # Scope relationships to same collection
                         result = tx.run("""
                             MATCH (n:Symbol {collection: $collection})
-                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS {collection: $collection}]-()
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS|INHERITS_FROM {collection: $collection}]-()
                             WITH n, count(r) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0

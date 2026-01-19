@@ -28,6 +28,7 @@ __all__ = [
     "GRAPH_COLLECTION_SUFFIX",
     "EDGE_TYPE_CALLS",
     "EDGE_TYPE_IMPORTS",
+    "EDGE_TYPE_INHERITS_FROM",
     "GRAPH_INDEX_FIELDS",
     # Utility functions
     "normalize_path",
@@ -38,6 +39,7 @@ __all__ = [
     # Edge extraction
     "extract_call_edges",
     "extract_import_edges",
+    "extract_inheritance_edges",
     # Edge operations
     "upsert_edges",
     "delete_edges_by_path",
@@ -71,6 +73,7 @@ GRAPH_COLLECTION_SUFFIX = "_graph"
 # (EdgeType enum defined in scripts.graph_backends.base for type-safe usage)
 EDGE_TYPE_CALLS = "calls"
 EDGE_TYPE_IMPORTS = "imports"
+EDGE_TYPE_INHERITS_FROM = "inherits_from"
 
 # Payload index fields for fast lookups
 GRAPH_INDEX_FIELDS = (
@@ -417,6 +420,77 @@ def extract_import_edges(
             payload["caller_point_id"] = caller_point_id
         edges.append({
             "id": edge_id,
+            "payload": payload,
+        })
+    return edges
+
+
+def extract_inheritance_edges(
+    class_name: str,
+    base_classes: List[str],
+    path: str,
+    repo: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    language: Optional[str] = None,
+    caller_point_id: Optional[str] = None,
+    import_paths: Optional[Dict[str, str]] = None,
+    collection: Optional[str] = None,
+    qdrant_client: Optional["QdrantClient"] = None,
+) -> List[Dict[str, Any]]:
+    """Extract inheritance edge documents from class definition.
+
+    Args:
+        class_name: The class name
+        base_classes: List of base class names
+        path: File path of the class definition
+        repo: Repository name
+        start_line: Starting line of the class definition
+        end_line: Ending line of the class definition
+        language: Programming language
+        caller_point_id: ID of the source chunk in the main collection
+        import_paths: Mapping of local names to fully qualified paths
+        collection: Collection name (for cross-file resolution)
+        qdrant_client: Qdrant client (for cross-file resolution)
+
+    Returns:
+        List of edge documents ready for upsert
+    """
+    if not base_classes:
+        return []
+
+    norm_path = _normalize_path(path)
+    import_paths = import_paths or {}
+    edges = []
+
+    for base in base_classes:
+        if not base:
+            continue
+
+        # Resolve base class name through import_paths if available
+        resolved_base = import_paths.get(base, base)
+        # For inheritance, callee_path is typically unresolved unless we find the definition
+        callee_path = f"<unresolved>/{resolved_base}"
+
+        eid = _edge_id(class_name, resolved_base, norm_path, EDGE_TYPE_INHERITS_FROM, repo)
+        payload = {
+            "caller_symbol": class_name,
+            "callee_symbol": resolved_base,
+            "caller_path": norm_path,
+            "callee_path": callee_path,
+            "edge_type": EDGE_TYPE_INHERITS_FROM,
+            "repo": repo,
+        }
+        if start_line is not None:
+            payload["start_line"] = start_line
+        if end_line is not None:
+            payload["end_line"] = end_line
+        if language:
+            payload["language"] = language
+        if caller_point_id:
+            payload["caller_point_id"] = caller_point_id
+        edges.append({
+            "id": eid,
             "payload": payload,
         })
     return edges
