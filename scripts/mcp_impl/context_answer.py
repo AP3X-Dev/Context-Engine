@@ -44,7 +44,7 @@ import os
 import re
 import logging
 import threading
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 # Import utilities from sibling modules
@@ -329,14 +329,6 @@ def _validate_answer_output(text: str, citations: list) -> dict:
         }
     except Exception as e:
         logger.debug(f"Suppressed exception: {e} - validate answer output (extended)")
-        return {
-            "ok": True,
-            "has_citation_refs": True,
-            "hedge_score": 0,
-            "looks_cutoff": False,
-        }
-    except Exception as e:
-        logger.debug(f"Suppressed exception (validate_answer_output_2): {e}")
         return {
             "ok": True,
             "has_citation_refs": True,
@@ -1328,7 +1320,8 @@ def _ca_fallback_and_budget(
                     from pathlib import Path as _Path
 
                     _sr = str(_Path(os.getcwd()).resolve().parent)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e} - workspace search root")
                 _sr = "/work"
             _workspaces = _ws_list_workspaces(_sr) or []
             _current_coll = os.environ.get("COLLECTION_NAME") or ""
@@ -1632,11 +1625,13 @@ def _ca_fallback_and_budget(
                                         )
                                     except Exception as e:
                                         logger.debug(f"Suppressed exception: {e}")
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e} - doc top fallback")
                         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
                             logger.debug("DOC_TOP_FALLBACK_FAIL", exc_info=True)
 
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - doc pass")
         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
             logger.debug("DOC_PASS_FAIL", exc_info=True)
 
@@ -1779,7 +1774,8 @@ def _ca_fallback_and_budget(
                             "TIER3: filesystem scan returned",
                             extra={"count": len(items), "scanned": scanned},
                         )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - tier3 filesystem scan")
             if os.environ.get("DEBUG_CONTEXT_ANSWER"):
                 logger.debug("TIER3: filesystem scan failed", exc_info=True)
 
@@ -1823,7 +1819,8 @@ def _ca_fallback_and_budget(
                     ),
                     "MICRO_OUT_MAX_SPANS": os.environ.get("MICRO_OUT_MAX_SPANS", _default_spans),
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - budget env override")
             _pairs = {"MICRO_BUDGET_TOKENS": "5000", "MICRO_OUT_MAX_SPANS": "8"}
         with _env_overrides(_pairs):
             budgeted = _merge_and_budget_spans(items)
@@ -1898,7 +1895,8 @@ def _ca_fallback_and_budget(
 
             span["_ident_snippet"] = ""
             return ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - read span snippet")
             span["_ident_snippet"] = ""
             return ""
 
@@ -2041,7 +2039,8 @@ def _ca_fallback_and_budget(
                                 "end": cand.get("end_line"),
                             },
                         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - ident def lift")
         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
             logger.debug("IDENT_DEF_LIFT_FAILED", exc_info=True)
 
@@ -2113,7 +2112,8 @@ def _ca_build_citations_and_context(
                 if not fallback_path.startswith("/"):
                     return fallback_path
                 return fallback_path
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e} - rel path fallback")
                 return fallback_path
 
         _cit = {
@@ -2170,7 +2170,8 @@ def _ca_build_citations_and_context(
                         snippet = "".join(lines[si - 1 : ei])
                         it["_ident_snippet"] = snippet
                         break
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e} - snippet hydration")
                 snippet = ""
         if not snippet:
             snippet = str(it.get("text") or "").strip()
@@ -2446,7 +2447,8 @@ def _ca_decode(
                 if timeout is not None:
                     try:
                         timeout_value = float(timeout)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e} - timeout parse")
                         timeout_value = None
                 if timeout_value is None:
                     # Check runtime-specific timeout env var, then fall back to generic
@@ -2455,7 +2457,8 @@ def _ca_decode(
                     if raw_timeout:
                         try:
                             timeout_value = float(raw_timeout)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e} - runtime timeout parse")
                             timeout_value = None
                 if timeout_value is not None:
                     gen_kwargs["timeout"] = timeout_value

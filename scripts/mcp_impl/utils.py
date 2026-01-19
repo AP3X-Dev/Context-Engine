@@ -216,9 +216,18 @@ def _parse_kv_string(s: str) -> Dict[str, Any]:
             return out
     except Exception as e:
         logger.debug(f"Suppressed exception while parsing kv string: {e}")
-        logger.debug(f"Suppressed exception: {e}")
         return {}
+    return out
 
+
+def _extract_kwargs_payload(kwargs: Any) -> Dict[str, Any]:
+    try:
+        if isinstance(kwargs, str):
+            parsed = _maybe_parse_jsonish(kwargs)
+            if isinstance(parsed, dict):
+                kwargs = parsed
+            else:
+                return {}
 
         if isinstance(kwargs, dict) and "kwargs" in kwargs:
             inner = kwargs.get("kwargs")
@@ -227,7 +236,6 @@ def _parse_kv_string(s: str) -> Dict[str, Any]:
             parsed = _maybe_parse_jsonish(inner)
             if isinstance(parsed, dict):
                 return parsed
-            # Fallback: accept query-string or k=v,k2=v2 strings
             if isinstance(inner, str):
                 kv = _parse_kv_string(inner)
                 if isinstance(kv, dict) and kv:

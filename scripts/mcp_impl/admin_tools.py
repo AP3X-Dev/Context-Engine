@@ -64,7 +64,8 @@ def _get_embedding_model(model_name: str):
     try:
         from fastembed import TextEmbedding  # type: ignore
     except Exception as e:
-        logger.debug(f"Suppressed exception (fastembed import): {e}")
+        logger.debug(f"Suppressed exception while importing fastembed: {e}")
+        logger.debug(f"Suppressed exception: {e}")
         raise
 
     m = _EMBED_MODEL_CACHE.get(model_name)
@@ -115,7 +116,8 @@ def _invalidate_router_scratchpad(workspace_path: str) -> bool:
         # Clear any in-memory caches that might be stale
         return True
     except Exception as e:
-        logger.debug(f"Suppressed exception (invalidate_router_scratchpad): {e}")
+        logger.debug(f"Suppressed exception while invalidating router scratchpad: {e}")
+        logger.debug(f"Suppressed exception: {e}")
         return False
 
 
@@ -203,7 +205,8 @@ async def _collection_map_impl(
         try:
             s = str(val).strip()
         except Exception as e:
-            logger.debug(f"Suppressed exception (str conversion): {e}")
+            logger.debug(f"Suppressed exception while normalizing string: {e}")
+            logger.debug(f"Suppressed exception: {e}")
             return None
         return s or None
 
@@ -216,7 +219,8 @@ async def _collection_map_impl(
         try:
             max_entries = max(1, int(limit))
         except Exception as e:
-            logger.debug(f"Suppressed exception (limit parse): {e}")
+            logger.debug(f"Suppressed exception while parsing limit: {e}")
+            logger.debug(f"Suppressed exception: {e}")
             max_entries = None
 
     state_entries: List[Dict[str, Any]] = []
