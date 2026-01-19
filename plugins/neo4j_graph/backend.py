@@ -64,9 +64,21 @@ def _cleanup_drivers():
         try:
             if backend._driver is not None:
                 backend._driver.close()
-                logger.debug("Neo4j driver closed on shutdown")
+                logger.debug("Neo4j sync driver closed on shutdown")
         except Exception as e:
-            logger.debug(f"Suppressed exception: {e}")
+            logger.debug(f"Suppressed exception closing sync driver: {e}")
+        # Note: async driver cleanup requires async context.
+        # For atexit, we attempt synchronous close via internal driver method.
+        try:
+            if backend._async_driver is not None:
+                # Neo4j AsyncDriver has _pool that can be closed synchronously
+                # as a best-effort cleanup at process exit
+                if hasattr(backend._async_driver, '_pool') and backend._async_driver._pool:
+                    backend._async_driver._pool.close()
+                backend._async_driver = None
+                logger.debug("Neo4j async driver pool closed on shutdown")
+        except Exception as e:
+            logger.debug(f"Suppressed exception closing async driver: {e}")
 
 
 # Register cleanup on process exit
@@ -1148,22 +1160,22 @@ class Neo4jGraphBackend(GraphBackend):
 
         try:
             with driver.session(database=db) as session:
-                # Note: count(r) must be computed BEFORE DELETE, not after
+                # Delete edges and count how many were removed
                 if repo:
                     result = session.run("""
                         MATCH ()-[r]->()
                         WHERE r.caller_path = $path AND r.repo = $repo AND r.collection = $collection
-                        WITH r, count(r) AS deleted
+                        WITH r
                         DELETE r
-                        RETURN deleted
+                        RETURN count(*) AS deleted
                     """, {"path": norm_path, "repo": repo, "collection": collection})
                 else:
                     result = session.run("""
                         MATCH ()-[r]->()
                         WHERE r.caller_path = $path AND r.collection = $collection
-                        WITH r, count(r) AS deleted
+                        WITH r
                         DELETE r
-                        RETURN deleted
+                        RETURN count(*) AS deleted
                     """, {"path": norm_path, "collection": collection})
 
                 record = result.single()
