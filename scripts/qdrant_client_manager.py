@@ -110,8 +110,9 @@ class QdrantConnectionPool:
             self._created_count -= 1
     
     def close_all(self):
-        """Close all connections in the pool."""
+        """Close all connections in the pool (including temporary clients)."""
         with self._pool_lock:
+            # Close pooled connections
             for conn in self._pool:
                 try:
                     conn['client'].close()
@@ -119,6 +120,14 @@ class QdrantConnectionPool:
                     pass
             self._pool.clear()
             self._created_count = 0
+
+            # Close any tracked temporary clients
+            for temp_client in list(self._temp_clients):
+                try:
+                    temp_client.close()
+                except Exception:
+                    pass
+            self._temp_clients.clear()
     
     def get_stats(self) -> Dict[str, int]:
         """Get pool statistics."""
