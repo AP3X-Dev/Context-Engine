@@ -1033,9 +1033,12 @@ class Neo4jGraphBackend(GraphBackend):
                     logger.debug(f"GDS available: {gds_version['version']}")
                     graph_name = f"pagerank_{collection}"
 
-                    # Drop existing graph if it exists
+                    # Drop existing graph if it exists (use YIELD to avoid deprecated schema field)
                     try:
-                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                        session.run(
+                            "CALL gds.graph.drop($graphName, false) YIELD graphName",
+                            graphName=graph_name
+                        )
                     except Exception:
                         pass  # Graph doesn't exist, that's fine
 
@@ -1055,9 +1058,12 @@ class Neo4jGraphBackend(GraphBackend):
                     record = result.single()
                     updated = record["updated"] if record else 0
 
-                    # Cleanup graph projection
+                    # Cleanup graph projection (use YIELD to avoid deprecated schema field)
                     try:
-                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                        session.run(
+                            "CALL gds.graph.drop($graphName, false) YIELD graphName",
+                            graphName=graph_name
+                        )
                     except Exception:
                         pass
 
@@ -1586,9 +1592,12 @@ class Neo4jGraphBackend(GraphBackend):
                     # Build graph projection with repo filter if specified
                     graph_name = f"pagerank_{collection}_{repo or 'all'}"
 
-                    # Drop existing graph if it exists
+                    # Drop existing graph if it exists (use YIELD to avoid deprecated schema field)
                     try:
-                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                        session.run(
+                            "CALL gds.graph.drop($graphName, false) YIELD graphName",
+                            graphName=graph_name
+                        )
                     except Exception:
                         pass  # Graph doesn't exist, that's fine
 

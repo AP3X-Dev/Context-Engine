@@ -794,8 +794,9 @@ def delete_points_by_path(client: QdrantClient, collection: str, file_path: str)
             points_selector=models.FilterSelector(filter=filt),
             wait=True,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # Log deletion failures for debugging (could indicate Qdrant connectivity issues)
+        print(f"[DELETE_WARNING] Failed to delete points for {file_path}: {e}", flush=True)
 
 
 def upsert_points(
@@ -820,6 +821,7 @@ def upsert_points(
     except Exception:
         backoff = 0.5
 
+    failed_count = 0
     for i in range(0, len(points), max(1, bsz)):
         batch = points[i : i + max(1, bsz)]
         attempt = 0
@@ -827,24 +829,34 @@ def upsert_points(
             try:
                 client.upsert(collection_name=collection, points=batch, wait=True)
                 break
-            except Exception:
+            except Exception as e:
                 attempt += 1
                 if attempt >= retries:
+                    # Final fallback: try smaller sub-batches
                     sub_size = max(1, bsz // 4)
+                    sub_failed = 0
                     for j in range(0, len(batch), sub_size):
                         sub = batch[j : j + sub_size]
                         try:
                             client.upsert(
                                 collection_name=collection, points=sub, wait=True
                             )
-                        except Exception:
-                            pass
+                        except Exception as sub_e:
+                            sub_failed += len(sub)
+                            # Log individual sub-batch failures for debugging
+                            print(f"[UPSERT_WARNING] Sub-batch upsert failed ({len(sub)} points): {sub_e}", flush=True)
+                    if sub_failed > 0:
+                        failed_count += sub_failed
+                        print(f"[UPSERT_ERROR] Failed to upsert {sub_failed} points after {retries} retries: {e}", flush=True)
                     break
                 else:
                     try:
                         time.sleep(backoff * attempt)
                     except Exception:
                         pass
+
+    if failed_count > 0:
+        print(f"[UPSERT_SUMMARY] Total {failed_count}/{len(points)} points failed to upsert", flush=True)
 
 
 def hash_id(text: str, path: str, start: int, end: int) -> int:

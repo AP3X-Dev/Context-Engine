@@ -1473,8 +1473,9 @@ def _run_hybrid_search_impl(
         if embedded:
             dim = len(embedded[0])
             _ensure_collection(client, _collection(collection), dim, vec_name)
-    except Exception:
-        pass
+    except Exception as e:
+        # Log collection schema issues - these can cause search failures
+        logger.warning(f"Failed to ensure collection schema for {_collection(collection)}: {e}")
     # Optional gate-first using mini vectors to restrict dense search to candidates
     # Adaptive gating: disable for short/ambiguous queries to avoid over-filtering
     flt_gated = flt

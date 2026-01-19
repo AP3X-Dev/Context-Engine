@@ -257,6 +257,7 @@ def extract_inheritance_edges(
     caller_point_id: Optional[str] = None,
     import_paths: Optional[Dict[str, str]] = None,
     collection: Optional[str] = None,
+    qdrant_client: Optional["QdrantClient"] = None,
 ) -> List[GraphEdge]:
     """Extract inheritance edge objects from class definition.
 
@@ -271,6 +272,7 @@ def extract_inheritance_edges(
         caller_point_id: Qdrant point ID of class chunk
         import_paths: Dict mapping imported names to their module paths
         collection: Collection name for cross-file resolution
+        qdrant_client: Optional Qdrant client for cross-file resolution
 
     Returns GraphEdge objects representing INHERITS_FROM relationships.
     """

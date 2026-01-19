@@ -25,6 +25,8 @@ class QdrantConnectionPool:
         self._created_count = 0
         self._hits = 0
         self._misses = 0
+        # Track temporary clients (created when pool is full) so we can close them
+        self._temp_clients: set = set()
     
     def get_client(self, url: str, api_key: Optional[str] = None) -> QdrantClient:
         """Get a client from pool or create a new one."""
@@ -59,28 +61,45 @@ class QdrantConnectionPool:
                 return client
             else:
                 # Pool is full, create a temporary client (not pooled)
+                # Mark it for tracking so return_client can close it
                 self._misses += 1
-                return QdrantClient(url=url, api_key=api_key)
-    
+                temp_client = QdrantClient(url=url, api_key=api_key)
+                # Track temporary clients with weakref so they auto-close
+                self._temp_clients.add(temp_client)
+                return temp_client
+
     def return_client(self, client: QdrantClient):
-        """Return a client to the pool."""
+        """Return a client to the pool or close if temporary."""
         with self._pool_lock:
+            # Check if it's a temporary client (not in pool)
+            if client in self._temp_clients:
+                self._temp_clients.discard(client)
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                return
+
+            # Return pooled client
             for conn in self._pool:
                 if conn['client'] is client:
                     conn['in_use'] = False
                     conn['last_used'] = time.time()
                     break
-    
+
     def _cleanup_expired(self):
-        """Remove expired connections from the pool."""
+        """Remove expired connections from the pool.
+
+        NOTE: This must be called while holding _pool_lock.
+        """
         current_time = time.time()
         expired_indices = []
-        
+
         for i, conn in enumerate(self._pool):
-            if (not conn['in_use'] and 
+            if (not conn['in_use'] and
                 current_time - conn['created_at'] > self.max_lifetime):
                 expired_indices.append(i)
-        
+
         # Remove expired connections (in reverse order to maintain indices)
         for i in reversed(expired_indices):
             try:

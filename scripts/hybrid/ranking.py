@@ -305,11 +305,15 @@ def _normalize_scores(score_map: Dict[str, Dict[str, Any]], collection_size: int
         if cv > 0.3:
             logger.debug(f"High score variance detected (CV={cv:.2f})")
 
-    if std_s < 1e-6:
+    # Use larger epsilon for numerical safety - very small std means scores are nearly identical
+    # and normalization would just amplify noise
+    if std_s < 1e-4:
         return
 
     for rec in score_map.values():
-        z = (rec["s"] - mean_s) / std_s
+        # Safe division with clamped std_s (defensive, should never trigger due to check above)
+        safe_std = max(std_s, 1e-4)
+        z = (rec["s"] - mean_s) / safe_std
         normalized = 1.0 / (1.0 + math.exp(-z * 0.5))
         rec["s"] = normalized
 
