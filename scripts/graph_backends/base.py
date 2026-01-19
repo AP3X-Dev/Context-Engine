@@ -40,6 +40,9 @@ class GraphEdge:
     language: Optional[str] = None
     caller_point_id: Optional[str] = None
     callee_path: Optional[str] = None  # Resolved path of the callee symbol
+    # Symbol metadata (from Qdrant points)
+    caller_signature: Optional[str] = None
+    caller_docstring: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -60,6 +63,10 @@ class GraphEdge:
             d["callee_path"] = self.callee_path
         if self.caller_point_id:
             d["caller_point_id"] = self.caller_point_id
+        if self.caller_signature:
+            d["caller_signature"] = self.caller_signature
+        if self.caller_docstring:
+            d["caller_docstring"] = self.caller_docstring
         return d
 
 
