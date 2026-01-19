@@ -1354,6 +1354,10 @@ async function writeCtxConfig() {
   }
 }
 function deactivate() {
+  if (pendingProfileRestartTimer) {
+    clearTimeout(pendingProfileRestartTimer);
+    pendingProfileRestartTimer = undefined;
+  }
   disposeIndexedWatcher();
   return Promise.all([stopProcesses()]);
 }

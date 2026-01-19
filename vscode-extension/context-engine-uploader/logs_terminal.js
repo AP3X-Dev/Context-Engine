@@ -42,7 +42,10 @@ function createLogsTerminalManager(deps) {
   function dispose() {
     try {
       logTailActive = false;
-      logsTerminal = undefined;
+      if (logsTerminal) {
+        logsTerminal.dispose();
+        logsTerminal = undefined;
+      }
     } catch (_) {
       // ignore
     }
