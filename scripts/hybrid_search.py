@@ -607,7 +607,8 @@ def _get_symbol_importance_boost(symbol: str, rec: Dict[str, Any]) -> float:
             from scripts.graph_backends.graph_rag import get_symbol_importance
             importance = get_symbol_importance(symbol) or 0.0
             _IMPORTANCE_CACHE[cache_key] = importance
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get symbol importance for '{symbol}': {e}")
             _IMPORTANCE_CACHE[cache_key] = 0.0
             importance = 0.0
 
@@ -658,12 +659,12 @@ def _inject_graph_neighbors(
 
     from scripts.ingest.graph_edges import get_callees, get_callers
     backend = None
-        try:
-            from scripts.graph_backends import get_graph_backend
-            backend = get_graph_backend()
-        except Exception as e:
-            logger.debug(f"Failed to load graph backend: {e}")
-            backend = None
+    try:
+        from scripts.graph_backends import get_graph_backend
+        backend = get_graph_backend()
+    except Exception as e:
+        logger.debug(f"Failed to load graph backend: {e}")
+        backend = None
 
     neighbor_ids = set()
     neighbor_refs = []  # (path, symbol) pairs if IDs missing
@@ -2485,19 +2486,19 @@ def _run_hybrid_search_impl(
             bump = min(kcap, kb * float(hits))
             m["s"] += bump
         # Apply comment-heavy penalty to de-emphasize comments/doc blocks
-         # Skip in dense-preserving mode
-         try:
-             if not _DENSE_PRESERVING and COMMENT_PENALTY > 0.0:
-                 ratio = _snippet_comment_ratio(md)
-                 thr = float(COMMENT_RATIO_THRESHOLD)
-                 if ratio >= thr:
-                     scale = (ratio - thr) / max(1e-6, 1.0 - thr)
-                     pen = min(float(COMMENT_PENALTY), float(COMMENT_PENALTY) * max(0.0, scale))
-                     if pen > 0:
-                         m["cmt"] = float(m.get("cmt", 0.0)) - pen
-                         m["s"] -= pen
-         except Exception as e:
-             logger.debug(f"Failed to apply comment penalty: {e}")
+        # Skip in dense-preserving mode
+        try:
+            if not _DENSE_PRESERVING and COMMENT_PENALTY > 0.0:
+                ratio = _snippet_comment_ratio(md)
+                thr = float(COMMENT_RATIO_THRESHOLD)
+                if ratio >= thr:
+                    scale = (ratio - thr) / max(1e-6, 1.0 - thr)
+                    pen = min(float(COMMENT_PENALTY), float(COMMENT_PENALTY) * max(0.0, scale))
+                    if pen > 0:
+                        m["cmt"] = float(m.get("cmt", 0.0)) - pen
+                        m["s"] -= pen
+        except Exception as e:
+            logger.debug(f"Failed to apply comment penalty: {e}")
 
     # Re-sort after bump
     ranked = sorted(ranked, key=_tie_key)
@@ -2871,23 +2872,24 @@ def _run_hybrid_search_impl(
         except Exception as e:
             logger.debug(f"Failed to resolve import-based related paths: {e}")
 
-         _related = sorted(_related_set)[:10]
-         # Align related_paths with PATH_EMIT_MODE when possible: in host/auto
-         # modes, prefer host paths when we have a mapping; in container mode,
-         # keep container/path-space values as-is.
-         _related_out = _related
-         try:
-             _mode_related = str(os.environ.get("PATH_EMIT_MODE", "auto")).strip().lower()
-         except Exception as e:
-             logger.debug(f"Failed to parse PATH_EMIT_MODE, using default auto: {e}")
-             _mode_related = "auto"
+        _related = sorted(_related_set)[:10]
+        # Align related_paths with PATH_EMIT_MODE when possible: in host/auto
+        # modes, prefer host paths when we have a mapping; in container mode,
+        # keep container/path-space values as-is.
+        _related_out = _related
+        try:
+            _mode_related = str(os.environ.get("PATH_EMIT_MODE", "auto")).strip().lower()
+        except Exception as e:
+            logger.debug(f"Failed to parse PATH_EMIT_MODE, using default auto: {e}")
+            _mode_related = "auto"
         if _mode_related in {"host", "auto"}:
             try:
                 _mapped: List[str] = []
                 for rp in _related:
                     _mapped.append(host_map.get(rp, rp))
                 _related_out = _mapped
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to map related paths to host paths: {e}")
                 _related_out = _related
         # Best-effort snippet text directly from payload for downstream LLM stitching
         _payload = (m["pt"].payload or {}) if m.get("pt") is not None else {}
@@ -2990,19 +2992,19 @@ def _run_hybrid_search_impl(
     if _USE_CACHE and cache_key is not None:
         if UNIFIED_CACHE_AVAILABLE:
             _RESULTS_CACHE.set(cache_key, items)
-             # Mirror into local fallback dict for deterministic hits in tests
-             try:
-                 with _RESULTS_LOCK:
-                     _RESULTS_CACHE_OD[cache_key] = items
-                     while len(_RESULTS_CACHE_OD) > MAX_RESULTS_CACHE:
-                         # pop oldest inserted (like LRU/FIFO)
-                         try:
-                             _RESULTS_CACHE_OD.popitem(last=False)
-                         except Exception as e:
-                             logger.debug(f"Failed to evict from cache: {e}")
-                             break
-             except Exception as e:
-                 logger.debug(f"Failed to mirror results to fallback cache: {e}")
+            # Mirror into local fallback dict for deterministic hits in tests
+            try:
+                with _RESULTS_LOCK:
+                    _RESULTS_CACHE_OD[cache_key] = items
+                    while len(_RESULTS_CACHE_OD) > MAX_RESULTS_CACHE:
+                        # pop oldest inserted (like LRU/FIFO)
+                        try:
+                            _RESULTS_CACHE_OD.popitem(last=False)
+                        except Exception as e:
+                            logger.debug(f"Failed to evict from cache: {e}")
+                            break
+            except Exception as e:
+                logger.debug(f"Failed to mirror results to fallback cache: {e}")
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                 logger.debug("cache store for hybrid results")
         else:
