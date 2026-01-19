@@ -44,21 +44,21 @@ def get_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # If results is a string, it's TOON-encoded - decode it
     if isinstance(results, str):
+        from toon import decode as toon_decode
         try:
-            from toon import decode as toon_decode
             decoded = toon_decode(results)
-            # TOON decode returns dict with the key, extract the list
-            if isinstance(decoded, dict):
-                # Find the results list in the decoded dict
-                for key, val in decoded.items():
-                    if isinstance(val, list):
-                        return val
-                return []
-            elif isinstance(decoded, list):
-                return decoded
-            return []
-        except Exception:
-            return []
+        except Exception as e:
+            # Debug: print the problematic TOON string
+            import sys
+            print(f"\n[get_results] TOON decode error: {e}", file=sys.stderr)
+            print(f"[get_results] TOON string (first 500 chars): {results[:500]!r}", file=sys.stderr)
+            raise
+        # TOON decode returns dict with 'results' key containing the list
+        if isinstance(decoded, dict):
+            return decoded.get("results", [])
+        elif isinstance(decoded, list):
+            return decoded
+        return []
 
     return []
 

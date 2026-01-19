@@ -49,6 +49,11 @@ _DRIVER_INSTANCES: weakref.WeakSet = weakref.WeakSet()
 _BACKFILL_CHECKED: set = set()
 _BACKFILL_LOCK = threading.Lock()
 
+# Rate limit backfill checks when Qdrant is empty (indexer may be running)
+# Maps collection -> last check timestamp
+_BACKFILL_LAST_CHECK: dict = {}
+_BACKFILL_CHECK_INTERVAL = 30  # Seconds between retry attempts when Qdrant is empty
+
 # Environment variable to disable auto-backfill (enabled by default)
 AUTO_BACKFILL_DISABLED = os.environ.get("NEO4J_AUTO_BACKFILL_DISABLE", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -552,24 +557,45 @@ class Neo4jGraphBackend(GraphBackend):
         has data, edges are automatically backfilled.
 
         Thread-safe: uses a lock to prevent race conditions.
+
+        Important: We only mark a collection as "checked" after a successful backfill
+        or if Neo4j already has data. If Qdrant is empty (indexer still running),
+        we don't mark it as checked so future requests can trigger backfill.
+
+        Rate limiting: When Qdrant is empty, we rate-limit retry attempts to avoid
+        hammering the database while the indexer is running.
         """
-        global _BACKFILL_CHECKED
+        global _BACKFILL_CHECKED, _BACKFILL_LAST_CHECK
 
         # Skip if disabled via env var
         if AUTO_BACKFILL_DISABLED:
             return
 
-        # Thread-safe check-and-add to prevent duplicate backfills
+        # Thread-safe check to prevent duplicate concurrent backfills
         with _BACKFILL_LOCK:
             if collection in _BACKFILL_CHECKED:
                 return
-            _BACKFILL_CHECKED.add(collection)
+
+            # Rate limit: don't check too frequently when Qdrant was previously empty
+            import time as _time
+            now = _time.time()
+            last_check = _BACKFILL_LAST_CHECK.get(collection, 0)
+            if now - last_check < _BACKFILL_CHECK_INTERVAL:
+                return
+            _BACKFILL_LAST_CHECK[collection] = now
+
+            # NOTE: We intentionally do NOT add to _BACKFILL_CHECKED here.
+            # We only mark as checked after verifying a permanent condition
+            # (Neo4j has data, or backfill was performed).
 
         # Check if Neo4j already has edges for this collection
         edge_count = self._count_edges_for_collection(collection)
         if edge_count != 0:  # Has edges or error occurred
             if edge_count > 0:
                 logger.debug(f"Neo4j already has {edge_count} edges for {collection}, skipping backfill")
+                # Mark as checked - Neo4j has data, no need to check again
+                with _BACKFILL_LOCK:
+                    _BACKFILL_CHECKED.add(collection)
             return
 
         # Check if Qdrant has data to backfill from
@@ -581,14 +607,20 @@ class Neo4jGraphBackend(GraphBackend):
             try:
                 info = qdrant.get_collection(collection)
                 if info.points_count == 0:
-                    logger.debug(f"Qdrant collection {collection} is empty, skipping backfill")
+                    # Don't mark as checked - Qdrant might still be indexing
+                    logger.debug(f"Qdrant collection {collection} is empty, skipping backfill (will retry in {_BACKFILL_CHECK_INTERVAL}s)")
                     return
             except Exception:
-                logger.debug(f"Qdrant collection {collection} not found, skipping backfill")
+                # Don't mark as checked - collection might be created soon
+                logger.debug(f"Qdrant collection {collection} not found, skipping backfill (will retry in {_BACKFILL_CHECK_INTERVAL}s)")
                 return
 
             logger.info(f"Neo4j empty for {collection}, starting auto-backfill from Qdrant ({info.points_count} points)...")
             self._perform_backfill(collection, qdrant)
+
+            # Mark as checked after successful backfill
+            with _BACKFILL_LOCK:
+                _BACKFILL_CHECKED.add(collection)
 
         except ImportError:
             logger.debug("qdrant_client not available, skipping auto-backfill")
