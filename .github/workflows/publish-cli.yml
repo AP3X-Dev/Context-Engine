@@ -64,3 +64,5 @@ jobs:
         if: steps.version_check.outputs.changed == 'true' && steps.version_check.outputs.already_published != 'true'
         working-directory: ctx-mcp-bridge
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
