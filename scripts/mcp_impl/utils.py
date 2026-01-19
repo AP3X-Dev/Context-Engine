@@ -214,21 +214,11 @@ def _parse_kv_string(s: str) -> Dict[str, Any]:
                 k, v = part.split("=", 1)
                 out[k.strip()] = _coerce_value_string(v.strip())
             return out
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while parsing kv string: {e}")
+        logger.debug(f"Suppressed exception: {e}")
         return {}
-    return out
 
-
-def _extract_kwargs_payload(kwargs: Any) -> Dict[str, Any]:
-    """Extract kwargs payload from potentially nested/stringified input."""
-    try:
-        # Handle kwargs being passed as a string "{}" by some MCP clients
-        if isinstance(kwargs, str):
-            parsed = _maybe_parse_jsonish(kwargs)
-            if isinstance(parsed, dict):
-                kwargs = parsed
-            else:
-                return {}
 
         if isinstance(kwargs, dict) and "kwargs" in kwargs:
             inner = kwargs.get("kwargs")
@@ -243,7 +233,8 @@ def _extract_kwargs_payload(kwargs: Any) -> Dict[str, Any]:
                 if isinstance(kv, dict) and kv:
                     return kv
             return {}
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while extracting kwargs payload: {e}")
         return {}
     return {}
 
@@ -439,6 +430,7 @@ def _primary_identifier_from_queries(qs: List[str]) -> str:
             return (0, len(c))
         cand.sort(key=_score, reverse=True)
         return cand[0] if cand else ""
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while extracting primary identifier: {e}")
         return ""
 

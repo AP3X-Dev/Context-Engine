@@ -152,7 +152,8 @@ def _detect_code_intent_embedding(query: str) -> float:
         score = 1.0 / (1.0 + np.exp(-diff * 5))  # Sigmoid with scaling
 
         return float(score)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception (code_intent_score): {e}")
         return 0.5
 
 

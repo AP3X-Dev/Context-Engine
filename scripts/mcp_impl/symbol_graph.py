@@ -97,7 +97,8 @@ def _get_graph_backend():
         backend = get_graph_backend()
         if backend.backend_type == "neo4j":
             return backend
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - graph backend lookup")
         return None
     return None
 
@@ -934,7 +935,8 @@ async def _try_enhanced_multihop_query(
                     results = kg.get_callees(symbol, repo=repo, depth=depth, limit=limit)
                 else:
                     return None
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e} - enhanced callee graph lookup")
                 return None
 
         if not results:
@@ -1297,7 +1299,8 @@ async def _symbol_graph_impl(
         try:
             from scripts.mcp_impl.workspace import _default_collection
             coll = _default_collection() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - default collection resolution")
             coll = os.environ.get("COLLECTION_NAME", "codebase")
     if not coll:
         coll = os.environ.get("COLLECTION_NAME", "codebase")
@@ -2023,7 +2026,8 @@ async def _compute_called_by(
         try:
             from scripts.mcp_impl.workspace import _default_collection
             coll = _default_collection() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - called_by collection resolution")
             coll = os.environ.get("COLLECTION_NAME", "codebase")
     if not coll:
         coll = os.environ.get("COLLECTION_NAME", "codebase")
@@ -2153,7 +2157,8 @@ async def _get_symbol_calls(
         try:
             from scripts.mcp_impl.workspace import _default_collection
             coll = _default_collection() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - symbol calls collection resolution")
             coll = os.environ.get("COLLECTION_NAME", "codebase")
     if not coll:
         coll = os.environ.get("COLLECTION_NAME", "codebase")

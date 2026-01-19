@@ -580,11 +580,11 @@ class Neo4jKnowledgeGraph:
 
         with driver.session(database=self._database) as session:
             with session.begin_transaction(timeout=timeout) as tx:
-                # Use COALESCE for optional properties to avoid Neo4j warnings
+                # n.id is set on all nodes (Symbol nodes have id=name)
                 result = tx.run(f"""
                     MATCH (n{type_filter})
                     WHERE n.name =~ $pattern {repo_filter}
-                    RETURN COALESCE(n.id, n.name) AS id, n.name AS name, labels(n)[0] AS type,
+                    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
                            n.path AS path, COALESCE(n.start_line, 0) AS start_line,
                            COALESCE(n.signature, '') AS signature,
                            COALESCE(n.docstring, '') AS docstring,
@@ -612,14 +612,14 @@ class Neo4jKnowledgeGraph:
 
         with driver.session(database=self._database) as session:
             with session.begin_transaction(timeout=timeout) as tx:
-                # Use COALESCE for optional properties to avoid Neo4j warnings
+                # caller.id is set on all nodes (Symbol nodes have id=name)
                 result = tx.run(f"""
                     MATCH (target {{name: $name}})
                     {target_repo_filter}
                     MATCH (caller)-[:CALLS*1..{safe_depth}]->(target)
                     WHERE caller <> target {caller_repo_filter}
                     RETURN DISTINCT
-                        COALESCE(caller.id, caller.name) AS id, caller.name AS name, labels(caller)[0] AS type,
+                        caller.id AS id, caller.name AS name, labels(caller)[0] AS type,
                         caller.path AS path, COALESCE(caller.start_line, 0) AS start_line,
                         COALESCE(caller.signature, '') AS signature,
                         size((caller)-[:CALLS]->()) AS call_count
@@ -646,14 +646,14 @@ class Neo4jKnowledgeGraph:
 
         with driver.session(database=self._database) as session:
             with session.begin_transaction(timeout=timeout) as tx:
-                # Use COALESCE for optional properties to avoid Neo4j warnings
+                # callee.id is set on all nodes (Symbol nodes have id=name)
                 result = tx.run(f"""
                     MATCH (source {{name: $name}})
                     {source_repo_filter}
                     MATCH (source)-[:CALLS*1..{safe_depth}]->(callee)
                     WHERE source <> callee {callee_repo_filter}
                     RETURN DISTINCT
-                        COALESCE(callee.id, callee.name) AS id, callee.name AS name, labels(callee)[0] AS type,
+                        callee.id AS id, callee.name AS name, labels(callee)[0] AS type,
                         callee.path AS path, COALESCE(callee.start_line, 0) AS start_line,
                         COALESCE(callee.signature, '') AS signature
                     ORDER BY COALESCE(callee.pagerank, 0.0) DESC
@@ -792,7 +792,7 @@ class Neo4jKnowledgeGraph:
                         WITH similar,
                              CASE WHEN union_size > 0 THEN toFloat(shared_calls) / union_size ELSE 0.0 END AS jaccard
                         WHERE jaccard > 0.1
-                        RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
+                        RETURN similar.name AS id, similar.name AS name, labels(similar)[0] AS type,
                                similar.path AS path, similar.signature AS signature,
                                jaccard AS similarity
                         ORDER BY jaccard DESC
@@ -807,13 +807,13 @@ class Neo4jKnowledgeGraph:
                         MATCH (target)-[:CALLS]->(t_calls)
                         WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
                         MATCH (similar)-[:CALLS]->(s_calls)
-                        WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                        With similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
                         WITH similar, shared_calls, target_calls, similar_calls,
                              (target_calls + similar_calls - shared_calls) AS union_size
                         WITH similar,
                              CASE WHEN union_size > 0 THEN toFloat(shared_calls) / union_size ELSE 0.0 END AS jaccard
                         WHERE jaccard > 0.1
-                        RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
+                        RETURN similar.name AS id, similar.name AS name, labels(similar)[0] AS type,
                                similar.path AS path, similar.signature AS signature,
                                jaccard AS similarity
                         ORDER BY jaccard DESC

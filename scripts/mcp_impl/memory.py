@@ -91,7 +91,8 @@ async def _memory_store_impl(
             from scripts.utils import lex_hash_vector_text
 
             return lex_hash_vector_text(text, dim)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (lex_hash_vector import): {e}")
             # Fallback: minimal hashing
             if not text:
                 return [0.0] * dim
@@ -227,7 +228,8 @@ async def _memory_find_impl(
         try:
             from scripts.utils import lex_hash_vector_text
             return lex_hash_vector_text(text, dim)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (lex_hash_vector import 2): {e}")
             if not text:
                 return [0.0] * dim
             vec = [0.0] * dim

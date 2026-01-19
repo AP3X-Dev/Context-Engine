@@ -127,7 +127,8 @@ def _cleanup_answer(text: str, max_chars: int | None = None) -> str:
         if max_chars and max_chars > 0 and len(t2) > max_chars:
             t2 = t2[: max(0, max_chars - 3)] + "..."
         return t2
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - cleanup answer (primary)")
         return text
 
 
@@ -161,7 +162,8 @@ def _strip_preamble_labels(text: str) -> str:
             return t
         parts = [ln.strip() for ln in re.split(r"\n+", t) if ln.strip() and not re.match(r"^(Definition|Usage):\s*$", ln.strip(), re.I)]
         return " ".join(parts)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - strip preamble labels (regex)")
         return text
 
 
@@ -184,7 +186,8 @@ def _validate_answer_output(text: str, citations: list) -> dict:
             "hedge_score": hedge_score,
             "looks_cutoff": looks_cutoff,
         }
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - validate answer output (simple)")
         return {"ok": False, "has_citation_refs": False, "hedge_score": 0, "looks_cutoff": False}
 
 # Lightweight cleanup to reduce repetition from small models
@@ -241,7 +244,8 @@ def _cleanup_answer(text: str, max_chars: int | None = None) -> str:
         if max_chars and max_chars > 0 and len(t2) > max_chars:
             t2 = t2[: max(0, max_chars - 3)] + "..."
         return t2
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - cleanup answer (detailed)")
         return text
 
 
@@ -283,7 +287,8 @@ def _strip_preamble_labels(text: str) -> str:
         t = t.replace("Definition:", "").replace("Usage:", "")
         parts = [p.strip() for p in t.splitlines() if p.strip()]
         return " ".join(parts)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - strip preamble labels (simple)")
         return text
 
 
@@ -322,7 +327,16 @@ def _validate_answer_output(text: str, citations: list) -> dict:
             "hedge_score": hedge_score,
             "looks_cutoff": looks_cutoff,
         }
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - validate answer output (extended)")
+        return {
+            "ok": True,
+            "has_citation_refs": True,
+            "hedge_score": 0,
+            "looks_cutoff": False,
+        }
+    except Exception as e:
+        logger.debug(f"Suppressed exception (validate_answer_output_2): {e}")
         return {
             "ok": True,
             "has_citation_refs": True,
@@ -1060,7 +1074,8 @@ def _ca_prepare_filters_and_retrieve(
     if req_language:
         try:
             from scripts.hybrid_search import lang_matches_path as _lmp  # type: ignore
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (lang_matches_path import): {e}")
             _lmp = None
 
         def _ok_lang(it: Dict[str, Any]) -> bool:
@@ -1186,7 +1201,8 @@ def _ca_fallback_and_budget(
     if req_language:
         try:
             from scripts.hybrid_search import lang_matches_path as _lmp  # type: ignore
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (lang_matches_path import): {e}")
             _lmp = None
 
         def _ok_lang(it: Dict[str, Any]) -> bool:
@@ -1366,15 +1382,17 @@ def _ca_fallback_and_budget(
                             for _it in _res:
                                 if isinstance(_it, dict):
                                     _agg.append(_it)
-                    except Exception:
+                    except Exception as e:
                         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
                             try:
                                 logger.debug(
                                     "MULTI_COLLECTION_ONE_FAILED",
                                     extra={"collection": _c},
                                 )
-                            except Exception as e:
-                                logger.debug(f"Suppressed exception: {e}")
+                            except Exception as inner_e:
+                                logger.debug(
+                                    f"Suppressed exception: {inner_e} - multi-collection debug"
+                                )
                 if _agg:
                     _seen = set()
                     _ded = []
@@ -1406,11 +1424,16 @@ def _ca_fallback_and_budget(
                                     "first": (_ded[0].get("path") if _ded else None),
                                 },
                             )
-                        except Exception as e:
-                            logger.debug(f"Suppressed exception: {e}")
-    except Exception:
+                        except Exception as inner_e:
+                            logger.debug(
+                                f"Suppressed exception: {inner_e} - multi-collection summary"
+                            )
+    except Exception as e:
         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
-            logger.debug("MULTI_COLLECTION_FAIL", exc_info=True)
+            logger.debug(
+                f"Suppressed exception: {e} - multi-collection fallback",
+                exc_info=True,
+            )
     # Doc-aware retrieval pass: pull READMEs/docs when results are thin (index-only)
     try:
         _doc_enabled = str(os.environ.get("CTX_DOC_PASS", "1")).strip().lower() in {
@@ -2234,7 +2257,8 @@ def _ca_ident_supplement(
         return out
     try:
         margin = int(_os.environ.get("CTX_READ_MARGIN", "1") or 1)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - ident supplement margin")
         margin = 1
     pat_def = _re.compile(rf"\b{_re.escape(ident)}\b\s*=")
     pat_any = _re.compile(rf"\b{_re.escape(ident)}\b")
@@ -2282,7 +2306,8 @@ def _ca_ident_supplement(
                 seen.add(key)
                 if len(out) >= max_hits:
                     break
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - ident supplement scan")
             # Best-effort supplement; ignore errors
             continue
     return out
@@ -2547,7 +2572,8 @@ def _ca_postprocess_answer(
                             usage_text = _ln.strip()
                             usage_cid = usage_id
                             break
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - usage line extraction")
             usage_text = ""
             usage_cid = None
         if not usage_text:
@@ -2592,7 +2618,8 @@ def _ca_postprocess_answer(
             txt = f"{def_line}\n{usage_line}".strip()
         else:
             txt = _strip_preamble_labels(txt)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - postprocess answer assembly")
         txt = txt.strip()
 
     if os.environ.get("DEBUG_CONTEXT_ANSWER"):
@@ -2772,7 +2799,8 @@ async def _context_answer_impl(
         def safe_float(val, default=0.0, **kw):
             try:
                 return float(val) if val is not None else default
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e} - safe_float fallback")
                 return default
 
     # Get embedding model function
@@ -2863,25 +2891,27 @@ async def _context_answer_impl(
             "work", "works", "guide", "readme",
         )
         _broad = any(t in _qtext for t in _broad_tokens)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - broad query scan")
         _broad = False
     if _broad:
         try:
             _factor = float(os.environ.get("CTX_BROAD_BUDGET_FACTOR", "1.4"))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - budget factor parse")
             _factor = 1.0
         if _factor > 1.0:
             if budget_tokens is not None and str(budget_tokens).strip() != "":
                 try:
                     budget_tokens = int(max(128, int(float(budget_tokens) * _factor)))
                 except Exception as e:
-                    logger.debug(f"Suppressed exception: {e}")
+                    logger.debug(f"Suppressed exception: {e} - budget tokens scale")
             else:
                 try:
                     _base = int(float(os.environ.get("MICRO_BUDGET_TOKENS", "5000")))
                     budget_tokens = int(max(128, int(_base * _factor)))
                 except Exception as e:
-                    logger.debug(f"Suppressed exception: {e}")
+                    logger.debug(f"Suppressed exception: {e} - budget base parse")
 
     # Collection + model setup (reuse indexer defaults)
     coll = (collection or _default_collection()) or ""
@@ -3215,7 +3245,8 @@ async def _context_answer_impl(
         try:
             from scripts.refrag_llamacpp import is_decoder_enabled
             _decoder_available = is_decoder_enabled()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - decoder availability check")
             _decoder_available = False
 
     if not _decoder_available:
@@ -3302,6 +3333,7 @@ async def _context_answer_impl(
         )
 
     except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - decoder call failure")
         return {
             "error": f"decoder call failed: {e}",
             "citations": _slim_citations(citations),
@@ -3332,7 +3364,8 @@ async def _context_answer_impl(
                         for w in _re.split(r"[^A-Za-z0-9_]+", str(s or ""))
                         if len(w) >= 3
                     ]
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e} - pack mode tokenization")
                     return []
 
             id_to_cit = {
@@ -3397,13 +3430,15 @@ async def _context_answer_impl(
                         "citations": cits_i,
                     })
                 except Exception as _e:
+                    logger.debug(f"Suppressed exception: {_e} - pack mode answer")
                     answers_by_query.append({
                         "query": q,
                         "answer": "",
                         "citations": [],
                         "error": str(_e),
                     })
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - pack mode block")
         answers_by_query = None
 
     out = {

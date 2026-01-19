@@ -833,7 +833,8 @@ async def _context_search_impl(
                             with urllib.request.urlopen(readyz, timeout=1.5) as r:
                                 if getattr(r, "status", 200) == 200:
                                     return True
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (readyz poll): {e}")
                             time.sleep(ready_backoff * (i + 1))
                     return False
 
@@ -903,7 +904,8 @@ async def _context_search_impl(
                                 txt = getattr(item, "text", None)
                                 if isinstance(txt, str):
                                     rd["content"].append({"type": "text", "text": txt})
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (content parse): {e}")
                             rd = {}
 
                         # Parse common MCP tool result shapes

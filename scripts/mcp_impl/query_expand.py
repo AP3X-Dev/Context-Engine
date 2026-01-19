@@ -240,7 +240,8 @@ async def _expand_query_impl(query: Any = None, max_new: Any = None, session: Op
                         # Try JSON first, then Python literal eval
                         try:
                             parsed = _json.loads(arr_text)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (JSON parse, trying ast): {e}")
                             import ast
                             parsed = ast.literal_eval(arr_text)
                         if isinstance(parsed, list):
@@ -260,8 +261,9 @@ async def _expand_query_impl(query: Any = None, max_new: Any = None, session: Op
                                 _maybe_add(s)
                                 if len(alts) >= cap:
                                     break
-                except Exception as fallback_err:
-                    logger.debug(f"expand_query fallback parse failed: {fallback_err}")
+                except Exception as e:
+                    logger.debug(f"Suppressed exception while parsing expansion fallback: {e}")
+                    logger.debug(f"expand_query fallback parse failed: {e}")
         if debug_expand:
             logger.debug("expand_query returning alts", extra={"alts": alts})
         capped = alts[:cap]

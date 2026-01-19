@@ -452,6 +452,10 @@ class Neo4jGraphBackend(GraphBackend):
             with driver.session(database=db) as session:
                 # Create indexes for efficient lookups
                 session.run("""
+                    CREATE INDEX symbol_id_idx IF NOT EXISTS
+                    FOR (s:Symbol) ON (s.id)
+                """)
+                session.run("""
                     CREATE INDEX symbol_name_idx IF NOT EXISTS
                     FOR (s:Symbol) ON (s.name)
                 """)
@@ -835,13 +839,15 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (caller:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
-                        ON CREATE SET caller.simple_name = edge.caller_simple,
+                        ON CREATE SET caller.id = edge.caller_symbol,
+                                      caller.simple_name = edge.caller_simple,
                                       caller.start_line = edge.start_line,
                                       caller.language = edge.language,
                                       caller.signature = edge.caller_signature,
                                       caller.docstring = edge.caller_docstring,
                                       caller.indexed_at = timestamp()
-                        ON MATCH SET caller.simple_name = COALESCE(caller.simple_name, edge.caller_simple),
+                        ON MATCH SET caller.id = COALESCE(caller.id, edge.caller_symbol),
+                                     caller.simple_name = COALESCE(caller.simple_name, edge.caller_simple),
                                      caller.start_line = CASE
                                          WHEN edge.start_line IS NOT NULL AND edge.start_line > 0 THEN edge.start_line
                                          ELSE COALESCE(caller.start_line, edge.start_line)
@@ -856,8 +862,8 @@ class Neo4jGraphBackend(GraphBackend):
                                          ELSE COALESCE(caller.docstring, edge.caller_docstring)
                                      END
                         MERGE (callee:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET callee.simple_name = edge.callee_simple, callee.indexed_at = timestamp()
-                        ON MATCH SET callee.simple_name = COALESCE(callee.simple_name, edge.callee_simple)
+                        ON CREATE SET callee.id = edge.callee_symbol, callee.simple_name = edge.callee_simple, callee.indexed_at = timestamp()
+                        ON MATCH SET callee.id = COALESCE(callee.id, edge.callee_symbol), callee.simple_name = COALESCE(callee.simple_name, edge.callee_simple)
                         MERGE (caller)-[r:CALLS {edge_id: edge.edge_id}]->(callee)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
@@ -882,12 +888,14 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (importer:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
-                        ON CREATE SET importer.simple_name = edge.caller_simple,
+                        ON CREATE SET importer.id = edge.caller_symbol,
+                                      importer.simple_name = edge.caller_simple,
                                       importer.language = edge.language,
                                       importer.signature = edge.caller_signature,
                                       importer.docstring = edge.caller_docstring,
                                       importer.indexed_at = timestamp()
-                        ON MATCH SET importer.simple_name = COALESCE(importer.simple_name, edge.caller_simple),
+                        ON MATCH SET importer.id = COALESCE(importer.id, edge.caller_symbol),
+                                     importer.simple_name = COALESCE(importer.simple_name, edge.caller_simple),
                                      importer.language = COALESCE(edge.language, importer.language),
                                      importer.signature = CASE
                                          WHEN edge.caller_signature IS NOT NULL AND edge.caller_signature <> '' THEN edge.caller_signature
@@ -898,8 +906,8 @@ class Neo4jGraphBackend(GraphBackend):
                                          ELSE COALESCE(importer.docstring, edge.caller_docstring)
                                      END
                         MERGE (imported:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET imported.simple_name = edge.callee_simple, imported.indexed_at = timestamp()
-                        ON MATCH SET imported.simple_name = COALESCE(imported.simple_name, edge.callee_simple)
+                        ON CREATE SET imported.id = edge.callee_symbol, imported.simple_name = edge.callee_simple, imported.indexed_at = timestamp()
+                        ON MATCH SET imported.id = COALESCE(imported.id, edge.callee_symbol), imported.simple_name = COALESCE(imported.simple_name, edge.callee_simple)
                         MERGE (importer)-[r:IMPORTS {edge_id: edge.edge_id}]->(imported)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,

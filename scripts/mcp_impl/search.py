@@ -276,7 +276,8 @@ async def _repo_search_impl(
             if x is None or (isinstance(x, str) and x.strip() == ""):
                 return default
             return int(x)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (int coercion failed): {e}")
             return default
 
     def _to_bool(x, default):
@@ -540,13 +541,15 @@ async def _repo_search_impl(
         # Determine effective candidate pool (respect rerank_top_n if rerank is enabled)
         try:
             base_limit = int(limit)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (dense limit parse): {e}")
             base_limit = 10
         eff_limit = base_limit
         if rerank_enabled:
             try:
                 rt = int(rerank_top_n)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (dense rerank_top_n parse): {e}")
                 rt = 0
             if rt > eff_limit:
                 eff_limit = rt
@@ -640,13 +643,15 @@ async def _repo_search_impl(
                 # Determine effective hybrid candidate limit: if rerank is enabled, search up to rerank_top_n
                 try:
                     base_limit = int(limit)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (hybrid limit parse): {e}")
                     base_limit = 10
                 eff_limit = base_limit
                 if rerank_enabled:
                     try:
                         rt = int(rerank_top_n)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception (hybrid rerank_top_n parse): {e}")
                         rt = 0
                     if rt > eff_limit:
                         eff_limit = rt
@@ -694,13 +699,15 @@ async def _repo_search_impl(
             # Try hybrid search via subprocess (JSONL output)
             try:
                 base_limit = int(limit)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (subprocess limit parse): {e}")
                 base_limit = 10
             eff_limit = base_limit
             if rerank_enabled:
                 try:
                     rt = int(rerank_top_n)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (subprocess rerank_top_n parse): {e}")
                     rt = 0
                 if rt > eff_limit:
                     eff_limit = rt
@@ -922,7 +929,8 @@ async def _repo_search_impl(
                                             meta_lines.append(f"Tags: {tags_text}")
                                 except Exception as e:
                                     logger.debug(f"Suppressed exception: {e}")
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (rerank metadata fallback): {e}")
                             # If any of the above fails, we just keep header-only
                             pass
 
@@ -971,7 +979,8 @@ async def _repo_search_impl(
                                 meta = "\n".join(meta_lines) if meta_lines else header
                                 return (meta + "\n\n" + snippet).strip()
                             return "\n".join(meta_lines) if meta_lines else header
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (rerank snippet read): {e}")
                             return "\n".join(meta_lines) if meta_lines else header
 
                     # Build docs concurrently
@@ -1069,7 +1078,8 @@ async def _repo_search_impl(
                             _rr_scores = [(t.get("path", "?").split("/")[-1], t.get("why", [])) for t in tmp[:5]]
                             for p, w in _rr_scores:
                                 logger.info(f"[rerank A/B] {p}: {w}")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (rerank hybrid): {e}")
                 used_rerank = False
         # Fallback paths (in-process reranker dense candidates, then subprocess)
         if not used_rerank:
@@ -1095,7 +1105,8 @@ async def _repo_search_impl(
                         results = items
                         used_rerank = True
                         rerank_counters["inproc_dense"] += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (rerank inproc): {e}")
                     use_rerank_inproc = False
             if (not use_rerank_inproc) and (not used_rerank):
                 try:
@@ -1124,7 +1135,8 @@ async def _repo_search_impl(
                     _floor_ms = int(os.environ.get("RERANK_TIMEOUT_FLOOR_MS", "1000"))
                     try:
                         _req_ms = int(rerank_timeout_ms)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception (rerank timeout parse): {e}")
                         _req_ms = _floor_ms
                     _eff_ms = max(_floor_ms, _req_ms)
                     _t_sec = max(0.1, _eff_ms / 1000.0)
@@ -1174,7 +1186,8 @@ async def _repo_search_impl(
                             results = tmp
                             used_rerank = True
                             rerank_counters["subprocess"] += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (rerank subprocess): {e}")
                     rerank_counters["error"] += 1
                     used_rerank = False
 
@@ -1258,7 +1271,8 @@ async def _repo_search_impl(
         try:
             raw_path = item.get("path") or ""
             p = str(raw_path)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (core item path parse): {e}")
             return False
         if not p:
             return False
@@ -1283,7 +1297,8 @@ async def _repo_search_impl(
                 is_test_file as _hy_is_test_file,
                 is_vendor_path as _hy_is_vendor_path,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (hybrid helper import): {e}")
             _hy_core_file = None
             _hy_is_test_file = None
             _hy_is_vendor_path = None
@@ -1292,7 +1307,8 @@ async def _repo_search_impl(
             try:
                 if not _hy_core_file(p):
                     return False
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (core file check): {e}")
                 return False
         if _hy_is_test_file:
             try:
@@ -1327,11 +1343,13 @@ async def _repo_search_impl(
 
         try:
             _min_core = int(os.environ.get("REPO_SEARCH_CODE_FIRST_MIN_CORE", "2") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (code_first min_core parse): {e}")
             _min_core = 2
         try:
             _top_k = int(os.environ.get("REPO_SEARCH_CODE_FIRST_TOP_K", "8") or 8)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (code_first top_k parse): {e}")
             _top_k = 8
         if _min_core > 0 and results:
             top_k = max(0, min(_top_k, len(results)))
@@ -1367,7 +1385,8 @@ async def _repo_search_impl(
     # Enforce user-requested limit on final result count
     try:
         _limit_n = int(limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception (limit enforcement parse): {e}")
         _limit_n = 0
     if _limit_n > 0 and len(results) > _limit_n:
         results = results[:_limit_n]
@@ -1418,7 +1437,8 @@ async def _repo_search_impl(
                     _trimmed = _bytes[:_keep]
                     snippet = _trimmed.decode("utf-8", "ignore") + _suffix
                 return (i, snippet)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (snippet read): {e}")
                 return (i, "")
 
         max_workers = min(16, (os.cpu_count() or 4) * 4)
