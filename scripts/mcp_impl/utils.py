@@ -15,6 +15,9 @@ Contains:
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
 __all__ = [
     # Constants
     "_STOP",
@@ -307,7 +310,8 @@ def _to_str_list_relaxed(x: Any) -> List[str]:
                 for parser in (json.loads, _ast.literal_eval):
                     try:
                         parsed = parser(current)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception, continuing: {e}")
                         continue
                     else:
                         break

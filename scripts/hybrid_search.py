@@ -701,7 +701,8 @@ def _inject_graph_neighbors(
                     p_sym = edge.get("caller_symbol")
                     if p_path and p_sym:
                         neighbor_refs.append((p_path, p_sym))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     # 1. Fetch by direct IDs (fast path)
@@ -715,8 +716,8 @@ def _inject_graph_neighbors(
             )
             for p in points:
                 _inject_point_to_map(p, score_map)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # 2. Fetch by path + symbol fallback (if IDs not available)
     if neighbor_refs and len(score_map) < 50:  # Safety cap for injection
@@ -749,7 +750,8 @@ def _inject_graph_neighbors(
                     )
                     if res:
                         _inject_point_to_map(res[0], score_map)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
 def _inject_point_to_map(p: Any, score_map: Dict[str, Dict[str, Any]]) -> None:
@@ -918,8 +920,8 @@ def _run_hybrid_search_impl(
                     stripped = s.lstrip("/")
                     out.append("/work/" + stripped)
                     out.append("/work/*/" + stripped)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Dedup while preserving order
         seen = set()
         dedup: list[str] = []
@@ -1011,8 +1013,8 @@ def _run_hybrid_search_impl(
                             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                                 logger.debug("cache hit for hybrid results (fallback OD)")
                             return _RESULTS_CACHE_OD[cache_key]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             else:
                 with _RESULTS_LOCK:
                     if cache_key in _RESULTS_CACHE:
@@ -1108,8 +1110,8 @@ def _run_hybrid_search_impl(
                                 if os.environ.get("DEBUG_HYBRID_SEARCH"):
                                     logger.debug("duplicate served from cache (fallback OD)")
                                 return _RESULTS_CACHE_OD[cache_key]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 else:
                     with _RESULTS_LOCK:
                         if cache_key in _RESULTS_CACHE:
@@ -1235,8 +1237,8 @@ def _run_hybrid_search_impl(
                     last3 = "/".join(parts[-3:])
                     if last3 and last3 not in qlist:
                         qlist.append(last3)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # --- Code signal symbols: add extracted symbols from query analysis ---
     # These are passed via CODE_SIGNAL_SYMBOLS env var from repo_search
@@ -1247,8 +1249,8 @@ def _run_hybrid_search_impl(
                 sym = sym.strip()
                 if sym and len(sym) > 1 and sym not in qlist:
                     qlist.append(sym)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # === Large codebase scaling (automatic) ===
     _coll_stats = _get_collection_stats(client, _collection(collection))
@@ -1519,8 +1521,8 @@ def _run_hybrid_search_impl(
                 cand_n = max(cand_n, limit * 5)
                 if os.environ.get("DEBUG_HYBRID_SEARCH"):
                     logger.debug(f"Adaptive gate relaxed candidate count to {cand_n} due to filters")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     _gate_first_ran = False
     if gate_first and refrag_on and not should_bypass_gate:
@@ -1581,8 +1583,8 @@ def _run_hybrid_search_impl(
             _mn = [c for c in (getattr(flt_gated, "must_not", None) or []) if c is not None]
             if not _m and not _s and not _mn:
                 flt_gated = None
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     flt_gated = _sanitize_filter_obj(flt_gated)
 
@@ -1764,10 +1766,10 @@ def _run_hybrid_search_impl(
                         dens = float(HYBRID_MINI_WEIGHT) * _scaled_rrf(rank)
                         score_map[pid]["d"] += dens
                         score_map[pid]["s"] += dens
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Enhanced PRF with semantic similarity
     # Skip in dense-preserving mode (would distort pure dense ordering)
@@ -1972,8 +1974,8 @@ def _run_hybrid_search_impl(
                         dens = prf_dw * _scaled_rrf(rank)
                         score_map[pid]["d"] += dens
                         score_map[pid]["s"] += dens
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     _dt("prf_passes")
 
     # Add dense scores (with scaled RRF and tier-based query weighting)
@@ -2162,8 +2164,8 @@ def _run_hybrid_search_impl(
                 if fname_boost > 0:
                     rec["fname"] += fname_boost
                     rec["s"] += fname_boost
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         if CORE_FILE_BOOST > 0.0 and path and is_core_file(path):
             rec["core"] += CORE_FILE_BOOST
             rec["s"] += CORE_FILE_BOOST
@@ -2227,8 +2229,8 @@ def _run_hybrid_search_impl(
                         # Strong penalty for irrelevant memories
                         rec["mem_penalty"] -= 0.5
                         rec["s"] -= 0.5
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     _dt("boost_loop")
 
@@ -2470,8 +2472,8 @@ def _run_hybrid_search_impl(
                     if pen > 0:
                         m["cmt"] = float(m.get("cmt", 0.0)) - pen
                         m["s"] -= pen
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Re-sort after bump
     ranked = sorted(ranked, key=_tie_key)
@@ -2560,8 +2562,8 @@ def _run_hybrid_search_impl(
                 try:
                     if not _re.search(eff_path_regex, path, flags=flags):
                         return False
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             if eff_path_globs_norm and not any(_match_glob(g, path) or _match_glob(g, rel) for g in eff_path_globs_norm):
                 return False
             return True
@@ -2612,15 +2614,15 @@ def _run_hybrid_search_impl(
                 elif path:
                     # File-level entity (fallback when no symbol)
                     return f"file:{path}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Fallback: use point ID (no deduplication)
         try:
             pt_id = m.get("pt")
             if pt_id and hasattr(pt_id, "id"):
                 return f"point:{pt_id.id}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return f"point:{id(m)}"
 
     if _entity_dedup_enabled:
@@ -2785,8 +2787,8 @@ def _run_hybrid_search_impl(
                 for p in dir_to_paths[_pp]:
                     if p != _path:
                         _related_set.add(p)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Import-based hints: resolve relative/quoted path-like imports
         try:
             import re as _re, posixpath as _ppath
@@ -2836,8 +2838,8 @@ def _run_hybrid_search_impl(
                     for cand in _resolve(seg):
                         if cand != _path:
                             _related_set.add(cand)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         _related = sorted(_related_set)[:10]
         # Align related_paths with PATH_EMIT_MODE when possible: in host/auto
@@ -2915,8 +2917,8 @@ def _run_hybrid_search_impl(
                             _rel = _emit_path[len(_cwd):]
                             if _rel:
                                 _emit_path = "/work/" + _rel
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Extract payload for benchmark consumers (code_id, _id, etc.)
         _payload_out = None
@@ -2927,8 +2929,8 @@ def _run_hybrid_search_impl(
                 _payload_out = dict(_pt.payload)
                 # Remove 'metadata' if present - it's already unpacked into result fields
                 _payload_out.pop("metadata", None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         item = {
             "score": round(float(m["s"]), 4),
@@ -2967,8 +2969,8 @@ def _run_hybrid_search_impl(
                             _RESULTS_CACHE_OD.popitem(last=False)
                         except Exception:
                             break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                 logger.debug("cache store for hybrid results")
         else:

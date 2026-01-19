@@ -829,8 +829,8 @@ def _ca_prepare_filters_and_retrieve(
             # Prefer filename and full relative path variants
             auto_path_glob.append(f"**/{fn}")
             auto_path_glob.append(f"**/{mm}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     def _abs_prefix(val: str) -> str:
         v = (val or "").replace("\\", "/")
@@ -916,8 +916,8 @@ def _ca_prepare_filters_and_retrieve(
     try:
         if sym_arg and ("/" in str(sym_arg) or "." in str(sym_arg)):
             sym_arg = None
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Run retrieval
     from scripts.hybrid_search import run_hybrid_search  # type: ignore
@@ -955,8 +955,8 @@ def _ca_prepare_filters_and_retrieve(
                 "first path:",
                 (items[0].get("path") if items else None),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Usage augmentation for identifier
     try:
@@ -1068,8 +1068,8 @@ def _ca_prepare_filters_and_retrieve(
             if callable(_lmp):
                 try:
                     return bool(_lmp(str(req_language), p))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             filename = p.split("/")[-1] if "/" in p else p
             parts = filename.split(".")
             extensions = set()
@@ -1135,10 +1135,10 @@ def _ca_prepare_filters_and_retrieve(
                             'language': req_language or None,
                             'kind': 'definition',
                         })
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return {
         "items": items,
@@ -1194,8 +1194,8 @@ def _ca_fallback_and_budget(
             if callable(_lmp):
                 try:
                     return bool(_lmp(str(req_language), p))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             # Fallback robust ext mapping with multi-part extension support
             filename = p.split("/")[-1] if "/" in p else p
             parts = filename.split(".")
@@ -1294,8 +1294,8 @@ def _ca_fallback_and_budget(
                         "first path:",
                         (items[0].get("path") if items else None),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Multi-collection fallback: index-only search across other workspaces/collections
     try:
@@ -1373,8 +1373,8 @@ def _ca_fallback_and_budget(
                                     "MULTI_COLLECTION_ONE_FAILED",
                                     extra={"collection": _c},
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                 if _agg:
                     _seen = set()
                     _ded = []
@@ -1406,8 +1406,8 @@ def _ca_fallback_and_budget(
                                     "first": (_ded[0].get("path") if _ded else None),
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
     except Exception:
         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
             logger.debug("MULTI_COLLECTION_FAIL", exc_info=True)
@@ -1529,8 +1529,8 @@ def _ca_fallback_and_budget(
                                     ),
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     # If broad prompt and doc pass added nothing, try top-docs fallback
                     try:
                         _doc_top_enabled = str(
@@ -1607,8 +1607,8 @@ def _ca_fallback_and_budget(
                                                 ),
                                             },
                                         )
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.debug(f"Suppressed exception: {e}")
                     except Exception:
                         if os.environ.get("DEBUG_CONTEXT_ANSWER"):
                             logger.debug("DOC_TOP_FALLBACK_FAIL", exc_info=True)
@@ -2193,8 +2193,8 @@ def _ca_build_citations_and_context(
                     elif (asked_ident in _ln) and (_def_id != idx):
                         if _usage_id is None:
                             _usage_id = idx
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     if os.environ.get("DEBUG_CONTEXT_ANSWER"):
         logger.debug(
@@ -2603,8 +2603,8 @@ def _ca_postprocess_answer(
             first_id = citations[0].get("id")
             if first_id is not None:
                 txt = txt.rstrip() + f" [{first_id}]"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     _val = _validate_answer_output(txt, citations)
     if not _val.get("ok", True) and citations:
@@ -2619,8 +2619,8 @@ def _ca_postprocess_answer(
             )
             if fallback and fallback.strip():
                 return fallback
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return "insufficient context"
     return txt
 
@@ -2874,14 +2874,14 @@ async def _context_answer_impl(
             if budget_tokens is not None and str(budget_tokens).strip() != "":
                 try:
                     budget_tokens = int(max(128, int(float(budget_tokens) * _factor)))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             else:
                 try:
                     _base = int(float(os.environ.get("MICRO_BUDGET_TOKENS", "5000")))
                     budget_tokens = int(max(128, int(_base * _factor)))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Collection + model setup (reuse indexer defaults)
     coll = (collection or _default_collection()) or ""
@@ -3062,8 +3062,8 @@ async def _context_answer_impl(
                 per_path=int(max(ppath, 1)),
             )
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Build citations and context payload for the decoder
     (
@@ -3104,8 +3104,8 @@ async def _context_answer_impl(
                 _def_line_exact = _def_line_exact2
                 _def_id = _def_id2
                 _usage_id = _usage_id2
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # If still no citations, return an explicit insufficient-context answer
     if not citations:
@@ -3131,8 +3131,8 @@ async def _context_answer_impl(
                 fp = m.group(1)
                 if fp not in cand_paths:
                     cand_paths.append(fp)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         supplements = []
         if str(os.environ.get("CTX_TIER3_FS", "0")).strip().lower() in {"1", "true", "yes", "on"}:
             supplements = _ca_ident_supplement(
@@ -3316,8 +3316,8 @@ async def _context_answer_impl(
             limit=int(max(lim, 1)),
             per_path=int(max(ppath, 1)),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Optional: provide per-query answers/citations for pack mode
     answers_by_query = None

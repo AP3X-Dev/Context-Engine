@@ -4,6 +4,7 @@ Docker Compose wrapper utilities.
 Provides a high-level interface for managing Docker Compose operations.
 """
 
+import logging
 import subprocess
 import time
 import socket
@@ -12,6 +13,8 @@ from typing import Optional, Tuple, List
 from pathlib import Path
 
 
+
+logger = logging.getLogger(__name__)
 def _coerce_bool(value: Optional[str], default: bool = False) -> bool:
     """Convert string environment values to boolean."""
     if value is None:
@@ -40,8 +43,8 @@ def _load_env_file(path: Path) -> dict:
                     key = key.strip()
                     value = value.strip().strip('"').strip("'")
                     env[key] = value
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return env
 
 

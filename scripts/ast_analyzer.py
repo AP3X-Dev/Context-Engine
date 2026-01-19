@@ -58,7 +58,8 @@ try:
             try:
                 raw_lang = fn()
                 return raw_lang if isinstance(raw_lang, Language) else Language(raw_lang)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
         return None
 
@@ -96,8 +97,8 @@ try:
                     tsx_lang = _load_ts_language(mod, preferred=["language_tsx"])
                     if tsx_lang is not None:
                         _TS_LANGUAGES["tsx"] = tsx_lang
-        except Exception:
-            pass  # Language package not installed
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Language package not installed
 
     # Add aliases
     if "javascript" in _TS_LANGUAGES:

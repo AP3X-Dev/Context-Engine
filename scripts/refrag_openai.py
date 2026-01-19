@@ -19,6 +19,7 @@ Model version compatibility:
 - o3-mini: temp=1.0, reasoning model (fast)
 """
 from __future__ import annotations
+import logging
 import os
 import re
 from typing import Any, Optional
@@ -31,6 +32,8 @@ from typing import Any, Optional
 # use_max_completion_tokens: True for GPT-5.x and o3 models (they don't support max_tokens)
 # supports_temperature: False for GPT-5.x and o3 (they don't support temperature param)
 # supports_stop: False for GPT-5.x and o3 (they don't support stop sequences)
+
+logger = logging.getLogger(__name__)
 OPENAI_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "gpt-5.2": {
         "temperature": 1.0,
@@ -435,8 +438,8 @@ def generate_pseudo_tags_batch(
                     pseudo = p.strip()[:256]
                 if isinstance(t, list):
                     tags = [str(x).strip() for x in t if str(x).strip()][:6]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         parsed.append((pseudo, tags))
 
     return parsed
@@ -497,8 +500,8 @@ async def generate_pseudo_tags_batch_async(
                     pseudo = p.strip()[:256]
                 if isinstance(t, list):
                     tags = [str(x).strip() for x in t if str(x).strip()][:6]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         parsed.append((pseudo, tags))
 
     return parsed

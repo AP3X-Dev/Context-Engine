@@ -7,12 +7,15 @@ and provides utilities for checking tree-sitter availability.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Dict, Any, List
 
 # ---------------------------------------------------------------------------
 # Tree-sitter language registry
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 _TS_LANGUAGES: Dict[str, Any] = {}
 _TS_AVAILABLE = False
 _TS_WARNED = False
@@ -47,7 +50,8 @@ try:
             try:
                 raw_lang = fn()
                 return raw_lang if isinstance(raw_lang, Language) else Language(raw_lang)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
         return None
 
@@ -89,8 +93,8 @@ try:
                     tsx_lang = _load_ts_language(mod, preferred=["language_tsx"])
                     if tsx_lang is not None:
                         _TS_LANGUAGES["tsx"] = tsx_lang
-        except Exception:
-            pass  # Language package not installed
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Language package not installed
 
     # Add aliases
     if "javascript" in _TS_LANGUAGES:
@@ -156,10 +160,10 @@ def _ts_parser(lang_key: str):
             try:
                 setattr(p, "language", lang)
                 return p
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return Parser(lang)  # type: ignore[misc]
     except Exception:
         return None

@@ -283,8 +283,8 @@ def _ensure_collection(client, collection: str, dim: int, vec_name: str):
 
     try:
         _cache_collection_vectors(client, collection)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     _ENSURED_COLLECTIONS.add(cache_key)
 
 
@@ -319,8 +319,8 @@ def _collection(collection_name: str | None = None) -> str:
                 coll = state.get("qdrant_collection")
                 if isinstance(coll, str) and coll.strip():
                     return coll.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return "codebase"
 
@@ -498,8 +498,8 @@ def lex_query(
         if os.environ.get("DEBUG_HYBRID_SEARCH"):
             try:
                 logger.debug("QP_FILTER_DROP", extra={"using": LEX_VECTOR_NAME, "reason": str(e)[:200]})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         try:
             qp = client.query_points(
                 collection_name=collection,
@@ -526,8 +526,8 @@ def lex_query(
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                 try:
                     logger.debug("QP_FILTER_DROP_FAILED", extra={"using": LEX_VECTOR_NAME, "reason": str(e2)[:200]})
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
         return _legacy_vector_search(client, collection, LEX_VECTOR_NAME, v, per_query, flt)
 
 
@@ -651,8 +651,8 @@ def dense_query(
         if os.environ.get("DEBUG_HYBRID_SEARCH"):
             try:
                 logger.debug("QP_FILTER_DROP", extra={"using": vec_name, "reason": str(e)[:200]})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         if not collection:
             return _legacy_vector_search(client, _collection(), vec_name, v, per_query, flt)
         try:
@@ -682,8 +682,8 @@ def dense_query(
                 if os.environ.get("DEBUG_HYBRID_SEARCH"):
                     try:
                         logger.debug("QP_FILTER_DROP_FAILED", extra={"using": vec_name, "reason": str(e2)[:200]})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
         return _legacy_vector_search(client, collection, vec_name, v, per_query, flt)
 
 
@@ -749,8 +749,8 @@ def multi_granular_query(
                     filter=flt,
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Relation prefetch: coarse filter by call patterns
     if relation_vec is not None:
@@ -763,8 +763,8 @@ def multi_granular_query(
                     filter=flt,
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # If no prefetch vectors, fall back to standard dense query
     if not prefetch_queries:

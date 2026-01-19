@@ -9,6 +9,7 @@ Orchestrates a complete rebuild of the development environment:
 - Starts services in specified mode (dual/mcp/sse)
 """
 
+import logging
 import os
 import sys
 import time
@@ -22,6 +23,8 @@ from scripts.ctx_cli.utils.env import (
     find_env_file,
     load_env_file,
 )
+
+logger = logging.getLogger(__name__)
 
 # Load .env file into os.environ (if not already set)
 # This ensures NEO4J_GRAPH, REFRAG_RUNTIME, etc. are available
@@ -105,8 +108,8 @@ def _wait_for_qdrant(url: str = "http://localhost:6333", timeout: int = 60) -> b
                 if getattr(r, "status", 200) < 500:
                     _print("[green]✓[/green] Qdrant is ready")
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         time.sleep(1)
 
     _print(f"[red]Error:[/red] Qdrant not ready after {timeout}s", error=True)
@@ -296,16 +299,16 @@ def reset(
                 try:
                     cache_file.unlink()
                     cache_cleared += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             # Clear all symbols directories
             for symbols_dir in codebase_dir.rglob("symbols"):
                 if symbols_dir.is_dir():
                     try:
                         shutil.rmtree(symbols_dir, ignore_errors=True)
                         cache_cleared += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
         # Also clear dev-workspace caches (if present)
         dev_workspace = Path("dev-workspace")
@@ -314,15 +317,15 @@ def reset(
                 try:
                     cache_file.unlink()
                     cache_cleared += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
                 if symbols_dir.is_dir():
                     try:
                         shutil.rmtree(symbols_dir, ignore_errors=True)
                         cache_cleared += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
         _print(f"[dim]Cleared {cache_cleared} host cache entries[/dim]")
 

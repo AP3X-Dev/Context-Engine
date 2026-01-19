@@ -264,8 +264,8 @@ def rerank_by_graph_distance(
                 repo=repo,
                 max_depth=4
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Fall back to individual queries only if batch failed and we have few results
     if not distances and len(results) <= 10:
@@ -401,7 +401,8 @@ def get_k_hop_context(
                     "target": rel.get("target", ""),
                     "type": rel.get("type", ""),
                 })
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     # Sort by importance and limit

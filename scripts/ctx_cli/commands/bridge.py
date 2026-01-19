@@ -17,6 +17,7 @@ Options:
 """
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 import socket
 
+
+logger = logging.getLogger(__name__)
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -53,8 +56,8 @@ def get_service_urls() -> Dict[str, str]:
                     if line and not line.startswith("#") and "=" in line:
                         key, _, value = line.partition("=")
                         env_vars[key.strip()] = value.strip().strip('"').strip("'")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def get_var(name: str, default: str) -> str:
         return os.environ.get(name) or env_vars.get(name) or default

@@ -159,8 +159,8 @@ async def _repo_search_impl(
             q_alt = kwargs.get("q") or kwargs.get("text")
             if q_alt is not None:
                 query = q_alt
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Leniency: absorb nested 'kwargs' JSON payload some clients send
     try:
@@ -267,8 +267,8 @@ async def _repo_search_impl(
                 mode is None or (isinstance(mode, str) and str(mode).strip() == "")
             ) and _extra.get("mode") is not None:
                 mode = _extra.get("mode")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Leniency shim: coerce null/invalid args to sane defaults so buggy clients don't fail schema
     def _to_int(x, default):
@@ -349,8 +349,8 @@ async def _repo_search_impl(
                     _sl2 = str((_d2.get("language") or "")).strip()
                     if _sl2:
                         lang_hint = _sl2
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # 2) Legacy token-based defaults
     if sid:
@@ -373,8 +373,8 @@ async def _repo_search_impl(
                     _sl = str((_d.get("language") or "")).strip()
                     if _sl:
                         lang_hint = _sl
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # 3) Environment default (collection only for now)
     env_coll = (os.environ.get("DEFAULT_COLLECTION") or os.environ.get("COLLECTION_NAME") or "").strip()
@@ -491,8 +491,8 @@ async def _repo_search_impl(
     try:
         combined_query = " ".join(queries)
         code_signals = _detect_code_signals(combined_query)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # If code signals detected and no explicit symbol filter, use extracted symbols for boosting
     auto_symbol_hints: list[str] = []
@@ -592,8 +592,8 @@ async def _repo_search_impl(
                 try:
                     if not _re.search(path_regex_norm, path, flags=flags):
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             
             # Apply path_glob filter
             if path_globs_norm and not any(_match_glob(g, path) for g in path_globs_norm):
@@ -783,8 +783,8 @@ async def _repo_search_impl(
                         )
                     )
                     json_lines = items
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Optional rerank fallback path: if enabled, attempt; on timeout or error, keep hybrid
     used_rerank = False
@@ -866,8 +866,8 @@ async def _repo_search_impl(
                         results = tmp
                         used_rerank = True
                         rerank_counters["learning"] += 1
-            except Exception:
-                pass  # Fall through to standard reranking
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")  # Fall through to standard reranking
 
         # Resolve in-process gating once and reuse
         use_rerank_inproc = str(
@@ -920,8 +920,8 @@ async def _repo_search_impl(
                                         tags_text = str(tags_val)[:128]
                                         if tags_text:
                                             meta_lines.append(f"Tags: {tags_text}")
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Suppressed exception: {e}")
                         except Exception:
                             # If any of the above fails, we just keep header-only
                             pass
@@ -1272,8 +1272,8 @@ async def _repo_search_impl(
             if comps:
                 if comps.get("config_penalty") or comps.get("test_penalty") or comps.get("doc_penalty"):
                     return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Defer to hybrid_search helpers when available to avoid duplicating
         # extension and path-based logic.
@@ -1298,14 +1298,14 @@ async def _repo_search_impl(
             try:
                 if _hy_is_test_file(p):
                     return False
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         if _hy_is_vendor_path:
             try:
                 if _hy_is_vendor_path(p):
                     return False
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         # If helper imports failed, fall back to a permissive classification:
         # treat the item as core code (we already filtered obvious docs/config/tests).
@@ -1426,8 +1426,8 @@ async def _repo_search_impl(
             for i, snip in ex.map(_read_snip, list(enumerate(results))):
                 try:
                     results[i]["snippet"] = snip
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Smart default: compact true for multi-query calls if compact not explicitly set
     if (len(queries) > 1) and (

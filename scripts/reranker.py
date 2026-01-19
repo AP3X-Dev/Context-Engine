@@ -16,11 +16,14 @@ Environment Variables:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Any, List, Optional, Tuple
 
 # Default FastEmbed reranker model (None = disabled, use ONNX paths)
+
+logger = logging.getLogger(__name__)
 DEFAULT_RERANKER_MODEL: Optional[str] = None
 
 
@@ -134,8 +137,8 @@ def get_reranker_model(model_name: Optional[str] = None) -> Optional[Any]:
                 max_tokens = _get_rerank_max_tokens()
                 try:
                     tok.enable_truncation(max_length=max_tokens)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 # Default to CPU for production (Kubernetes).
                 # Set ONNX_PROVIDERS env var for local GPU acceleration.

@@ -5,6 +5,7 @@ Handles loading and managing .ctxrc configuration files.
 Provides centralized access to ports, URLs, and collection resolution.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -12,6 +13,8 @@ import configparser
 
 
 # Default service ports - centralized for consistency
+
+logger = logging.getLogger(__name__)
 DEFAULT_PORTS = {
     "qdrant": 6333,
     "indexer": 8003,
@@ -58,8 +61,8 @@ def _load_env_file_simple(path: Path) -> Dict[str, str]:
                     key = key.strip()
                     value = value.strip().strip('"').strip("'")
                     env[key] = value
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return env
 
 

@@ -47,8 +47,8 @@ class SubprocessManager:
         """Ensure async cleanup on exit."""
         try:
             await self._cleanup()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     async def run_async(self, cmd: List[str]) -> Dict[str, Any]:
         """Run subprocess asynchronously with proper cleanup."""
@@ -95,8 +95,8 @@ class SubprocessManager:
                 logger.warning(f"Subprocess {self._id} timed out after {self.timeout}s, terminating")
                 try:
                     self.process.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return {
                     "ok": False,
                     "code": -1,
@@ -159,8 +159,8 @@ class SubprocessManager:
                 logger.warning(f"Subprocess {self._id} timed out after {eff_timeout}s, terminating")
                 try:
                     self.process.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return {
                     "ok": False,
                     "code": -1,
@@ -235,8 +235,8 @@ class SubprocessManager:
                         except subprocess.TimeoutExpired:
                             # Force kill if it doesn't terminate
                             self.process.kill()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
                 # Ensure process is reaped
                 with contextlib.suppress(Exception):
@@ -289,8 +289,8 @@ def cleanup_all_processes():
                     except subprocess.TimeoutExpired:
                         # Force kill if it doesn't terminate
                         proc.kill()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
                 # Ensure process is reaped
                 with contextlib.suppress(Exception):

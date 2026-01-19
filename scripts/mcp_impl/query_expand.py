@@ -227,8 +227,8 @@ async def _expand_query_impl(query: Any = None, max_new: Any = None, session: Op
                             _maybe_add(s)
                             if len(alts) >= cap:
                                 break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             # Fallback: extract JSON array from text (model may prepend text like "Alternates:\n")
             if not alts:
                 try:

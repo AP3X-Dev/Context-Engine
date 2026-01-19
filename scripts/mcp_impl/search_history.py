@@ -271,8 +271,8 @@ async def _search_commits_for_impl(
                                 os.environ.get("COMMIT_VECTOR_WEIGHT", "2.0") or 2.0
                             )
                             score += weight * vec_score
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 seen_ids.add(scid)
                 out.append(
                     {
@@ -297,8 +297,8 @@ async def _search_commits_for_impl(
                     key=lambda c: float(c.get("_score", 0.0)),
                     reverse=True,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             results = results[:lim]
             for c in results:
                 c.pop("_score", None)
@@ -434,8 +434,8 @@ async def _change_history_for_path_impl(
                         seen.add(scid)
                         uniq.append(c)
                     summary["commits"] = uniq
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         return {"ok": True, "summary": summary}
     except Exception as e:
         return {"ok": False, "error": str(e), "path": p}

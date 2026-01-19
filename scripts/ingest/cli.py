@@ -7,6 +7,7 @@ the indexer as a standalone script.
 """
 from __future__ import annotations
 
+import logging
 import os
 import argparse
 from pathlib import Path
@@ -17,6 +18,8 @@ from scripts.ingest.config import (
 )
 from scripts.ingest.pipeline import index_repo
 from scripts.ingest.pseudo import generate_pseudo_tags
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -209,7 +212,8 @@ def main():
                         if child.name in {".codebase", "__pycache__"}:
                             continue
                         repos.append(child)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception, continuing: {e}")
                         continue
         except Exception:
             repos = []
@@ -226,8 +230,8 @@ def main():
                     resolved = get_collection_name(repo_name)
                     if resolved:
                         repo_collection = resolved
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             if not repo_collection:
                 repo_collection = "codebase"
 
@@ -251,8 +255,8 @@ def main():
                 placeholders = {"", "default-collection", "my-collection", "codebase"}
                 if resolved and collection in placeholders:
                     collection = resolved
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         if not collection:
             collection = os.environ.get("COLLECTION_NAME", "codebase")
         print(f"[single_repo] Single-repo mode enabled - using collection: {collection}")

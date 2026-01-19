@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import logging
 import os
 import platform
 import sys
@@ -40,6 +41,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 def _is_apple_silicon() -> bool:
     """Detect Apple Silicon (unified memory) systems."""
     return platform.system() == "Darwin" and platform.machine() == "arm64"
@@ -448,10 +451,10 @@ class ContextEngineRetriever:
                     try:
                         client.delete_collection(coll)
                         deleted += 1
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         self._indexed_collections.clear()
         return deleted
 

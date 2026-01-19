@@ -392,7 +392,8 @@ def expand_queries_semantically(
             if i < len(candidate_embeddings):
                 try:
                     candidate_vector = _coerce_embedding_vector(candidate_embeddings[i])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception, continuing: {e}")
                     continue
                 if not candidate_vector:
                     continue

@@ -162,8 +162,8 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
     except Exception:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return None
 
     try:
@@ -214,8 +214,8 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
     finally:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def _filter_snapshot_only_recreate_keys(
@@ -335,8 +335,8 @@ def _auto_refresh_snapshot_if_needed(
                 print(
                     f"[snapshot_refresh] Failed to capture pending config for {collection}: {exc}"
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return False
 
     dry_run = str(os.environ.get("CTXCE_SNAPSHOT_REFRESH_DRY_RUN", "0")).strip().lower() in {
@@ -362,16 +362,16 @@ def _auto_refresh_snapshot_if_needed(
                 f"(workspace={ws}, repo={repo_name or 'default'}) after validating schema: "
                 f"{', '.join(snapshot_only_keys)}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return True
     except Exception as exc:
         try:
             print(
                 f"[snapshot_refresh] Failed to promote indexing config for {collection}: {exc}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return False
 
 
@@ -392,14 +392,14 @@ def _delete_path_tree(p: Path) -> bool:
                                 os.chmod(sub, 0o777)
                             else:
                                 os.chmod(sub, 0o666)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     try:
                         os.chmod(p, 0o777)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 try:
                     shutil.rmtree(p)
                     return True
@@ -432,7 +432,8 @@ def _resolve_codebase_root(work_root: Path) -> Path:
         try:
             if (base / ".codebase" / "repos").exists():
                 return base
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return work_root
@@ -456,8 +457,8 @@ def _cleanup_old_clone(
                 api_key=os.environ.get("QDRANT_API_KEY") or None,
                 collection=old_collection,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     if not repo_name:
         return
@@ -487,14 +488,14 @@ def _cleanup_old_clone(
         try:
             if resolved_base == resolved_candidate or resolved_base in resolved_candidate.parents:
                 return resolved_candidate
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         try:
             print(
                 f"[staging] refusing to treat {resolved_candidate} as work root; falling back to {resolved_base}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return resolved_base
 
     work_root: Optional[Path] = None
@@ -533,27 +534,27 @@ def _cleanup_old_clone(
                 _delete_path_tree(resolved_target)
             else:
                 print(f"[staging] refusing to delete {resolved_target}: outside work root {resolved_base}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Workspace clone dir
     try:
         _safe_delete((work_root / old_slug).resolve())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Repo metadata dir
     try:
         _safe_delete((codebase_root / ".codebase" / "repos" / old_slug).resolve())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # If codebase_root differs from work_root, also try under work_root for safety.
     try:
         if str(codebase_root.resolve()) != str(work_root.resolve()):
             _safe_delete((work_root / ".codebase" / "repos" / old_slug).resolve())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 CONFIG_DRIFT_RULES: Dict[str, str] = {
@@ -675,8 +676,8 @@ def collection_mapping_index(*, work_dir: str) -> Dict[str, List[Dict[str, Any]]
             cached = _MAPPING_INDEX_CACHE.get("value")
             if isinstance(cached, dict):
                 return cached
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         mappings = get_collection_mappings(search_root=work_dir) or []
     except Exception:
@@ -694,8 +695,8 @@ def collection_mapping_index(*, work_dir: str) -> Dict[str, List[Dict[str, Any]]
         _MAPPING_INDEX_CACHE["ts"] = now
         _MAPPING_INDEX_CACHE["work_dir"] = work_dir
         _MAPPING_INDEX_CACHE["value"] = out
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return out
 
 
@@ -936,8 +937,8 @@ def delete_collection_qdrant(*, qdrant_url: str, api_key: Optional[str], collect
     finally:
         try:
             cli.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def recreate_collection_qdrant(*, qdrant_url: str, api_key: Optional[str], collection: str) -> None:
@@ -958,8 +959,8 @@ def recreate_collection_qdrant(*, qdrant_url: str, api_key: Optional[str], colle
     finally:
         try:
             cli.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def spawn_ingest_code(
@@ -1009,8 +1010,8 @@ def spawn_ingest_code(
                     "progress": {"files_processed": 0, "total_files": None, "current_file": None},
                 },
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Spawn the ingest process and validate it started successfully
     try:
@@ -1029,8 +1030,8 @@ def _determine_embedding_dim(model_name: str) -> int:
     if get_model_dimension:
         try:
             return int(get_model_dimension(model_name))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     try:
         from fastembed import TextEmbedding  # type: ignore
 
@@ -1067,13 +1068,13 @@ def _normalize_cloned_collection_schema(*, collection_name: str, qdrant_url: str
     except Exception as exc:
         try:
             print(f"[staging] Warning: failed to normalize cloned collection {collection_name}: {exc}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     finally:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def _get_collection_point_count(*, collection_name: str, qdrant_url: str) -> Optional[int]:
@@ -1092,8 +1093,8 @@ def _get_collection_point_count(*, collection_name: str, qdrant_url: str) -> Opt
     finally:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def _wait_for_clone_points(
@@ -1130,8 +1131,8 @@ def _wait_for_clone_points(
                         f"[staging] Clone verification succeeded: {cloned_collection} has "
                         f"{clone_count} points (expected >= {expected_count})."
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return
 
             if time.time() > deadline:
@@ -1144,8 +1145,8 @@ def _wait_for_clone_points(
     finally:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
@@ -1187,8 +1188,8 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
             print(
                 f"[staging] copy_collection_qdrant callable={callable(_copy_fn)} type={type(_copy_fn)} module={getattr(_copy_fn, '__module__', '?')}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         _copy_fn(
             source=collection,
             target=old_collection,
@@ -1201,8 +1202,8 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
         try:
             print("[staging] TRACEBACK (copy)")
             print(traceback.format_exc())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         raise
 
     try:
@@ -1275,8 +1276,8 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
             old_state["active_repo_slug"] = old_state.get("active_repo_slug") or repo_name
             try:
                 old_state["indexing_status"] = {"state": "idle"}
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             old_state["indexing_config_pending"] = None
             old_state["indexing_config_pending_hash"] = None
             old_state["indexing_env_pending"] = None
@@ -1362,13 +1363,13 @@ def activate_staging_rebuild(*, collection: str, work_dir: str) -> None:
     try:
         if str(state.get("serving_collection") or "").strip() == f"{collection}_old":
             staging_active = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if str(state.get("serving_repo_slug") or "").strip().endswith("_old"):
             staging_active = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     if not staging_active:
         # Nothing to activate.
@@ -1398,14 +1399,14 @@ def activate_staging_rebuild(*, collection: str, work_dir: str) -> None:
                         "qdrant_collection": collection,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         if clear_staging_collection:
             try:
                 clear_staging_collection(workspace_path=root, repo_name=repo_name)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     finally:
         _cleanup_old_clone(**cleanup_kwargs)
 
@@ -1437,13 +1438,13 @@ def abort_staging_rebuild(
     try:
         if str(state.get("serving_collection") or "").strip() == f"{collection}_old":
             staging_active = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if str(state.get("serving_repo_slug") or "").strip().endswith("_old"):
             staging_active = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     if not staging_active:
         # Nothing to abort.
@@ -1473,8 +1474,8 @@ def abort_staging_rebuild(
                         "qdrant_collection": collection,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         clear_staging_collection(workspace_path=root, repo_name=repo_name)
     finally:

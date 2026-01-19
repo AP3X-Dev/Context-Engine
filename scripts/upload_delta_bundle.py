@@ -47,8 +47,8 @@ def _cleanup_empty_dirs(path: Path, stop_at: Path) -> None:
     try:
         path = path.resolve()
         stop_at = stop_at.resolve()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     while True:
         try:
             if path == stop_at or not path.exists() or not path.is_dir():
@@ -188,8 +188,8 @@ def process_delta_bundle(workspace_path: str, bundle_path: Path, manifest: Dict[
         if staging_gate:
             try:
                 logger.info(f"[upload_service] Delta bundle targets (staging={staging_active}): {slug_order}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         replica_roots: Dict[str, Path] = {}
         for slug in slug_order:
@@ -199,8 +199,8 @@ def process_delta_bundle(workspace_path: str, bundle_path: Path, manifest: Dict[
                 marker_dir = Path(WORK_DIR) / ".codebase" / "repos" / slug
                 marker_dir.mkdir(parents=True, exist_ok=True)
                 (marker_dir / ".ctxce_managed_upload").write_text("1\n")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             replica_roots[slug] = path.resolve()
 
         primary_slug = slug_order[0]

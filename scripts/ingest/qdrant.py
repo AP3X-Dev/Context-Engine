@@ -134,16 +134,16 @@ def _desired_vector_configs(
                 size=int(os.environ.get("MINI_VEC_DIM", MINI_VEC_DIM) or MINI_VEC_DIM),
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Multi-granular vectors for improved retrieval
     try:
@@ -156,8 +156,8 @@ def _desired_vector_configs(
                 size=RELATION_DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     sparse_cfg = _get_sparse_config()
     return vectors_cfg, sparse_cfg
@@ -399,8 +399,8 @@ def ensure_collection(
                                     f"[COLLECTION_INFO] Collection {name} has sparse vectors but lacks IDF modifier. "
                                     "Consider recreating with 'ctx index --recreate' for improved BM25-style term weighting."
                                 )
-                    except Exception:
-                        pass  # Ignore detection errors
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Ignore detection errors
 
                 missing = {}
                 if not has_lex:
@@ -489,16 +489,16 @@ def ensure_collection(
                 size=int(os.environ.get("MINI_VEC_DIM", MINI_VEC_DIM) or MINI_VEC_DIM),
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     # Multi-granular vectors for new collection
     try:
         if MULTI_GRANULAR_VECTORS:
@@ -510,8 +510,8 @@ def ensure_collection(
                 size=RELATION_DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     sparse_cfg = _get_sparse_config()
     quant_cfg = _get_quantization_config()
@@ -600,8 +600,8 @@ def _restore_memories_after_recreate(name: str, backup_file: Optional[str]):
             try:
                 os.unlink(backup_file)
                 print(f"[MEMORY_RESTORE] Cleaned up backup file {backup_file}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         elif backup_file:
             print(f"[MEMORY_RESTORE_WARNING] Backup file {backup_file} not found")
@@ -633,16 +633,16 @@ def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: 
                 size=int(os.environ.get("MINI_VEC_DIM", MINI_VEC_DIM) or MINI_VEC_DIM),
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     sparse_cfg = _get_sparse_config()
     quant_cfg = _get_quantization_config()
     client.create_collection(
@@ -663,8 +663,8 @@ def ensure_payload_indexes(client: QdrantClient, collection: str):
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def ensure_collection_and_indexes_once(
@@ -699,12 +699,12 @@ def ensure_collection_and_indexes_once(
         except Exception:
             try:
                 ENSURED_COLLECTIONS.discard(collection)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             try:
                 ENSURED_COLLECTIONS_LAST_CHECK.pop(collection, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     ensure_collection(client, collection, dim, vector_name, schema_mode=mode)
     if mode in {"legacy", "migrate"}:
         ensure_payload_indexes(client, collection)
@@ -712,8 +712,8 @@ def ensure_collection_and_indexes_once(
         ENSURED_COLLECTIONS.add(collection)
         try:
             ENSURED_COLLECTIONS_LAST_CHECK[collection] = time.time()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def get_indexed_file_hash(
@@ -752,8 +752,8 @@ def get_indexed_file_hash(
                 fh = md.get("file_hash")
                 if fh:
                     return str(fh)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         filt = models.Filter(
@@ -855,8 +855,8 @@ def upsert_points(
                 else:
                     try:
                         time.sleep(backoff * attempt)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
     if failed_count > 0:
         print(f"[UPSERT_SUMMARY] Total {failed_count}/{len(points)} points failed to upsert", flush=True)

@@ -683,7 +683,8 @@ def fuse_multi_granular_scores(
                     "rec": 0.0,
                     "test": 0.0,
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     # Process relation results - accumulate scores for multi-query scenarios
@@ -712,7 +713,8 @@ def fuse_multi_granular_scores(
                     "rec": 0.0,
                     "test": 0.0,
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
 

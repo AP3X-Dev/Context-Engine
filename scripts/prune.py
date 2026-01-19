@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import os
 import hashlib
 from pathlib import Path
@@ -6,6 +7,8 @@ from typing import Tuple
 
 from qdrant_client import QdrantClient, models
 
+
+logger = logging.getLogger(__name__)
 COLLECTION = os.environ.get("COLLECTION_NAME", "codebase")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 API_KEY = os.environ.get("QDRANT_API_KEY")
@@ -59,8 +62,8 @@ def delete_graph_edges_by_path(client: QdrantClient, path_str: str, repo: str | 
             backend = get_graph_backend()
             if backend.backend_type == "neo4j":
                 return backend.delete_edges_by_path(COLLECTION, path_str, repo=repo)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     graph_coll = COLLECTION + GRAPH_COLLECTION_SUFFIX
 

@@ -427,8 +427,8 @@ async def _context_search_impl(
                 case = _extra.get("case")
             if (compact in (None, "")) and (_extra.get("compact") is not None):
                 compact = _extra.get("compact")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Normalize inputs
     coll = (collection or _default_collection()) or ""
@@ -498,7 +498,8 @@ async def _context_search_impl(
                     if hits > best_hits:
                         best_hits = hits
                         best_name = name
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception, continuing: {e}")
                     continue
             if best_name and best_hits > 0:
                 mcoll = best_name
@@ -507,10 +508,10 @@ async def _context_search_impl(
 
                     _MEM_COLL_CACHE["name"] = best_name
                     _MEM_COLL_CACHE["ts"] = time.time()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         lim = int(limit) if (limit is not None and str(limit).strip() != "") else 10
@@ -632,8 +633,8 @@ async def _context_search_impl(
                     "per_path": int(per_path_val),
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Shape code results to a common schema
     code_hits: List[Dict[str, Any]] = []
@@ -677,8 +678,8 @@ async def _context_search_impl(
                     "code_hits": len(code_hits),
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # HTTP fallback: if still empty, call our own repo_search over HTTP (safeguarded)
     used_http_fallback = False
@@ -740,10 +741,10 @@ async def _context_search_impl(
                     logger.debug(
                         "DBG_CTX_SRCH_HTTP_FALLBACK", extra={"count": len(code_hits)}
                     )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Fallback: if internal repo_search yielded no code hits, try direct in-process hybrid search
     used_hybrid_fallback = False
@@ -789,8 +790,8 @@ async def _context_search_impl(
                             }
                         )
             used_hybrid_fallback = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Option A: Query the memory MCP server over SSE and blend results (real integration)
     mem_hits: List[Dict[str, Any]] = []
@@ -838,10 +839,10 @@ async def _context_search_impl(
 
                 try:
                     await asyncio.to_thread(_poll_ready)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
             async with Client(base_url) as c:
                 tools = None
@@ -857,8 +858,8 @@ async def _context_search_impl(
                         last_err = e
                         try:
                             await asyncio.sleep(backoff * (i + 1))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                 if tools is None:
                     raise last_err or RuntimeError(
                         "list_tools failed before initialization"
@@ -891,7 +892,8 @@ async def _context_search_impl(
                                 c.call_tool(tool_name, args), timeout=timeout
                             )
                             break
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                     if res_obj is not None:
                         # Normalize FastMCP result content -> rd-like dict
@@ -969,7 +971,8 @@ async def _context_search_impl(
                                                                 or {},
                                                                 it.get("score") or 1.0,
                                                             )
-                                    except Exception:
+                                    except Exception as e:
+                                        logger.debug(f"Suppressed exception, continuing: {e}")
                                         continue
                             # Fallback if provider returns flat dict
                             if not mem_hits:
@@ -987,8 +990,8 @@ async def _context_search_impl(
                                                 it.get("metadata") or {},
                                                 it.get("score") or 1.0,
                                             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # If SSE memory didn’t yield hits, try local Qdrant memory-like retrieval as fallback
     if include_mem and mem_limit > 0 and not mem_hits and queries:
@@ -1053,8 +1056,8 @@ async def _context_search_impl(
                             "metadata": md,
                         }
                     )
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"Suppressed exception in memory search: {e}")
 
     # Fallback: lightweight substring scan over a capped scroll if vector name mismatch
     if include_mem and mem_limit > 0 and not mem_hits and queries:
@@ -1133,8 +1136,8 @@ async def _context_search_impl(
                         if len(mem_hits) >= mem_limit:
                             break
                 checked += len(sc)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Blend results
     try:
@@ -1226,8 +1229,8 @@ async def _context_search_impl(
                     "used_rerank": bool(code_res.get("used_rerank")),
                     "counters": code_res.get("rerank_counters") or {},
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Apply TOON formatting if requested or enabled globally
         if _should_use_toon(output_format):
             return _format_context_results_as_toon(ret, compact=True)

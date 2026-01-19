@@ -7,6 +7,7 @@ and other file-level information for the indexing pipeline.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 
 
+
+logger = logging.getLogger(__name__)
 def _git_metadata(file_path: Path) -> Tuple[int, int, int]:
     """Return (last_modified_at, churn_count, author_count) using git when available.
     
@@ -1449,8 +1452,8 @@ def _get_host_path_from_origin(workspace_path: str, repo_name: str = None) -> Op
         state = get_workspace_state(workspace_path, repo_name)
         if state and state.get("origin", {}).get("source_path"):
             return state["origin"]["source_path"]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return None
 
 

@@ -163,8 +163,8 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
         # Clear from missing cache if it was previously marked missing
         _clear_collection_missing(graph_coll)
         return graph_coll
-    except Exception:
-        pass  # Collection doesn't exist, create it
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")  # Collection doesn't exist, create it
 
     try:
         # Prefer a vector-less collection if supported; fallback to a tiny dummy vector schema.
@@ -274,8 +274,8 @@ def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None)
             resolved = resolver.resolve_symbol(callee, repo)
             if resolved:
                 return resolved
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Unresolved = external (no hardcoded stdlib lists)
     return f"<external>/{callee}"
@@ -301,8 +301,8 @@ def _resolve_import_path(imported: str, repo: str) -> str:
             resolved = resolver.resolve_import(imported, repo)
             if resolved:
                 return resolved
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Unresolved = external (no hardcoded stdlib lists)
     return f"<external>/{imported}"

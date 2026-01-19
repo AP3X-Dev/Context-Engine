@@ -77,8 +77,8 @@ def _get_embedding_model(model_name: str):
                 try:
                     # Warmup with common patterns to optimize internal caches
                     _ = list(m.embed(["function", "class", "import", "def", "const"]))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 _EMBED_MODEL_CACHE[model_name] = m
     return m
 
@@ -158,8 +158,8 @@ def _detect_current_repo() -> Optional[str]:
                             name = name[:-4]
                         if name:
                             return name
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 # Fallback to directory name
                 return work_path.name
 
@@ -167,8 +167,8 @@ def _detect_current_repo() -> Optional[str]:
             for subdir in work_path.iterdir():
                 if subdir.is_dir() and (subdir / ".git").exists():
                     return subdir.name
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return None
 

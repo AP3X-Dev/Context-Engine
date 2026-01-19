@@ -258,8 +258,8 @@ class Neo4jKnowledgeGraph:
                             FOR (n:Function|Class|Method)
                             ON EACH [n.docstring, n.name]
                         """)
-                    except Exception:
-                        pass  # Fulltext may already exist
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Fulltext may already exist
 
                 self._initialized_databases.add(self._database)
                 logger.info(f"Neo4j schema initialized for {self._database}")
@@ -1106,14 +1106,14 @@ def _cleanup_knowledge_graph() -> None:
         try:
             _KNOWLEDGE_GRAPH.close()
             logger.debug("Knowledge graph driver closed on shutdown")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         _KNOWLEDGE_GRAPH = None
     if _EXECUTOR is not None:
         try:
             _EXECUTOR.shutdown(wait=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         _EXECUTOR = None
 
 

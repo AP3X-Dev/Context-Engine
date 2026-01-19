@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -35,6 +36,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional, List
 
 # Configuration
+
+logger = logging.getLogger(__name__)
 WORK_DIR = os.environ.get("WORK_DIR", "/work")
 AUTH_ENABLED = (
     str(os.environ.get("CTXCE_AUTH_ENABLED", "0"))
@@ -101,8 +104,8 @@ def _ensure_db() -> None:
         return
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     with _db_connection() as conn:
         with conn:
             conn.execute(
@@ -125,8 +128,8 @@ def _ensure_db() -> None:
                     conn.execute(
                         "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
 
 def _hash_password(password: str) -> str:
@@ -349,8 +352,8 @@ def validate_session(session_id: str) -> Optional[Dict[str, Any]]:
                             (new_expires_ts, sid),
                         )
                 expires_ts = new_expires_ts
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     meta: Optional[Dict[str, Any]] = None
     raw_meta = row[4]
     if isinstance(raw_meta, str) and raw_meta.strip():
@@ -404,8 +407,8 @@ def ensure_collection(qdrant_collection: str, metadata: Optional[Dict[str, Any]]
                             (row[0],),
                         )
                         is_deleted = 0
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 return {
                     "id": row[0],
                     "qdrant_collection": row[1],

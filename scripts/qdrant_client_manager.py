@@ -4,6 +4,7 @@ Qdrant client lifecycle management to prevent socket leaks.
 Provides connection pooling and singleton client management.
 """
 import atexit
+import logging
 import os
 import threading
 import time
@@ -14,6 +15,8 @@ from qdrant_client import QdrantClient
 
 
 # Connection pool implementation
+
+logger = logging.getLogger(__name__)
 class QdrantConnectionPool:
     """Thread-safe connection pool for QdrantClient instances."""
     
@@ -76,8 +79,8 @@ class QdrantConnectionPool:
                 self._temp_clients.discard(client)
                 try:
                     client.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return
 
             # Return pooled client
@@ -104,8 +107,8 @@ class QdrantConnectionPool:
         for i in reversed(expired_indices):
             try:
                 self._pool[i]['client'].close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             del self._pool[i]
             self._created_count -= 1
     
@@ -116,8 +119,8 @@ class QdrantConnectionPool:
             for conn in self._pool:
                 try:
                     conn['client'].close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             self._pool.clear()
             self._created_count = 0
 
@@ -125,8 +128,8 @@ class QdrantConnectionPool:
             for temp_client in list(self._temp_clients):
                 try:
                     temp_client.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             self._temp_clients.clear()
     
     def get_stats(self) -> Dict[str, int]:
@@ -258,8 +261,8 @@ def close_qdrant_client():
         if _client is not None:
             try:
                 _client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             _client = None
     
     # Close connection pool
@@ -298,8 +301,8 @@ def _atexit_cleanup():
     """Cleanup handler called on process exit."""
     try:
         close_qdrant_client()
-    except Exception:
-        pass  # Best effort cleanup on exit
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")  # Best effort cleanup on exit
 
 
 # Register the cleanup handler

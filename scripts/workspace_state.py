@@ -416,21 +416,21 @@ def _cross_process_lock(lock_path: Path):
         if fcntl is not None:
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         yield
     finally:
         try:
             if fcntl is not None:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
         finally:
             try:
                 lock_file.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
 
 # Per-file locking for indexer/watcher coordination
@@ -480,8 +480,8 @@ def is_file_locked(file_path: str) -> bool:
             # Stale lock - remove it
             try:
                 lock_path.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return False
         return True
     except Exception:
@@ -543,8 +543,8 @@ def file_indexing_lock(file_path: str):
         if fd is not None:
             try:
                 os.close(fd)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         raise RuntimeError(f"Could not acquire file lock: {e}")
 
     try:
@@ -553,8 +553,8 @@ def file_indexing_lock(file_path: str):
         # Release lock
         try:
             lock_path.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 # Legacy global lock for backward compatibility (deprecated)
@@ -593,8 +593,8 @@ def _git_remote_repo_name(repo_path: Path) -> Optional[str]:
                 name = name[:-4]
             if name:
                 return name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     try:
         r = subprocess.run(
@@ -606,8 +606,8 @@ def _git_remote_repo_name(repo_path: Path) -> Optional[str]:
         top = (r.stdout or "").strip()
         if r.returncode == 0 and top:
             return Path(top).name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return None
 
 
@@ -645,16 +645,16 @@ def _detect_repo_name_from_path(path: Path) -> str:
             candidate = rel.parts[0]
             if candidate not in {".codebase", ".git", "__pycache__"}:
                 return candidate
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     try:
         base = path if path.is_dir() else path.parent
         git_name = _git_remote_repo_name(base)
         if git_name:
             return git_name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         # Walk up to find .git
         cur = path if path.is_dir() else path.parent
@@ -662,17 +662,18 @@ def _detect_repo_name_from_path(path: Path) -> str:
             try:
                 if (p / ".git").exists():
                     return p.name
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     try:
         structure_name = _detect_repo_name_from_path_by_structure(path)
         if structure_name:
             return structure_name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return (path if path.is_dir() else path.parent).name or "workspace"
 
@@ -702,8 +703,8 @@ def _atomic_write_state(state_path: Path, state: WorkspaceState) -> None:
         # Clean up temp file if something went wrong
         try:
             temp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         raise
 
 def get_workspace_state(
@@ -741,8 +742,8 @@ def get_workspace_state(
             # non-root watcher/indexer processes can both write state/cache files.
             try:
                 os.chmod(state_dir, 0o775)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             state_path = state_dir / STATE_FILENAME
             lock_scope_path = state_dir
         else:
@@ -772,8 +773,8 @@ def get_workspace_state(
                         if modified:
                             try:
                                 _atomic_write_state(state_path, state)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                         return state
                 except (json.JSONDecodeError, ValueError, OSError) as e:
                     print(f"[workspace_state] Failed to read state from {state_path}: {e}")
@@ -875,8 +876,8 @@ def initialize_watcher_state(
                         repo_name=root_repo_name,
                         pending=True,
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             update_indexing_status(
                 repo_name=root_repo_name,
                 status={"state": "watching"},
@@ -895,8 +896,8 @@ def initialize_watcher_state(
                 cfg = get_indexing_config_snapshot()
                 updates["indexing_config"] = cfg
                 updates["indexing_config_hash"] = compute_indexing_config_hash(cfg)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         update_workspace_state(workspace_path=workspace_path, updates=updates)
         try:
             if persist_indexing_config:
@@ -905,8 +906,8 @@ def initialize_watcher_state(
                     repo_name=None,
                     pending=True,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         update_indexing_status(status={"state": "watching"})
 
 
@@ -1326,8 +1327,8 @@ def _normalize_repo_name_for_collection(repo_name: str) -> str:
             base = (m.group(1) or "").strip()
             if base:
                 return f"{base}_old" if is_old else base
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return repo_name
 
 
@@ -1371,8 +1372,8 @@ def get_collection_name(repo_name: Optional[str] = None) -> str:
         try:
             if isinstance(repo_name, str) and repo_name.endswith("_old") and not env_coll.endswith("_old"):
                 return f"{env_coll}_old"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return env_coll
 
     normalized = _normalize_repo_name_for_collection(repo_name) if repo_name else None
@@ -1410,7 +1411,8 @@ def _detect_repo_name_from_path_by_structure(path: Path) -> str:
             continue
         try:
             root_path = Path(root_str).resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
         if root_path not in candidate_roots:
             candidate_roots.append(root_path)
@@ -1465,22 +1467,22 @@ def _extract_repo_name_from_path(workspace_path: str) -> str:
             name = _git_remote_repo_name(repo_path)
             if name:
                 return name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     try:
         candidate = _normalize_repo_slug(path.name)
         if candidate:
             return candidate
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     try:
         candidate = _normalize_repo_slug(path.parent.name)
         if candidate:
             return candidate
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return path.name
 
@@ -1504,8 +1506,8 @@ def _ensure_repo_slug_defaults(state: WorkspaceState, repo_name: Optional[str]) 
         try:
             if is_multi_repo_mode() and not is_staging_enabled():
                 allow = False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         if allow:
             try:
@@ -1591,8 +1593,8 @@ def _write_cache(workspace_path: str, cache: Dict[str, Any]) -> None:
             finally:
                 try:
                     tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
 
 def get_cached_file_hash(file_path: str, repo_name: Optional[str] = None) -> str:
@@ -1790,8 +1792,8 @@ def cleanup_old_cache_locks(max_idle_seconds: int = 900) -> int:
                     finally:
                         try:
                             lock.release()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
         for ws in stale_keys:
             _state_locks.pop(ws, None)
             _state_lock_last_used.pop(ws, None)
@@ -1978,7 +1980,8 @@ def find_collection_for_logical_repo(logical_repo_id: str, search_root: Optional
                     try:
                         with open(state_path, "r", encoding="utf-8-sig") as f:
                             state = json.load(f) or {}
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception, continuing: {e}")
                         continue
 
                     ws = state.get("workspace_path") or str(root_path)
@@ -2061,8 +2064,8 @@ def get_or_create_collection_for_logical_repo(
 
     try:
         state = ensure_logical_repo_id(state, ws_path)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     lrid = state.get("logical_repo_id")
     if isinstance(lrid, str) and lrid:
@@ -2075,8 +2078,8 @@ def get_or_create_collection_for_logical_repo(
                         updates={"qdrant_collection": coll, "logical_repo_id": lrid},
                         repo_name=preferred_repo_name,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             return coll
 
     coll = state.get("qdrant_collection")
@@ -2092,8 +2095,8 @@ def get_or_create_collection_for_logical_repo(
                 updates={"qdrant_collection": coll},
                 repo_name=preferred_repo_name,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return coll
 
@@ -2238,8 +2241,8 @@ def remove_cached_symbols(file_path: str) -> None:
     try:
         if cache_path.exists():
             cache_path.unlink()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 def clear_symbol_cache(
@@ -2280,8 +2283,8 @@ def clear_symbol_cache(
             else:
                 try:
                     cache_file.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
         # Best-effort cleanup of empty symbols directory
         try:
@@ -2290,10 +2293,10 @@ def clear_symbol_cache(
             try:
                 symbols_dir.rmdir()
                 dirs_removed += 1
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return dirs_removed
 
@@ -2396,7 +2399,8 @@ def list_workspaces(
                     "indexing_state": indexing_state,
                     "source": "local",
                 })
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         # Also check multi-repo states
@@ -2440,23 +2444,24 @@ def list_workspaces(
                             "repo_name": repo_name,
                             "source": "local",
                         })
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception, continuing: {e}")
                         continue
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # --- Qdrant fallback for remote scenarios ---
     if not workspaces and use_qdrant_fallback:
         try:
             workspaces = _list_workspaces_from_qdrant(seen_paths)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Sort by last_updated descending
     try:
         workspaces.sort(key=lambda w: w.get("last_updated", ""), reverse=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return workspaces
 
@@ -2553,8 +2558,8 @@ def _list_workspaces_from_qdrant(seen_paths: set) -> List[Dict[str, Any]]:
                     "indexing_state": "unknown",
                     "source": "qdrant",
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return workspaces
 

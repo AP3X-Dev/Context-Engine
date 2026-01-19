@@ -326,8 +326,8 @@ def _set_admin_session_cookie(resp: Any, session_id: str) -> Any:
         if ttl > 0:
             kwargs["max_age"] = ttl
         resp.set_cookie(**kwargs)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return resp
 
 
@@ -363,8 +363,8 @@ def _bridge_state_authorized(request: Request) -> None:
             try:
                 if secrets.compare_digest(header_token, BRIDGE_STATE_TOKEN):
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         try:
             _require_admin_session(request)
             return
@@ -512,8 +512,8 @@ async def _process_bundle_background(
     finally:
         try:
             bundle_path.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 @app.get("/auth/status", response_model=AuthStatusResponse)
@@ -1515,8 +1515,8 @@ async def upload_delta_bundle(
                     marker_dir = Path(WORK_DIR) / ".codebase" / "repos" / slug_repo_name
                     marker_dir.mkdir(parents=True, exist_ok=True)
                     (marker_dir / ".ctxce_managed_upload").write_text("1\n")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 # Persist logical_repo_id mapping for this slug/workspace when provided (feature-gated)
                 if logical_repo_reuse_enabled() and logical_repo_id and update_workspace_state:
@@ -1575,8 +1575,8 @@ async def upload_delta_bundle(
                     try:
                         temp_file.close()
                         bundle_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                     raise HTTPException(
                         status_code=413,
                         detail=f"Bundle too large. Max size: {MAX_BUNDLE_SIZE_MB}MB"
@@ -1637,8 +1637,8 @@ async def upload_delta_bundle(
             if not handed_off:
                 try:
                     bundle_path.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     except HTTPException:
         raise

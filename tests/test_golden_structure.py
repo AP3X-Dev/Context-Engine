@@ -22,7 +22,8 @@ def test_repo_search_compact_golden_subset(monkeypatch):
 
     monkeypatch.setattr(hy, "run_hybrid_search", stub)
 
-    res = srv.asyncio.get_event_loop().run_until_complete(
+    import asyncio
+    res = asyncio.run(
         srv.repo_search(queries=["q"], limit=2, compact=True)
     )
 

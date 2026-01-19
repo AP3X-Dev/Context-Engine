@@ -214,8 +214,8 @@ def main():
         _ = qp
         print("Warm start via query_points: OK")
         return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Fallback to search API
     try:

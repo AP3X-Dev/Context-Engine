@@ -417,8 +417,8 @@ class AsyncSubprocessManager:
                 return
             if loop and not loop.is_closed():
                 loop.create_task(self.cleanup_all_processes())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 # Global async subprocess manager instance

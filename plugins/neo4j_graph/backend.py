@@ -60,8 +60,8 @@ def _cleanup_drivers():
             if backend._driver is not None:
                 backend._driver.close()
                 logger.debug("Neo4j driver closed on shutdown")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 # Register cleanup on process exit
@@ -212,8 +212,8 @@ class Neo4jGraphBackend(GraphBackend):
                 logger.warning(f"Stale Neo4j connection detected, recreating driver: {e}")
                 try:
                     self._driver.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 self._driver = None
                 self._driver_initialized = False
 
@@ -299,8 +299,8 @@ class Neo4jGraphBackend(GraphBackend):
                 logger.warning(f"Stale Neo4j async connection detected, recreating driver: {e}")
                 try:
                     await self._async_driver.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 self._async_driver = None
                 self._async_driver_initialized = False
 
@@ -1039,8 +1039,8 @@ class Neo4jGraphBackend(GraphBackend):
                             "CALL gds.graph.drop($graphName, false) YIELD graphName",
                             graphName=graph_name
                         )
-                    except Exception:
-                        pass  # Graph doesn't exist, that's fine
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Graph doesn't exist, that's fine
 
                     # Use new GDS aggregation function syntax (non-deprecated)
                     session.run("""
@@ -1064,8 +1064,8 @@ class Neo4jGraphBackend(GraphBackend):
                             "CALL gds.graph.drop($graphName, false) YIELD graphName",
                             graphName=graph_name
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
                     if updated > 0:
                         logger.debug(f"GDS PageRank: updated {updated} symbols in {collection}")
@@ -1598,8 +1598,8 @@ class Neo4jGraphBackend(GraphBackend):
                             "CALL gds.graph.drop($graphName, false) YIELD graphName",
                             graphName=graph_name
                         )
-                    except Exception:
-                        pass  # Graph doesn't exist, that's fine
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Graph doesn't exist, that's fine
 
                     with session.begin_transaction(timeout=timeout) as tx:
                         # Use new GDS aggregation function syntax (non-deprecated)
@@ -1634,8 +1634,8 @@ class Neo4jGraphBackend(GraphBackend):
                             "CALL gds.graph.drop($graphName, false) YIELD graphName",
                             graphName=graph_name
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
                     logger.info(f"GDS PageRank: computed for {cnt} nodes in {collection}")
                     return cnt

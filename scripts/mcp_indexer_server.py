@@ -32,8 +32,11 @@ from __future__ import annotations
 # CRITICAL: OpenLit must be initialized BEFORE any qdrant_client imports
 # to properly instrument vector DB calls. This import must come first!
 # ---------------------------------------------------------------------------
+import logging
 import os as _os
 import sys as _sys
+
+logger = logging.getLogger(__name__)
 _roots_env = _os.environ.get("WORK_ROOTS", "")
 _roots = [p.strip() for p in _roots_env.split(",") if p.strip()] or ["/work", "/app"]
 for _root in _roots:
@@ -87,8 +90,8 @@ try:
     for _root in _roots:
         if _root and _root not in sys.path:
             sys.path.insert(0, _root)
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 # Note: OpenLit initialization is handled by early import of scripts.openlit_init
 # at the top of this file (before any qdrant_client imports)
@@ -250,8 +253,8 @@ try:
         resolved = _ws_get_collection_name(None)
         if resolved:
             DEFAULT_COLLECTION = resolved
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 MAX_LOG_TAIL = safe_int(
     os.environ.get("MCP_MAX_LOG_TAIL", "4000"),
@@ -372,9 +375,10 @@ def _relax_var_kwarg_defaults() -> None:
             if changed:
                 try:
                     model.model_rebuild(force=True)
-                except Exception:
-                    pass
-        except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
 
@@ -429,8 +433,8 @@ def _start_readyz_server():
                                     for t in tools
                                     if (t.get("name") or "") != "expand_query"
                                 ]
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                         payload = {"ok": True, "tools": tools}
                         self.wfile.write(_json_dumps_bytes(payload))
                     else:
@@ -440,8 +444,8 @@ def _start_readyz_server():
                     try:
                         self.send_response(500)
                         self.end_headers()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
             def log_message(self, *args, **kwargs):
                 # Quiet health server logs
@@ -487,8 +491,8 @@ except ImportError:
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return {
                     "ok": False,
                     "code": -1,
@@ -525,8 +529,8 @@ except ImportError:
                     # Ensure the process is reaped
                     with contextlib.suppress(Exception):
                         await proc.wait()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
 
 # --- Admin tool helpers imported from mcp_admin_tools shim ---
@@ -583,8 +587,8 @@ async def qdrant_index_root(
                 collection = _parsed.get("collection", collection)
                 if recreate is None and "recreate" in _parsed:
                     recreate = _coerce_bool(_parsed.get("recreate"), False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Resolve collection: prefer explicit value; otherwise use workspace state
     try:
@@ -624,8 +628,8 @@ async def qdrant_index_root(
         if ret.get("ok") and int(ret.get("code", 1)) == 0:
             if _invalidate_router_scratchpad("/work"):
                 ret["invalidated_router_scratchpad"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ret
 
 
@@ -769,8 +773,8 @@ async def qdrant_status(
             max_points = _coerce_int(_extra.get("max_points"), None)
         if _extra and batch in (None, "") and _extra.get("batch") is not None:
             batch = _coerce_int(_extra.get("batch"), None)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     coll = collection or _default_collection()
     try:
         from qdrant_client import QdrantClient
@@ -912,8 +916,8 @@ async def qdrant_index(
                 collection = _parsed2.get("collection", collection)
                 if recreate is None and "recreate" in _parsed2:
                     recreate = _coerce_bool(_parsed2.get("recreate"), False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     root = "/work"
     if subdir:
@@ -967,8 +971,8 @@ async def qdrant_index(
         if ret.get("ok") and int(ret.get("code", 1)) == 0:
             if _invalidate_router_scratchpad("/work"):
                 ret["invalidated_router_scratchpad"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ret
 
 
@@ -1002,8 +1006,8 @@ async def set_session_defaults(
                 language = _extra.get("language")
             if (session is None or (isinstance(session, str) and str(session).strip() == "")) and _extra.get("session") is not None:
                 session = _extra.get("session")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     defaults: Dict[str, Any] = {}
     unset_keys: set[str] = set()
@@ -1024,8 +1028,8 @@ async def set_session_defaults(
                     existing2.pop(_k, None)
                 existing2.update(defaults)
                 SESSION_DEFAULTS_BY_SESSION[ctx.session] = existing2
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Optional token storage
     sid = str(session).strip() if session is not None else ""
@@ -1039,8 +1043,8 @@ async def set_session_defaults(
                     existing.pop(_k, None)
                 existing.update(defaults)
                 SESSION_DEFAULTS[sid] = existing
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return {
         "ok": True,
@@ -2268,14 +2272,14 @@ if __name__ == "__main__":
             _ = _get_embedding_model(
                 os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Start lightweight /readyz health endpoint in background (best-effort)
     try:
         _start_readyz_server()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     transport = os.environ.get("FASTMCP_TRANSPORT", "sse").strip().lower()
     if transport == "stdio":
@@ -2286,8 +2290,8 @@ if __name__ == "__main__":
         try:
             mcp.settings.host = HOST
             mcp.settings.port = PORT
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Use the correct FastMCP transport name
         try:
             mcp.run(transport="streamable-http")

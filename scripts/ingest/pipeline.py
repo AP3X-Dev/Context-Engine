@@ -368,8 +368,8 @@ def _select_dense_text(
             # Strip unstable line-range numbers: "lines 12-34" → keeps path/language stable.
             s = _re.sub(r"\s+lines\s+\d+\s*-\s*\d+\.?", ".", s, flags=_re.IGNORECASE)
             s = _re.sub(r"\s+\.\s+", ". ", s)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return s.strip()
 
     header: list[str] = []
@@ -536,8 +536,8 @@ def index_single_file(
         if _should_skip_explicit_file_by_excluder(file_path):
             try:
                 delete_points_by_path(client, collection, str(file_path))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             print(f"Skipping excluded file: {file_path}")
             return False
     except Exception:
@@ -551,8 +551,8 @@ def index_single_file(
         except FileExistsError:
             print(f"[FILE_LOCKED] Skipping {file_path} - another process is indexing it")
             return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         return _index_single_file_inner(
@@ -567,8 +567,8 @@ def index_single_file(
         if _file_lock_ctx is not None:
             try:
                 _file_lock_ctx.__exit__(None, None, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
 
 def _index_single_file_inner(
@@ -609,8 +609,8 @@ def _index_single_file_inner(
                 ) == int(mtime):
                     print(f"Skipping unchanged file (fs-meta): {file_path}")
                     return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         text = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -671,12 +671,12 @@ def _index_single_file_inner(
                     if fast_fs and set_cached_file_hash:
                         try:
                             set_cached_file_hash(str(file_path), file_hash, repo_tag)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     print(f"Skipping unchanged file (cache): {file_path}")
                     return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         if not trust_cache:
             prev = get_indexed_file_hash(
@@ -687,8 +687,8 @@ def _index_single_file_inner(
                 if fast_fs and set_cached_file_hash:
                     try:
                         set_cached_file_hash(str(file_path), file_hash, repo_tag)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 print(f"Skipping unchanged file: {file_path}")
                 return False
 
@@ -738,8 +738,8 @@ def _index_single_file_inner(
                         f"[ingest] micro-chunks resized path={file_path} count={_before}->{len(chunks)} "
                         f"tokens={_base_tokens}->{_new_tokens} stride={_base_stride}->{_new_stride}"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
         except Exception:
             chunks = chunk_by_tokens(text)
     elif use_semantic:
@@ -790,16 +790,16 @@ def _index_single_file_inner(
             try:
                 if use_mini:
                     vecs[MINI_VECTOR_NAME] = project_mini(list(dense_vec), MINI_VEC_DIM)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             # Add pattern vector for structural similarity search
             if pattern_vectors_on and code_text:
                 try:
                     pv = extract_pattern_vector(code_text, language)
                     if pv:
                         vecs[PATTERN_VECTOR_NAME] = pv
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             if use_sparse and lex_text:
                 sparse_vec = _lex_sparse_vector_text(lex_text)
                 if sparse_vec.get("indices"):
@@ -960,8 +960,8 @@ def _index_single_file_inner(
                         symbol_id = f"{kind}_{symbol_name}_{start_line}"
                         if set_cached_pseudo:
                             set_cached_pseudo(str(file_path), symbol_id, pseudo, tags, file_hash)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         if pseudo:
             payload["pseudo"] = pseudo
@@ -1052,8 +1052,8 @@ def _index_single_file_inner(
         for _idx, _m in enumerate(batch_meta):
             try:
                 _m["pid_str"] = str(batch_ids[_idx])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         points = [
             make_point(i, v, lx, m, lt, ct, entity_dense_vec=ev, relation_dense_vec=rv)
             for i, v, lx, m, lt, ct, ev, rv in zip(
@@ -1162,8 +1162,8 @@ def _index_single_file_inner(
             if set_cached_file_hash:
                 file_repo_tag = repo_tag
                 set_cached_file_hash(str(file_path), file_hash, file_repo_tag)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return True
     return False
 
@@ -1215,11 +1215,11 @@ def index_repo(
             if all_unchanged:
                 try:
                     print("[fast_index] No changes detected via fs metadata; skipping model and Qdrant setup")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         from scripts.embedder import get_embedding_model, get_model_dimension
@@ -1254,8 +1254,8 @@ def index_repo(
                         if name != LEX_VECTOR_NAME:
                             vector_name = name
                             break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         if vector_name is None:
             vector_name = _sanitize_vector_name(model_name)
 
@@ -1453,8 +1453,8 @@ def process_file_with_smart_reindexing(
         if _should_skip_explicit_file_by_excluder(p):
             try:
                 _delete_points_fn(client, current_collection, str(p))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             print(f"[SMART_REINDEX] Skipping excluded file: {file_path}")
             return "skipped"
     except Exception:
@@ -1482,8 +1482,8 @@ def process_file_with_smart_reindexing(
             if cached_file_hash and cached_file_hash == file_hash:
                 print(f"[SMART_REINDEX] {file_path}: file hash unchanged, skipping (fast path)")
                 return "skipped"
-        except Exception:
-            pass  # Fall through to normal processing
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Fall through to normal processing
 
     if allowed_vectors is None and allowed_sparse is None:
         allowed_vectors, allowed_sparse = get_collection_vector_names(client, current_collection)
@@ -1636,8 +1636,8 @@ def process_file_with_smart_reindexing(
                         f"[SMART_REINDEX] micro-chunks resized path={file_path} count={_before}->{len(chunks)} "
                         f"tokens={_base_tokens}->{_new_tokens} stride={_base_stride}->{_new_stride}"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
         except Exception:
             chunks = chunk_by_tokens(text)
     elif use_semantic:
@@ -1827,8 +1827,8 @@ def process_file_with_smart_reindexing(
                         sid = f"{k}_{symbol_name}_{start_line}"
                         if set_cached_pseudo:
                             set_cached_pseudo(fp, sid, pseudo, tags, file_hash)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         if pseudo:
             payload["pseudo"] = pseudo
@@ -1897,8 +1897,8 @@ def process_file_with_smart_reindexing(
                                 sparse_vec = _lex_sparse_vector_text(aug_lex_text)
                                 if sparse_vec.get("indices"):
                                     vec[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                     else:
                         vecs = {vector_name: vec}
                         if allow_lex:
@@ -1906,15 +1906,15 @@ def process_file_with_smart_reindexing(
                         try:
                             if use_mini:
                                 vecs[MINI_VECTOR_NAME] = project_mini(list(vec), MINI_VEC_DIM)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                         if use_sparse and aug_lex_text:
                             try:
                                 sparse_vec = _lex_sparse_vector_text(aug_lex_text)
                                 if sparse_vec.get("indices"):
                                     vecs[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                         vec = vecs
                 else:
                     if isinstance(vec, dict):
@@ -1934,8 +1934,8 @@ def process_file_with_smart_reindexing(
                     models.PointStruct(id=pid, vector=vec, payload=payload)
                 )
                 continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         embed_texts.append(dense_text)
         embed_payloads.append(payload)
@@ -2014,16 +2014,16 @@ def process_file_with_smart_reindexing(
                 try:
                     if use_mini:
                         vecs[MINI_VECTOR_NAME] = project_mini(list(v), MINI_VEC_DIM)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 # Add pattern vector for structural similarity search
                 if pattern_vectors_on and ct:
                     try:
                         pv = extract_pattern_vector(ct, language)
                         if pv:
                             vecs[PATTERN_VECTOR_NAME] = pv
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 if use_sparse and lt:
                     sparse_vec = _lex_sparse_vector_text(lt)
                     if sparse_vec.get("indices"):
@@ -2142,8 +2142,8 @@ def process_file_with_smart_reindexing(
     try:
         if set_cached_file_hash:
             set_cached_file_hash(fp, file_hash, per_file_repo)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     print(
         f"[SMART_REINDEX] Completed {file_path}: chunks={len(chunks)}, reused_points={len(reused_points)}, embedded_points={len(new_points)}"
@@ -2184,8 +2184,8 @@ def pseudo_backfill_tick(
                     match=_models.MatchValue(value=repo_name),
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     flt = None
     try:
@@ -2195,17 +2195,17 @@ def pseudo_backfill_tick(
             should_conditions = []
             try:
                 should_conditions.append(null_cond(is_null="pseudo"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             try:
                 should_conditions.append(null_cond(is_null="tags"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             if empty_cond is not None:
                 try:
                     should_conditions.append(empty_cond(is_empty="tags"))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             flt = _models.Filter(
                 must=must_conditions or None,
                 should=should_conditions or None,
@@ -2322,7 +2322,8 @@ def pseudo_backfill_tick(
                     )
                 )
                 processed += 1
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         if new_points:
@@ -2401,8 +2402,8 @@ def graph_backfill_tick(
     if null_cond:
         try:
             must_conditions.append(null_cond(is_null=backfill_marker_key))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     flt = _models.Filter(must=must_conditions or None) if must_conditions else None
 
@@ -2455,8 +2456,8 @@ def graph_backfill_tick(
                 if path not in paths_cleaned:
                     try:
                         delete_edges_by_path(client, graph_coll, path, repo=repo)
-                    except Exception:
-                        pass  # Non-fatal: proceed with upsert
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Non-fatal: proceed with upsert
                     paths_cleaned.add(path)
 
                 # Skip if no relationship data (but still mark as processed)
@@ -2521,8 +2522,8 @@ def graph_backfill_tick(
                         payload={"metadata": {"_graph_backfilled": True}},
                         points=[pt.id],
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
         if next_offset is None:
             break

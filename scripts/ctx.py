@@ -2,8 +2,11 @@
 # Copyright 2025 John Donalson and Context-Engine Contributors.
 # Licensed under the Business Source License 1.1.
 # See the LICENSE file in the repository root for full terms.
+import logging
 import re
 import difflib
+
+logger = logging.getLogger(__name__)
 """
 Context-aware prompt enhancer CLI.
 
@@ -72,8 +75,8 @@ def _load_env_file():
 	if workspace_dir:
 		try:
 			candidates.append(Path(workspace_dir) / ".env")
-		except Exception:
-			pass
+		except Exception as e:
+			logger.debug(f"Suppressed exception: {e}")
 
 	# Original project-root-based .env (for CLI / repo-local usage)
 	candidates.append(script_dir.parent / ".env")
@@ -1089,8 +1092,8 @@ def fetch_context(query: str, **filters) -> Tuple[str, str]:
             ]
             sys.stderr.write("[DEBUG] repo_search sample paths:\n" + json.dumps(sample, indent=2) + "\n")
             sys.stderr.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     gate_flag = os.environ.get("CTX_RELEVANCE_GATE", "").strip().lower()
     if hits and gate_flag in {"1", "true", "yes", "on"}:

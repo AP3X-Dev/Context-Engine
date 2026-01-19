@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import re
@@ -9,6 +10,8 @@ from typing import Any, Dict, Optional, List
 
 from scripts.auth_backend import mark_collection_deleted
 
+
+logger = logging.getLogger(__name__)
 try:
     from qdrant_client import QdrantClient
     from qdrant_client import models as qmodels
@@ -61,7 +64,8 @@ def _resolve_codebase_root(work_root: Path) -> Path:
         try:
             if (base / ".codebase" / "repos").exists():
                 return base
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return work_root
@@ -86,8 +90,8 @@ def _read_state_collection(state_path: Path) -> str:
             data = json.load(f)
         if isinstance(data, dict):
             return str(data.get("qdrant_collection") or "").strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ""
 
 
@@ -154,8 +158,8 @@ def _cleanup_state_files_for_mapping(
                 if _delete_path_tree(sd):
                     removed += 1
                 return removed
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Single-repo mode stores metadata under <workspace>/.codebase/
         if _delete_path_tree(p):
@@ -164,8 +168,8 @@ def _cleanup_state_files_for_mapping(
         try:
             for sym in state_dir.glob("symbols_*.json"):
                 _delete_path_tree(sym)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     return removed
 
 
@@ -253,8 +257,8 @@ def delete_collection_everywhere(
                 p = Path(container_path)
                 try:
                     p = p.resolve()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 if target_is_old:
                     # For staging clone workspaces, delete the workspace dir directly when it
@@ -263,8 +267,8 @@ def delete_collection_everywhere(
                         if p.parent.resolve() == work_root and (p.name or "").endswith("_old"):
                             if _delete_path_tree(p):
                                 out["deleted_managed_workspaces"] += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 else:
                     if _is_managed_upload_workspace_dir(p, work_root=work_root, marker_root=codebase_root):
                         if _delete_path_tree(p):
@@ -277,7 +281,8 @@ def delete_collection_everywhere(
                 work_root=work_root,
                 codebase_root=codebase_root,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return out
@@ -340,8 +345,8 @@ def copy_collection_qdrant(
             if overwrite:
                 try:
                     cli.delete_collection(collection_name=dest)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             try:
                 src_info = cli.get_collection(collection_name=src)
@@ -433,8 +438,8 @@ def copy_collection_qdrant(
         finally:
             try:
                 cli.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def _count_points(name: str) -> Optional[int]:
         if QdrantClient is None:
@@ -448,8 +453,8 @@ def copy_collection_qdrant(
         finally:
             try:
                 cli.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     source_count = _count_points(src)
 

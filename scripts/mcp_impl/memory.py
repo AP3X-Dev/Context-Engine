@@ -130,8 +130,8 @@ async def _memory_store_impl(
             await asyncio.to_thread(
                 lambda: _ensure_collection(client, coll, len(dense), vector_name)
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         pid = str(uuid.uuid4())
         payload = {
             "information": str(information),
@@ -150,8 +150,8 @@ async def _memory_store_impl(
                     list(dense), int(os.environ.get("MINI_VEC_DIM", "64") or 64)
                 )
                 vecs[mini_name] = mini
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         point = models.PointStruct(id=pid, vector=vecs, payload=payload)
         await asyncio.to_thread(
             lambda: client.upsert(collection_name=coll, points=[point], wait=True)
