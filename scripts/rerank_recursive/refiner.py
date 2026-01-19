@@ -4,6 +4,7 @@ LatentRefiner - Refines latent state based on current ranking results.
 From TRM paper: z encodes "what we've learned about the query so far"
 and gets updated based on the current answer (scores).
 """
+import logging
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -11,6 +12,8 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 class LatentRefiner:
     """
     Refines the latent state z based on current results.
@@ -67,8 +70,8 @@ class LatentRefiner:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def maybe_reload_weights(self):
         # Fast path: skip if reload disabled (interval <= 0)
@@ -83,8 +86,8 @@ class LatentRefiner:
                 mtime = os.path.getmtime(self._weights_path)
                 if mtime > self._weights_mtime:
                     self._load_weights_safe()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _load_weights_safe(self):
         import fcntl
@@ -333,6 +336,6 @@ class LatentRefiner:
             if os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             raise

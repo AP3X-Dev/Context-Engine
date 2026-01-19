@@ -4,6 +4,7 @@ mcp_router/client.py - HTTP/MCP client helpers.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -16,6 +17,8 @@ from .config import (
     HEALTH_PORT_MEMORY,
     cache_ttl_sec,
 )
+
+logger = logging.getLogger(__name__)
 
 # Caches
 _TOOL_ENDPOINTS_CACHE_MAP: Dict[str, str] = {}
@@ -46,8 +49,8 @@ def _post_raw_retry(url: str, payload: Dict[str, Any], headers: Dict[str, str],
             if i < retries:
                 try:
                     time.sleep(backoff * (2 ** i))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             else:
                 raise last_exc
 
@@ -62,8 +65,8 @@ def _parse_stream_or_json(body: bytes) -> Dict[str, Any]:
         if last:
             try:
                 return json.loads(last)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     return json.loads(txt)
 
 
@@ -100,8 +103,8 @@ def _mcp_handshake(base_url: str, timeout: float = 30.0) -> Dict[str, str]:
         headers["Mcp-Session-Id"] = sid
     try:
         _post_raw_retry(base_url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, headers, timeout=timeout)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return headers
 
 
@@ -113,8 +116,8 @@ def _extract_iserror_text(resp: Dict[str, Any]) -> str | None:
             if isinstance(content, list) and content and isinstance(content[0], dict):
                 if content[0].get("type") == "text":
                     return content[0].get("text")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return None
 
 
@@ -149,8 +152,8 @@ def call_tool_http(base_url: str, tool_name: str, args: Dict[str, Any], timeout:
             err = rs.get("error")
             if isinstance(err, str):
                 return err
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return None
 
     msg = _extract_iserror_text(resp)
@@ -232,7 +235,8 @@ def _mcp_tools_list(base_url: str, timeout: float = 30.0) -> List[str]:
                 n = t.get("name") if isinstance(t, dict) else None
                 if isinstance(n, str) and n:
                     names.append(n)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
         return names
     except Exception:

@@ -651,13 +651,13 @@ def process_file(path):
     result = parse(content)
     return transform(result)
 '''
-        imports, calls = get_imports_calls("python", code)
-        
+        imports, calls, _import_map = get_imports_calls("python", code)
+
         assert "os" in imports
         assert "pathlib" in imports
         # Calls may include parse, transform
         assert len(calls) >= 0
-    
+
     def test_go_full_pipeline(self, get_imports_calls):
         """Test Go full extraction pipeline."""
         code = '''
@@ -669,10 +669,10 @@ func main() {
     fmt.Println("hello")
 }
 '''
-        imports, calls = get_imports_calls("go", code)
-        
+        imports, calls, _import_map = get_imports_calls("go", code)
+
         assert "fmt" in imports
-    
+
     def test_rust_full_pipeline(self, get_imports_calls):
         """Test Rust full extraction pipeline."""
         code = '''
@@ -684,10 +684,10 @@ fn main() {
     println!("{}", buffer);
 }
 '''
-        imports, calls = get_imports_calls("rust", code)
-        
+        imports, calls, _import_map = get_imports_calls("rust", code)
+
         assert "std::io::Read" in imports
-    
+
     def test_java_full_pipeline(self, get_imports_calls):
         """Test Java full extraction pipeline."""
         code = '''
@@ -702,11 +702,11 @@ public class Main {
     }
 }
 '''
-        imports, calls = get_imports_calls("java", code)
-        
+        imports, calls, _import_map = get_imports_calls("java", code)
+
         assert "java.util.List" in imports
         assert "java.util.ArrayList" in imports
-    
+
     def test_cpp_full_pipeline(self, get_imports_calls):
         """Test C++ full extraction pipeline."""
         code = '''
@@ -719,11 +719,11 @@ int main() {
     return 0;
 }
 '''
-        imports, calls = get_imports_calls("cpp", code)
-        
+        imports, calls, _import_map = get_imports_calls("cpp", code)
+
         assert "iostream" in imports
         assert "string" in imports
-    
+
     def test_ruby_full_pipeline(self, get_imports_calls):
         """Test Ruby full extraction pipeline."""
         code = '''
@@ -736,8 +736,8 @@ def fetch_data(url)
   JSON.parse(response)
 end
 '''
-        imports, calls = get_imports_calls("ruby", code)
-        
+        imports, calls, _import_map = get_imports_calls("ruby", code)
+
         assert "json" in imports
         assert "net/http" in imports
 

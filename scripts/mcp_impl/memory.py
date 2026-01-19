@@ -91,7 +91,9 @@ async def _memory_store_impl(
             from scripts.utils import lex_hash_vector_text
 
             return lex_hash_vector_text(text, dim)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception while hashing memory lex vector: {e}")
+            logger.debug(f"Suppressed exception: {e}")
             # Fallback: minimal hashing
             if not text:
                 return [0.0] * dim
@@ -130,8 +132,8 @@ async def _memory_store_impl(
             await asyncio.to_thread(
                 lambda: _ensure_collection(client, coll, len(dense), vector_name)
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         pid = str(uuid.uuid4())
         payload = {
             "information": str(information),
@@ -150,8 +152,8 @@ async def _memory_store_impl(
                     list(dense), int(os.environ.get("MINI_VEC_DIM", "64") or 64)
                 )
                 vecs[mini_name] = mini
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         point = models.PointStruct(id=pid, vector=vecs, payload=payload)
         await asyncio.to_thread(
             lambda: client.upsert(collection_name=coll, points=[point], wait=True)
@@ -227,7 +229,9 @@ async def _memory_find_impl(
         try:
             from scripts.utils import lex_hash_vector_text
             return lex_hash_vector_text(text, dim)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception while hashing query lex vector: {e}")
+            logger.debug(f"Suppressed exception: {e}")
             if not text:
                 return [0.0] * dim
             vec = [0.0] * dim

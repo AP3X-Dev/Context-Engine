@@ -406,8 +406,8 @@ class UnifiedCache:
         """Context manager exit with cleanup."""
         try:
             self.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 # Global cache registry
@@ -472,8 +472,8 @@ def get_all_cache_stats() -> Dict[str, Dict[str, Any]]:
         get_embedding_cache()
         get_search_cache()
         get_expansion_cache()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     with _registry_lock:
         return {name: cache.get_stats() for name, cache in _cache_registry.items()}

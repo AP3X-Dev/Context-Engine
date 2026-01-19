@@ -7,6 +7,7 @@ for code chunks using LLM decoders (GLM or llama.cpp).
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Tuple, List
 
@@ -15,6 +16,8 @@ from scripts.ingest.config import (
     set_cached_pseudo,
     compare_symbol_changes,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _pseudo_describe_enabled() -> bool:
@@ -98,8 +101,8 @@ def generate_pseudo_tags(text: str) -> Tuple[str, List[str]]:
                     pseudo = p.strip()[:256]
                 if isinstance(t, list):
                     tags = [str(x).strip() for x in t if str(x).strip()][:6]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     except Exception:
         return "", []
     return pseudo, tags
@@ -136,8 +139,8 @@ def should_process_pseudo_for_chunk(
             cached_pseudo, cached_tags = get_cached_pseudo(file_path, symbol_id)
             if cached_pseudo or cached_tags:
                 return False, cached_pseudo, cached_tags
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return True, "", []
 
     # Unchanged symbol: prefer reuse when cached pseudo/tags exist
@@ -147,8 +150,8 @@ def should_process_pseudo_for_chunk(
                 cached_pseudo, cached_tags = get_cached_pseudo(file_path, symbol_id)
                 if cached_pseudo or cached_tags:
                     return False, cached_pseudo, cached_tags
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         # Unchanged but no cached data yet – process once
         return True, "", []
 

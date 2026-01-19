@@ -732,8 +732,8 @@ def _llm_expand_queries(
                         alts.append(s.strip())
                         if len(alts) >= max_new:
                             return alts
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Try ast.literal_eval for single-quoted lists
         try:
             parsed = ast.literal_eval(out)
@@ -743,8 +743,8 @@ def _llm_expand_queries(
                         alts.append(s.strip())
                         if len(alts) >= max_new:
                             return alts
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Try regex extraction from verbose output - only keep multi-word phrases
         for m in re.finditer(r'"([^"]+)"', out):
             candidate = m.group(1).strip()

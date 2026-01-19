@@ -1,6 +1,7 @@
 """
 LearnedProjection - Learnable linear projection from embedding dim to working dim.
 """
+import logging
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -8,6 +9,8 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 class LearnedProjection:
     """
     Learnable linear projection from embedding dim to working dim.
@@ -107,8 +110,8 @@ class LearnedProjection:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def maybe_reload_weights(self):
         # Fast path: skip if reload disabled (interval <= 0)
@@ -123,8 +126,8 @@ class LearnedProjection:
                 mtime = os.path.getmtime(self._weights_path)
                 if mtime > self._weights_mtime:
                     self._load_weights()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _load_weights(self):
         import fcntl

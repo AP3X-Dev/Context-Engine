@@ -28,6 +28,7 @@ __all__ = [
     "GRAPH_COLLECTION_SUFFIX",
     "EDGE_TYPE_CALLS",
     "EDGE_TYPE_IMPORTS",
+    "EDGE_TYPE_INHERITS_FROM",
     "GRAPH_INDEX_FIELDS",
     # Utility functions
     "normalize_path",
@@ -38,6 +39,7 @@ __all__ = [
     # Edge extraction
     "extract_call_edges",
     "extract_import_edges",
+    "extract_inheritance_edges",
     # Edge operations
     "upsert_edges",
     "delete_edges_by_path",
@@ -71,6 +73,7 @@ GRAPH_COLLECTION_SUFFIX = "_graph"
 # (EdgeType enum defined in scripts.graph_backends.base for type-safe usage)
 EDGE_TYPE_CALLS = "calls"
 EDGE_TYPE_IMPORTS = "imports"
+EDGE_TYPE_INHERITS_FROM = "inherits_from"
 
 # Payload index fields for fast lookups
 GRAPH_INDEX_FIELDS = (
@@ -160,8 +163,8 @@ def ensure_graph_collection(client: "QdrantClient", base_collection: str) -> Opt
         # Clear from missing cache if it was previously marked missing
         _clear_collection_missing(graph_coll)
         return graph_coll
-    except Exception:
-        pass  # Collection doesn't exist, create it
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")  # Collection doesn't exist, create it
 
     try:
         # Prefer a vector-less collection if supported; fallback to a tiny dummy vector schema.
@@ -271,8 +274,8 @@ def _resolve_callee_path(callee: str, repo: str, language: Optional[str] = None)
             resolved = resolver.resolve_symbol(callee, repo)
             if resolved:
                 return resolved
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Unresolved = external (no hardcoded stdlib lists)
     return f"<external>/{callee}"
@@ -298,8 +301,8 @@ def _resolve_import_path(imported: str, repo: str) -> str:
             resolved = resolver.resolve_import(imported, repo)
             if resolved:
                 return resolved
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Unresolved = external (no hardcoded stdlib lists)
     return f"<external>/{imported}"
@@ -422,11 +425,83 @@ def extract_import_edges(
     return edges
 
 
+def extract_inheritance_edges(
+    class_name: str,
+    base_classes: List[str],
+    path: str,
+    repo: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    language: Optional[str] = None,
+    caller_point_id: Optional[str] = None,
+    import_paths: Optional[Dict[str, str]] = None,
+    collection: Optional[str] = None,
+    qdrant_client: Optional["QdrantClient"] = None,
+) -> List[Dict[str, Any]]:
+    """Extract inheritance edge documents from class definition.
+
+    Args:
+        class_name: The class name
+        base_classes: List of base class names
+        path: File path of the class definition
+        repo: Repository name
+        start_line: Starting line of the class definition
+        end_line: Ending line of the class definition
+        language: Programming language
+        caller_point_id: ID of the source chunk in the main collection
+        import_paths: Mapping of local names to fully qualified paths
+        collection: Collection name (for cross-file resolution)
+        qdrant_client: Qdrant client (for cross-file resolution)
+
+    Returns:
+        List of edge documents ready for upsert
+    """
+    if not base_classes:
+        return []
+
+    norm_path = _normalize_path(path)
+    import_paths = import_paths or {}
+    edges = []
+
+    for base in base_classes:
+        if not base:
+            continue
+
+        # Resolve base class name through import_paths if available
+        resolved_base = import_paths.get(base, base)
+        # For inheritance, callee_path is typically unresolved unless we find the definition
+        callee_path = f"<unresolved>/{resolved_base}"
+
+        eid = _edge_id(class_name, resolved_base, norm_path, EDGE_TYPE_INHERITS_FROM, repo)
+        payload = {
+            "caller_symbol": class_name,
+            "callee_symbol": resolved_base,
+            "caller_path": norm_path,
+            "callee_path": callee_path,
+            "edge_type": EDGE_TYPE_INHERITS_FROM,
+            "repo": repo,
+        }
+        if start_line is not None:
+            payload["start_line"] = start_line
+        if end_line is not None:
+            payload["end_line"] = end_line
+        if language:
+            payload["language"] = language
+        if caller_point_id:
+            payload["caller_point_id"] = caller_point_id
+        edges.append({
+            "id": eid,
+            "payload": payload,
+        })
+    return edges
+
+
 def upsert_edges(
     client: "QdrantClient",
     graph_collection: str,
     edges: List[Dict[str, Any]],
     batch_size: int = 100,
+    max_retries: int = 3,
 ) -> int:
     """Upsert edge documents to the graph collection.
 
@@ -435,10 +510,12 @@ def upsert_edges(
         graph_collection: Graph collection name
         edges: List of edge documents with 'id' and 'payload' keys
         batch_size: Batch size for upserts
+        max_retries: Maximum retries per batch on transient failures
 
     Returns:
         Number of edges upserted
     """
+    import time
     from qdrant_client import models as qmodels
 
     if not edges:
@@ -455,11 +532,29 @@ def upsert_edges(
             )
             for edge in batch
         ]
-        try:
-            client.upsert(collection_name=graph_collection, points=points, wait=True)
-            total += len(points)
-        except Exception as e:
-            logger.error(f"Failed to upsert edges batch: {e}")
+
+        # Retry loop with exponential backoff for transient failures
+        for attempt in range(max_retries):
+            try:
+                client.upsert(collection_name=graph_collection, points=points, wait=True)
+                total += len(points)
+                break  # Success - exit retry loop
+            except Exception as e:
+                is_last_attempt = attempt == max_retries - 1
+                error_str = str(e).lower()
+
+                # Check if error is retryable (timeout, connection, etc.)
+                is_retryable = any(err in error_str for err in [
+                    "timeout", "connection", "unavailable", "reset", "broken pipe"
+                ])
+
+                if is_retryable and not is_last_attempt:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Retrying edge upsert (attempt {attempt + 1}/{max_retries}) after {wait_time}s: {e}")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to upsert edges batch after {attempt + 1} attempts: {e}")
+                    break  # Non-retryable error or max retries reached
 
     return total
 

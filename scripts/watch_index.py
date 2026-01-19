@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import time
@@ -10,6 +11,8 @@ from typing import Optional
 from qdrant_client import QdrantClient
 from watchdog.observers import Observer
 
+
+logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -79,8 +82,8 @@ def main() -> None:
             resolved = _get_coll(str(ROOT))
             if resolved:
                 default_collection = resolved
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     if multi_repo_enabled:
         print("[multi_repo] Multi-repo mode enabled - per-repo collections in use")
     else:
@@ -163,8 +166,8 @@ def main() -> None:
             idx.ensure_collection_and_indexes_once(
                 client, default_collection, model_dim, vector_name
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         _start_pseudo_backfill_worker(client, default_collection, model_dim, vector_name)
 

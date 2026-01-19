@@ -13,6 +13,7 @@ Environment Variables:
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
@@ -20,6 +21,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 # Default model configuration
+
+logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 QWEN3_MODEL = "electroglyph/Qwen3-Embedding-0.6B-onnx-uint8"
 QWEN3_DIM = 1024
@@ -185,8 +188,8 @@ def get_embedding_model(model_name: Optional[str] = None) -> Any:
                 # Warmup with common code patterns (best-effort)
                 try:
                     _ = list(model.embed(["function", "class", "import", "def", "const"]))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 _EMBED_MODEL_CACHE[model_name] = model
                 return model

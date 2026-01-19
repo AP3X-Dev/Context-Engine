@@ -9,6 +9,7 @@ to validate optimization strategies for agentic workflows.
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Add project root to path
+
+logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Shared stats helpers (after sys.path setup)
@@ -34,8 +37,8 @@ else:
     # If COLLECTION_NAME is set but empty/unindexed, pick a non-empty collection for benchmarks.
     try:
         os.environ["COLLECTION_NAME"] = resolve_collection_auto(os.environ.get("COLLECTION_NAME"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 print(
     f"[bench] Using QDRANT_URL={os.environ.get('QDRANT_URL', '')} "

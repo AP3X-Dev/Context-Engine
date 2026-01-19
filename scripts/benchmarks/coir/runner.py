@@ -52,6 +52,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Force-disable OpenLit/OTel for benchmarks so they never try to talk to openlit-dashboard
+
+logger = logging.getLogger(__name__)
 os.environ["OPENLIT_ENABLED"] = "0"
 os.environ["OTEL_SDK_DISABLED"] = "true"
 
@@ -113,8 +115,8 @@ def _get_onnx_providers() -> List[str]:
             return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
         if "CUDAExecutionProvider" in available:
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ["CPUExecutionProvider"]
 
 
@@ -161,10 +163,10 @@ def _ensure_env_defaults(use_gpu: bool = False) -> None:
         try:
             import numpy as np  # type: ignore
             np.random.seed(seed)
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 def _load_coir_tasks(task_names: List[str]) -> Any:

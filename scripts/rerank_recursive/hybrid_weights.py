@@ -1,11 +1,14 @@
 """
 LearnedHybridWeights - Learns optimal dense vs. lexical balance per-collection.
 """
+import logging
 import os
 
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 class LearnedHybridWeights:
     """Learns optimal dense vs. lexical balance per-collection."""
 
@@ -24,8 +27,8 @@ class LearnedHybridWeights:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     @staticmethod
     def _sanitize_collection(collection: str) -> str:
@@ -41,8 +44,8 @@ class LearnedHybridWeights:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def _load_weights(self):
         import fcntl

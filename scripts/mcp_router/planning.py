@@ -3,6 +3,7 @@ mcp_router/planning.py - Tool planning and selection.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Tuple
 
@@ -23,6 +24,8 @@ from .intent import (
     INTENT_STATUS,
     INTENT_LIST,
 )
+
+logger = logging.getLogger(__name__)
 from .memory import parse_memory_store_payload
 from .hints import parse_repo_hints, clean_query_and_dsl, select_best_search_tool_by_signature
 from .scratchpad import load_scratchpad, looks_like_repeat, looks_like_same_filters
@@ -45,8 +48,8 @@ def build_plan(q: str) -> List[Tuple[str, Dict[str, Any]]]:
                     for k in ("language", "under", "symbol", "ext", "path_glob", "not_glob"):
                         if k not in args and lf.get(k) not in (None, ""):
                             args[k] = lf.get(k)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Repeat/redo handling
     try:
@@ -60,8 +63,8 @@ def build_plan(q: str) -> List[Tuple[str, Dict[str, Any]]]:
                         norm.append((it[0], it[1]))
                 if norm:
                     return norm
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Multi-intent: memory store + reindex
     lowq = q.lower()
@@ -233,8 +236,8 @@ def build_plan(q: str) -> List[Tuple[str, Dict[str, Any]]]:
                 mt = int(max_tokens_env)
                 if mt > 0:
                     args["max_tokens"] = mt
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         hints = parse_repo_hints(q)
         lowq = q.lower()

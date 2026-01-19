@@ -5,6 +5,7 @@ Handles loading and managing .ctxrc configuration files.
 Provides centralized access to ports, URLs, and collection resolution.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -12,6 +13,8 @@ import configparser
 
 
 # Default service ports - centralized for consistency
+
+logger = logging.getLogger(__name__)
 DEFAULT_PORTS = {
     "qdrant": 6333,
     "indexer": 8003,
@@ -58,8 +61,8 @@ def _load_env_file_simple(path: Path) -> Dict[str, str]:
                     key = key.strip()
                     value = value.strip().strip('"').strip("'")
                     env[key] = value
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return env
 
 
@@ -70,6 +73,7 @@ def is_neo4j_enabled() -> bool:
     Checks:
         1. NEO4J_GRAPH environment variable
         2. .env file in project root
+        3. scripts/.env file (common location)
 
     Returns:
         True if NEO4J_GRAPH=1 is set
@@ -79,14 +83,19 @@ def is_neo4j_enabled() -> bool:
     if env_val is not None:
         return _coerce_bool(env_val, default=False)
 
-    # Check .env file in project root
+    # Check .env files (project root and scripts/.env)
     project_root = Path(__file__).resolve().parent.parent.parent.parent
-    env_path = project_root / ".env"
-    if env_path.exists():
-        env_vars = _load_env_file_simple(env_path)
-        env_val = env_vars.get("NEO4J_GRAPH")
-        if env_val is not None:
-            return _coerce_bool(env_val, default=False)
+    env_paths = [
+        project_root / ".env",
+        project_root / "scripts" / ".env",
+    ]
+
+    for env_path in env_paths:
+        if env_path.exists():
+            env_vars = _load_env_file_simple(env_path)
+            env_val = env_vars.get("NEO4J_GRAPH")
+            if env_val is not None:
+                return _coerce_bool(env_val, default=False)
 
     return False
 

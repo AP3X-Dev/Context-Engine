@@ -25,6 +25,7 @@ import os
 import re
 import math
 import logging
+import threading
 from typing import List, Dict, Any, Tuple
 
 logger = logging.getLogger("hybrid_ranking")
@@ -121,20 +122,30 @@ _ADAPTIVE_MAX_EXPANDED = 3           # Max spans to expand
 # ---------------------------------------------------------------------------
 
 _COLL_STATS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_COLL_STATS_LOCK = threading.Lock()
 _COLL_STATS_TTL = 300  # 5 minutes
 
 
 def _get_collection_stats(client: Any, coll_name: str) -> Dict[str, Any]:
-    """Get cached collection statistics for scaling decisions."""
+    """Get cached collection statistics for scaling decisions.
+    
+    Thread-safe with lock protection for concurrent access.
+    """
     import time
     now = time.time()
-    cached = _COLL_STATS_CACHE.get(coll_name)
-    if cached and (now - cached[0]) < _COLL_STATS_TTL:
-        return cached[1]
+    
+    # Fast path: check cache with lock
+    with _COLL_STATS_LOCK:
+        cached = _COLL_STATS_CACHE.get(coll_name)
+        if cached and (now - cached[0]) < _COLL_STATS_TTL:
+            return cached[1]
+    
+    # Slow path: fetch from Qdrant (outside lock to avoid blocking)
     try:
         info = client.get_collection(coll_name)
         stats = {"points_count": info.points_count or 0}
-        _COLL_STATS_CACHE[coll_name] = (now, stats)
+        with _COLL_STATS_LOCK:
+            _COLL_STATS_CACHE[coll_name] = (now, stats)
         return stats
     except Exception:
         return {"points_count": 0}
@@ -142,8 +153,8 @@ def _get_collection_stats(client: Any, coll_name: str) -> Dict[str, Any]:
 
 def clear_collection_stats_cache() -> None:
     """Clear the collection statistics cache."""
-    global _COLL_STATS_CACHE
-    _COLL_STATS_CACHE.clear()
+    with _COLL_STATS_LOCK:
+        _COLL_STATS_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -305,11 +316,15 @@ def _normalize_scores(score_map: Dict[str, Dict[str, Any]], collection_size: int
         if cv > 0.3:
             logger.debug(f"High score variance detected (CV={cv:.2f})")
 
-    if std_s < 1e-6:
+    # Use larger epsilon for numerical safety - very small std means scores are nearly identical
+    # and normalization would just amplify noise
+    if std_s < 1e-4:
         return
 
     for rec in score_map.values():
-        z = (rec["s"] - mean_s) / std_s
+        # Safe division with clamped std_s (defensive, should never trigger due to check above)
+        safe_std = max(std_s, 1e-4)
+        z = (rec["s"] - mean_s) / safe_std
         normalized = 1.0 / (1.0 + math.exp(-z * 0.5))
         rec["s"] = normalized
 
@@ -679,7 +694,8 @@ def fuse_multi_granular_scores(
                     "rec": 0.0,
                     "test": 0.0,
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     # Process relation results - accumulate scores for multi-query scenarios
@@ -708,7 +724,8 @@ def fuse_multi_granular_scores(
                     "rec": 0.0,
                     "test": 0.0,
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
 
@@ -853,6 +870,7 @@ def _mmr_diversify(ranked: List[Dict[str, Any]], k: int = 60, lambda_: float = 0
 _SYMBOL_EXTENT_CACHE: Dict[Tuple[str, str, str], Tuple[int, int]] = {}
 _SYMBOL_EXTENT_CACHE_MAX = 500
 _SYMBOL_EXTENT_CLIENT: Any = None
+_SYMBOL_EXTENT_LOCK = threading.Lock()
 
 
 def _get_symbol_extent(
@@ -870,8 +888,11 @@ def _get_symbol_extent(
         return (0, 0)
 
     cache_key = (collection, path, symbol)
-    if cache_key in _SYMBOL_EXTENT_CACHE:
-        return _SYMBOL_EXTENT_CACHE[cache_key]
+    
+    # Fast path: check cache with lock
+    with _SYMBOL_EXTENT_LOCK:
+        if cache_key in _SYMBOL_EXTENT_CACHE:
+            return _SYMBOL_EXTENT_CACHE[cache_key]
 
     # Lazy import to avoid circular dependencies
     try:
@@ -888,17 +909,19 @@ def _get_symbol_extent(
         global _SYMBOL_EXTENT_CLIENT
         if qdrant_client is None:
             # Reuse a single client instance to avoid repeated connection setup.
-            if _SYMBOL_EXTENT_CLIENT is None:
-                qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
-                try:
-                    timeout_s = float(os.environ.get("ADAPTIVE_SPAN_QDRANT_TIMEOUT", "1.0") or 1.0)
-                except Exception:
-                    timeout_s = 1.0
-                _SYMBOL_EXTENT_CLIENT = QdrantClient(
-                    url=qdrant_url,
-                    api_key=os.environ.get("QDRANT_API_KEY"),
-                    timeout=timeout_s,
-                )
+            # Thread-safe initialization with double-checked locking.
+            with _SYMBOL_EXTENT_LOCK:
+                if _SYMBOL_EXTENT_CLIENT is None:
+                    qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+                    try:
+                        timeout_s = float(os.environ.get("ADAPTIVE_SPAN_QDRANT_TIMEOUT", "1.0") or 1.0)
+                    except Exception:
+                        timeout_s = 1.0
+                    _SYMBOL_EXTENT_CLIENT = QdrantClient(
+                        url=qdrant_url,
+                        api_key=os.environ.get("QDRANT_API_KEY"),
+                        timeout=timeout_s,
+                    )
             qdrant_client = _SYMBOL_EXTENT_CLIENT
 
         # Query for all chunks with same path and symbol identifier.
@@ -945,7 +968,8 @@ def _get_symbol_extent(
             points.extend(batch)
 
         if not points:
-            _SYMBOL_EXTENT_CACHE[cache_key] = (0, 0)
+            with _SYMBOL_EXTENT_LOCK:
+                _SYMBOL_EXTENT_CACHE[cache_key] = (0, 0)
             return (0, 0)
 
         # Find min start_line and max end_line across all chunks
@@ -960,19 +984,21 @@ def _get_symbol_extent(
                 max_end = max(max_end, end)
 
         if min_start == float("inf") or max_end == 0:
-            _SYMBOL_EXTENT_CACHE[cache_key] = (0, 0)
+            with _SYMBOL_EXTENT_LOCK:
+                _SYMBOL_EXTENT_CACHE[cache_key] = (0, 0)
             return (0, 0)
 
         result = (int(min_start), int(max_end))
 
-        # Cache management: evict oldest entries if cache is full
-        if len(_SYMBOL_EXTENT_CACHE) >= _SYMBOL_EXTENT_CACHE_MAX:
-            # Simple FIFO eviction - remove first 100 entries
-            keys_to_remove = list(_SYMBOL_EXTENT_CACHE.keys())[:100]
-            for k in keys_to_remove:
-                _SYMBOL_EXTENT_CACHE.pop(k, None)
-
-        _SYMBOL_EXTENT_CACHE[cache_key] = result
+        # Cache management: evict oldest entries if cache is full (thread-safe)
+        with _SYMBOL_EXTENT_LOCK:
+            if len(_SYMBOL_EXTENT_CACHE) >= _SYMBOL_EXTENT_CACHE_MAX:
+                # Simple FIFO eviction - remove first 100 entries
+                keys_to_remove = list(_SYMBOL_EXTENT_CACHE.keys())[:100]
+                for k in keys_to_remove:
+                    _SYMBOL_EXTENT_CACHE.pop(k, None)
+            _SYMBOL_EXTENT_CACHE[cache_key] = result
+        
         return result
 
     except Exception as e:
@@ -983,8 +1009,9 @@ def _get_symbol_extent(
 
 def clear_symbol_extent_cache() -> None:
     """Clear the symbol extent cache and reset the client."""
-    global _SYMBOL_EXTENT_CACHE, _SYMBOL_EXTENT_CLIENT
-    _SYMBOL_EXTENT_CACHE.clear()
+    global _SYMBOL_EXTENT_CLIENT
+    with _SYMBOL_EXTENT_LOCK:
+        _SYMBOL_EXTENT_CACHE.clear()
     _SYMBOL_EXTENT_CLIENT = None
 
 

@@ -14,7 +14,10 @@ Note: This module should be invoked via the installed `ctx` command
 """
 
 # Suppress the runpy RuntimeWarning when invoked via `python -m`
+import logging
 import warnings
+
+logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
 
 import os
@@ -45,8 +48,8 @@ def _load_dotenv():
                     # Only set if not already in environment (env vars take precedence)
                     if key and key not in os.environ:
                         os.environ[key] = value
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             break
         if cwd.parent == cwd:
             break

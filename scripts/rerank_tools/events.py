@@ -12,10 +12,13 @@ Features:
 """
 
 import json
+import logging
 import os
 import random
 import time
 import threading
+
+logger = logging.getLogger(__name__)
 try:
     import fcntl  # type: ignore
 except Exception:  # pragma: no cover
@@ -200,7 +203,8 @@ def read_events(
                                 return events
                     except json.JSONDecodeError:
                         continue
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return events
@@ -228,7 +232,8 @@ def cleanup_old_events(collection: str, max_age_days: int) -> int:
             if events_file.stat().st_mtime < cutoff:
                 events_file.unlink()
                 deleted += 1
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return deleted

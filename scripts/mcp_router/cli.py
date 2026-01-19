@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 import time
@@ -23,6 +24,8 @@ from .scratchpad import (
     looks_like_repeat,
     looks_like_expand,
 )
+
+logger = logging.getLogger(__name__)
 from .validation import (
     is_result_good,
     extract_metric_from_resp,
@@ -65,8 +68,8 @@ def main(argv: List[str] | None = None) -> int:
             prior_answer = sp.get("last_answer")
             prior_citations = sp.get("last_citations")
             prior_paths = sp.get("last_paths")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Execute sequentially until one succeeds
     last_err = None
@@ -82,8 +85,8 @@ def main(argv: List[str] | None = None) -> int:
         if (tool.lower().endswith("find") or tool.lower() in {"find", "memory.find"}) and mem_snippets and fresh and (looks_like_repeat(args.query) or looks_like_expand(args.query)):
             try:
                 print(json.dumps({"tool": tool, "skipped": "scratchpad_fresh"}))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             continue
 
         # Augment answer queries with context
@@ -118,8 +121,8 @@ def main(argv: List[str] | None = None) -> int:
                         sections.append("Citations context:\n" + "\n".join(f"- {p}" for p in paths_list))
                 aug = "\n\n".join(sections)
                 targs = {**(targs or {}), "query": aug}
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         try:
             if tool in {"context_answer", "context_answer_compat"}:
@@ -158,7 +161,8 @@ def main(argv: List[str] | None = None) -> int:
                                     if isinstance(ttxt, str) and ttxt.strip():
                                         try:
                                             j = json.loads(ttxt)
-                                        except Exception:
+                                        except Exception as e:
+                                            logger.debug(f"Suppressed exception, continuing: {e}")
                                             continue
                                         container = j.get("result") if isinstance(j, dict) and "result" in j else j
                                         if isinstance(container, dict):
@@ -170,8 +174,8 @@ def main(argv: List[str] | None = None) -> int:
                             txt = it.get("information") or it.get("content") or it.get("text")
                             if isinstance(txt, str) and txt.strip():
                                 mem_snippets.append(txt.strip())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
             # Determine if we should treat this step as terminal
             has_future_answer = any(tn in {"context_answer", "context_answer_compat"} for (tn, _) in plan[idx + 1:])
@@ -210,8 +214,8 @@ def main(argv: List[str] | None = None) -> int:
                                         if isinstance(c, dict) and c.get("path") and c["path"] not in uniqp:
                                             uniqp.append(c["path"])
                                     last_paths_list = uniqp
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
 
                     # Divergence detection
                     divergence_should_abort = False
@@ -247,14 +251,14 @@ def main(argv: List[str] | None = None) -> int:
                                         "fatal": fatal,
                                     }
                                 }))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                             if fatal:
                                 divergence_should_abort = True
                         try:
                             last_metrics_map.setdefault(tool, {})[mname] = float(mval)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     else:
                         last_metrics_map = last_metrics_prev
 
@@ -281,8 +285,8 @@ def main(argv: List[str] | None = None) -> int:
                         "timestamp": time.time(),
                     }
                     save_scratchpad(sp)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 if divergence_should_abort:
                     continue
@@ -292,8 +296,8 @@ def main(argv: List[str] | None = None) -> int:
             last_err = e
             try:
                 print(json.dumps({"tool": tool, "server": base_url, "error": str(e)}), file=sys.stderr)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             continue
 
     if last_err:

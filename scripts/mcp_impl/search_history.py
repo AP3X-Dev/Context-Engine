@@ -122,7 +122,9 @@ async def _search_commits_for_impl(
             try:
                 try:
                     from scripts.utils import sanitize_vector_name as _sanitize_vector_name
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception while importing sanitize_vector_name: {e}")
+                    logger.debug(f"Suppressed exception: {e}")
                     _sanitize_vector_name = None
 
                 model_name = os.environ.get("MODEL_NAME", "BAAI/bge-base-en-v1.5")
@@ -130,7 +132,9 @@ async def _search_commits_for_impl(
                 if _sanitize_vector_name is not None:
                     try:
                         vec_name = _sanitize_vector_name(model_name)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception while sanitizing vector name: {e}")
+                        logger.debug(f"Suppressed exception: {e}")
                         vec_name = None
                 else:
                     vec_name = None
@@ -165,13 +169,17 @@ async def _search_commits_for_impl(
                                 continue
                             try:
                                 vs = float(getattr(sp, "score", 0.0) or 0.0)
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception while parsing vector score: {e}")
+                                logger.debug(f"Suppressed exception: {e}")
                                 vs = 0.0
                             if vs <= 0.0:
                                 continue
                             if scid_v not in vector_scores or vs > vector_scores[scid_v]:
                                 vector_scores[scid_v] = vs
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception while scoring commit vectors: {e}")
+                logger.debug(f"Suppressed exception: {e}")
                 vector_scores = {}
 
         page = None
@@ -202,7 +210,9 @@ async def _search_commits_for_impl(
                 files = md.get("files") or []
                 try:
                     files_list = [str(f) for f in files]
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception while parsing files list: {e}")
+                    logger.debug(f"Suppressed exception: {e}")
                     files_list = []
                 # Optional lineage-style metadata
                 lg = md.get("lineage_goal")
@@ -271,8 +281,10 @@ async def _search_commits_for_impl(
                                 os.environ.get("COMMIT_VECTOR_WEIGHT", "2.0") or 2.0
                             )
                             score += weight * vec_score
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception while blending vector score: {e}")
+                    logger.debug(f"Suppressed exception: {e}")
+
                 seen_ids.add(scid)
                 out.append(
                     {
@@ -297,8 +309,8 @@ async def _search_commits_for_impl(
                     key=lambda c: float(c.get("_score", 0.0)),
                     reverse=True,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             results = results[:lim]
             for c in results:
                 c.pop("_score", None)
@@ -345,7 +357,8 @@ async def _change_history_for_path_impl(
     if include_commits not in (None, ""):
         try:
             inc_commits = str(include_commits).strip().lower() in {"1", "true", "yes", "on"}
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (include_commits parse): {e}")
             inc_commits = False
 
     try:
@@ -434,8 +447,8 @@ async def _change_history_for_path_impl(
                         seen.add(scid)
                         uniq.append(c)
                     summary["commits"] = uniq
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         return {"ok": True, "summary": summary}
     except Exception as e:
         return {"ok": False, "error": str(e), "path": p}

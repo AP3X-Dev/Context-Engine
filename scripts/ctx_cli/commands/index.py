@@ -8,6 +8,7 @@ Supports:
 - Recreate: Drop and recreate collection
 """
 
+import logging
 import os
 import sys
 import time
@@ -17,6 +18,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+
+logger = logging.getLogger(__name__)
 try:
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -77,16 +80,16 @@ def clear_caches(target_path: Path) -> int:
             try:
                 cache_file.unlink()
                 cleared += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
             if symbols_dir.is_dir():
                 try:
                     import shutil
                     shutil.rmtree(symbols_dir)
                     cleared += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Clear container caches via docker exec
     _print("[dim]Clearing container caches...[/dim]")

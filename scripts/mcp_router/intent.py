@@ -4,6 +4,7 @@ mcp_router/intent.py - Intent classification (rules + ML).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 # Intent constants
+
+logger = logging.getLogger(__name__)
 INTENT_ANSWER = "answer"
 INTENT_SEARCH = "search"
 INTENT_SEARCH_TESTS = "search_tests"
@@ -204,8 +207,8 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
         em = TextEmbedding(model_name=model_name)
         raw = list(em.embed(texts))
         return [v.tolist() if hasattr(v, "tolist") else list(v) for v in raw]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Fallback to lexical
     try:
@@ -394,7 +397,7 @@ def classify_intent(q: str) -> str:
         try:
             if os.environ.get("DEBUG_ROUTER") and _LAST_INTENT_DEBUG.get("fallback"):
                 print(json.dumps({"router": {"intent_fallback": _LAST_INTENT_DEBUG}}), file=sys.stderr)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return picked

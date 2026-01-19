@@ -22,7 +22,10 @@ __all__ = [
     "MAX_EMBED_CACHE", "MAX_RESULTS_CACHE",
     "INCLUDE_WHY",
 ]
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
@@ -218,8 +221,8 @@ def _collection(collection_name: str | None = None) -> str:
                 coll = state.get("qdrant_collection")
                 if isinstance(coll, str) and coll.strip():
                     return coll.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return "codebase"
 

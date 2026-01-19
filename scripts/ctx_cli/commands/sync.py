@@ -14,6 +14,7 @@ If your files ARE already mounted (docker-compose with HOST_INDEX_PATH),
 use `ctx index` instead - no upload needed.
 """
 
+import logging
 import os
 import sys
 import time
@@ -22,6 +23,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+
+logger = logging.getLogger(__name__)
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -143,8 +146,8 @@ def daemon_status() -> int:
                     _print("[dim]Recent log:[/dim]")
                     for line in lines:
                         _print(f"  [dim]{line}[/dim]")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         return 0
     else:
         _print("[yellow]Sync daemon is not running[/yellow]")

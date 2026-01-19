@@ -9,11 +9,14 @@ Uses unified reporting format from common.py.
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+
+logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Import unified metadata utilities
@@ -25,14 +28,14 @@ if not os.environ.get("COLLECTION_NAME"):
     try:
         from scripts.workspace_state import get_collection_name
         os.environ["COLLECTION_NAME"] = get_collection_name() or "codebase"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 else:
     # If a collection is set but empty (common in multi-collection setups), pick a non-empty one.
     try:
         os.environ["COLLECTION_NAME"] = resolve_collection_auto(os.environ.get("COLLECTION_NAME"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 print(
     f"[bench] Using QDRANT_URL={os.environ.get('QDRANT_URL', '')} "
