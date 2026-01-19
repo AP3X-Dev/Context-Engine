@@ -182,7 +182,8 @@ else:
 # Lightweight local fallback cache for deterministic test hits
 try:
     from collections import OrderedDict as _OD
-except Exception:
+except Exception as e:
+    logger.debug(f"Failed to import OrderedDict, using dict fallback: {e}")
     _OD = dict  # pragma: no cover
 _RESULTS_CACHE_OD = _OD()
 _RESULTS_LOCK = threading.RLock()
