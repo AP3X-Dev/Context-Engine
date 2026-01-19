@@ -2,6 +2,7 @@ import os
 import pytest
 
 import scripts.mcp_indexer_server as srv
+from conftest import get_results
 
 
 @pytest.mark.service
@@ -20,4 +21,4 @@ def test_repo_search_conflicting_filters_empty_ok(monkeypatch):
     )
 
     assert res.get("ok") is True
-    assert res.get("results") == []
+    assert get_results(res) == []

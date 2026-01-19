@@ -2,6 +2,8 @@ import json
 import types
 import importlib
 
+from conftest import get_results
+
 srv = importlib.import_module("scripts.mcp_indexer_server")
 
 
@@ -76,10 +78,11 @@ def test_repo_search_arg_normalization(monkeypatch, tmp_path):
 
     assert res.get("ok") is True
     assert res.get("used_rerank") in (False, None)
-    assert len(res.get("results", [])) == 1
+    results = get_results(res)
+    assert len(results) == 1
     args = res.get("args", {})
     assert isinstance(args.get("limit"), int) and args.get("limit") == 12
     assert isinstance(args.get("compact"), bool) and args.get("compact") is True
     # snippet highlighting applied
-    if res["results"][0].get("snippet"):
-        assert "<<" in res["results"][0]["snippet"]
+    if results[0].get("snippet"):
+        assert "<<" in results[0]["snippet"]

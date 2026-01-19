@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import get_results
+
 # Import targets
 hyb = importlib.import_module("scripts.hybrid_search")
 srv = importlib.import_module("scripts.mcp_indexer_server")
@@ -212,7 +214,8 @@ def test_repo_search_snippet_strict_cap_after_highlight(monkeypatch):
             query="foo", include_snippet=True, highlight_snippet=True, context_lines=0
         )
     )
-    snip = res["results"][0].get("snippet", "")
+    results = get_results(res)
+    snip = results[0].get("snippet", "") if results else ""
     # Strict cap: final length must be <= cap (64)
     assert len(snip) <= 64
 

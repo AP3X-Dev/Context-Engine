@@ -3,6 +3,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any, Dict, List, Union
 
 import pytest
 
@@ -18,6 +19,48 @@ os.environ.setdefault("PATTERN_VECTORS", "1")
 # Some tests set EMBEDDING_MODEL=fake which leaks into subsequent tests
 # Force a real model at conftest load time (before any test runs)
 os.environ.setdefault("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+
+
+# -----------------------------------------------------------------------------
+# TOON/JSON result normalization helper
+# -----------------------------------------------------------------------------
+
+def get_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract results from response, decoding TOON if needed.
+
+    Works regardless of whether TOON_ENABLED is set or not.
+
+    Args:
+        response: API response dict with 'results' key
+
+    Returns:
+        List of result dicts
+    """
+    results = response.get("results", [])
+
+    # If results is already a list, return as-is
+    if isinstance(results, list):
+        return results
+
+    # If results is a string, it's TOON-encoded - decode it
+    if isinstance(results, str):
+        try:
+            from toon import decode as toon_decode
+            decoded = toon_decode(results)
+            # TOON decode returns dict with the key, extract the list
+            if isinstance(decoded, dict):
+                # Find the results list in the decoded dict
+                for key, val in decoded.items():
+                    if isinstance(val, list):
+                        return val
+                return []
+            elif isinstance(decoded, list):
+                return decoded
+            return []
+        except Exception:
+            return []
+
+    return []
 
 
 @pytest.fixture(scope="session", autouse=True)
