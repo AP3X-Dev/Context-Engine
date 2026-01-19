@@ -594,6 +594,8 @@ async def _context_search_impl(
             pass
 
     # First: run code search via internal repo_search for consistent behavior
+    # Force output_format="json" to ensure we get raw results for internal processing
+    # (TOON format returns results as a string which breaks result parsing)
     code_res = await repo_search_fn(
         query=queries if len(queries) > 1 else (queries[0] if queries else ""),
         limit=code_limit,
@@ -619,6 +621,7 @@ async def _context_search_impl(
         compact=False,
         repo=repo,  # Cross-codebase isolation
         session=session,
+        output_format="json",  # Always use JSON for internal processing
     )
 
     # Optional debug

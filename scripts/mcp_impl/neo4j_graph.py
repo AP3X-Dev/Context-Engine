@@ -183,30 +183,37 @@ async def _query_callers_async(
     """Async simple caller query (depth 1).
 
     Supports class-level queries: for "MyClass", also matches callers of "MyClass.method".
+    Also supports suffix matching for symbols stored with full module paths
+    (e.g., "RecursiveReranker" matches "scripts.rerank_recursive.RecursiveReranker").
     """
     symbol_prefix = f"{symbol}."
+    symbol_suffix = f".{symbol}"  # For matching full module paths like "module.ClassName"
     if repo and repo != "*":
         query = """
             MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
-            WHERE (callee.name = $symbol OR callee.name STARTS WITH $symbol_prefix)
+            WHERE (callee.name = $symbol
+                   OR callee.name STARTS WITH $symbol_prefix
+                   OR callee.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection AND (r.repo = $repo OR callee.repo = $repo)
             RETURN caller.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, callee.repo as repo
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
     else:
         query = """
             MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
-            WHERE (callee.name = $symbol OR callee.name STARTS WITH $symbol_prefix)
+            WHERE (callee.name = $symbol
+                   OR callee.name STARTS WITH $symbol_prefix
+                   OR callee.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection
             RETURN caller.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, callee.repo as repo
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
 
     return await backend.run_query_async(query, params)
 
@@ -221,30 +228,36 @@ async def _query_callees_async(
     """Async simple callee query (depth 1).
 
     Supports class-level queries: for "MyClass", also matches callees of "MyClass.method".
+    Also supports suffix matching for symbols stored with full module paths.
     """
     symbol_prefix = f"{symbol}."
+    symbol_suffix = f".{symbol}"  # For matching full module paths
     if repo and repo != "*":
         query = """
             MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
-            WHERE (caller.name = $symbol OR caller.name STARTS WITH $symbol_prefix)
+            WHERE (caller.name = $symbol
+                   OR caller.name STARTS WITH $symbol_prefix
+                   OR caller.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection AND (r.repo = $repo OR caller.repo = $repo)
             RETURN callee.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, caller.repo as repo
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
     else:
         query = """
             MATCH (caller:Symbol {collection: $collection})-[r:CALLS]->(callee:Symbol {collection: $collection})
-            WHERE (caller.name = $symbol OR caller.name STARTS WITH $symbol_prefix)
+            WHERE (caller.name = $symbol
+                   OR caller.name STARTS WITH $symbol_prefix
+                   OR caller.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection
             RETURN callee.name as symbol, r.caller_path as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, caller.repo as repo
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
 
     return await backend.run_query_async(query, params)
 
@@ -261,15 +274,17 @@ async def _query_transitive_callers_async(
     """Async multi-hop caller traversal.
 
     Supports class-level queries: for "MyClass", also matches callers of "MyClass.method".
+    Also supports suffix matching for symbols stored with full module paths.
     """
     safe_depth = max(1, min(10, int(depth)))
     symbol_prefix = f"{symbol}."
+    symbol_suffix = f".{symbol}"  # For matching full module paths
 
     if include_paths:
         if repo and repo != "*":
             query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{collection: $collection}})
-                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix)
+                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix OR target.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH caller, path, length(path) as hop
                 RETURN caller.name as symbol, hop,
@@ -278,11 +293,11 @@ async def _query_transitive_callers_async(
                 ORDER BY hop
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
         else:
             query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{collection: $collection}})
-                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix)
+                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix OR target.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH caller, path, length(path) as hop
                 RETURN caller.name as symbol, hop,
@@ -291,28 +306,28 @@ async def _query_transitive_callers_async(
                 ORDER BY hop
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
     else:
         if repo and repo != "*":
             query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{collection: $collection}})
-                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix)
+                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix OR target.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT caller
                 RETURN caller.name as symbol, caller.repo as repo
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
         else:
             query = f"""
                 MATCH path = (caller:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(target:Symbol {{collection: $collection}})
-                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix)
+                WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix OR target.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT caller
                 RETURN caller.name as symbol, caller.repo as repo
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
 
     return await backend.run_query_async(query, params)
 
@@ -329,15 +344,17 @@ async def _query_transitive_callees_async(
     """Async multi-hop callee traversal.
 
     Supports class-level queries: for "MyClass", also matches callees of "MyClass.method".
+    Also supports suffix matching for symbols stored with full module paths.
     """
     safe_depth = max(1, min(10, int(depth)))
     symbol_prefix = f"{symbol}."
+    symbol_suffix = f".{symbol}"  # For matching full module paths
 
     if include_paths:
         if repo and repo != "*":
             query = f"""
                 MATCH path = (source:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
-                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix)
+                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH callee, path, length(path) as hop
                 RETURN callee.name as symbol, hop,
@@ -346,11 +363,11 @@ async def _query_transitive_callees_async(
                 ORDER BY hop
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
         else:
             query = f"""
                 MATCH path = (source:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
-                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix)
+                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH callee, path, length(path) as hop
                 RETURN callee.name as symbol, hop,
@@ -359,28 +376,28 @@ async def _query_transitive_callees_async(
                 ORDER BY hop
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
     else:
         if repo and repo != "*":
             query = f"""
                 MATCH path = (source:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
-                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix)
+                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT callee
                 RETURN callee.name as symbol, callee.repo as repo
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
         else:
             query = f"""
                 MATCH path = (source:Symbol {{collection: $collection}})-[:CALLS*1..{safe_depth}]->(callee:Symbol {{collection: $collection}})
-                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix)
+                WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT callee
                 RETURN callee.name as symbol, callee.repo as repo
                 LIMIT $limit
             """
-            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+            params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
 
     return await backend.run_query_async(query, params)
 
@@ -397,31 +414,33 @@ async def _query_dependencies_async(
     """Async query both calls and imports for full dependency analysis.
 
     Supports class-level queries: for "MyClass", also matches dependencies of "MyClass.method".
+    Also supports suffix matching for symbols stored with full module paths.
     """
     safe_depth = max(1, min(10, int(depth)))
     symbol_prefix = f"{symbol}."
+    symbol_suffix = f".{symbol}"  # For matching full module paths
     _ = include_paths  # Reserved for future use
 
     if repo and repo != "*":
         query = f"""
             MATCH path = (source:Symbol {{collection: $collection}})-[:CALLS|IMPORTS*1..{safe_depth}]->(dep:Symbol {{collection: $collection}})
-            WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix)
+            WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                   AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
             WITH DISTINCT dep
             RETURN dep.name as symbol, dep.repo as repo
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
     else:
         query = f"""
             MATCH path = (source:Symbol {{collection: $collection}})-[:CALLS|IMPORTS*1..{safe_depth}]->(dep:Symbol {{collection: $collection}})
-            WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix)
+            WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                   AND all(r IN relationships(path) WHERE r.collection = $collection)
             WITH DISTINCT dep
             RETURN dep.name as symbol, dep.repo as repo
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
 
     return await backend.run_query_async(query, params)
 
@@ -436,12 +455,14 @@ async def _query_cycles_async(
     """Async detect circular dependencies involving the symbol.
 
     Supports class-level queries: for "MyClass", also detects cycles involving "MyClass.method".
+    Also supports suffix matching for symbols stored with full module paths.
     """
     symbol_prefix = f"{symbol}."
+    symbol_suffix = f".{symbol}"  # For matching full module paths
     if repo and repo != "*":
         query = """
             MATCH path = (s:Symbol {collection: $collection})-[:CALLS*2..10]->(s)
-            WHERE (s.name = $symbol OR s.name STARTS WITH $symbol_prefix)
+            WHERE (s.name = $symbol OR s.name STARTS WITH $symbol_prefix OR s.name ENDS WITH $symbol_suffix)
                   AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
             WITH s, path, length(path) as cycle_length
             RETURN [n in nodes(path) | n.name] as cycle_path,
@@ -450,11 +471,11 @@ async def _query_cycles_async(
             ORDER BY cycle_length
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "repo": repo, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
     else:
         query = """
             MATCH path = (s:Symbol {collection: $collection})-[:CALLS*2..10]->(s)
-            WHERE (s.name = $symbol OR s.name STARTS WITH $symbol_prefix)
+            WHERE (s.name = $symbol OR s.name STARTS WITH $symbol_prefix OR s.name ENDS WITH $symbol_suffix)
                   AND all(r IN relationships(path) WHERE r.collection = $collection)
             WITH s, path, length(path) as cycle_length
             RETURN [n in nodes(path) | n.name] as cycle_path,
@@ -463,7 +484,7 @@ async def _query_cycles_async(
             ORDER BY cycle_length
             LIMIT $limit
         """
-        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "collection": collection, "limit": limit}
+        params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
 
     return await backend.run_query_async(query, params)
 
