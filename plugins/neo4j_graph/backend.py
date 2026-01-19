@@ -1023,7 +1023,7 @@ class Neo4jGraphBackend(GraphBackend):
         driver = self._get_driver()
         db = self._get_database()
 
-        # Try GDS PageRank first
+        # Try GDS PageRank first (using new aggregation function syntax)
         try:
             with driver.session(database=db) as session:
                 # Check if GDS is available
@@ -1031,24 +1031,36 @@ class Neo4jGraphBackend(GraphBackend):
                 gds_version = gds_check.single()
                 if gds_version:
                     logger.debug(f"GDS available: {gds_version['version']}")
+                    graph_name = f"pagerank_{collection}"
 
-                    # Use GDS PageRank with graph projection
+                    # Drop existing graph if it exists
+                    try:
+                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                    except Exception:
+                        pass  # Graph doesn't exist, that's fine
+
+                    # Use new GDS aggregation function syntax (non-deprecated)
+                    session.run("""
+                        MATCH (source:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(target:Symbol {collection: $collection})
+                        WITH gds.graph.project($graphName, source, target) AS g
+                        RETURN g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels
+                    """, graphName=graph_name, collection=collection)
+
+                    # Run PageRank and write results
                     result = session.run("""
-                        CALL gds.graph.project.cypher(
-                            'pagerank_' + $collection,
-                            'MATCH (n:Symbol {collection: $collection}) RETURN id(n) AS id',
-                            'MATCH (s:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(t:Symbol {collection: $collection}) RETURN id(s) AS source, id(t) AS target',
-                            {parameters: {collection: $collection}}
-                        )
-                        YIELD graphName
-                        CALL gds.pageRank.write(graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
+                        CALL gds.pageRank.write($graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
                         YIELD nodePropertiesWritten
-                        CALL gds.graph.drop(graphName)
-                        YIELD graphName AS dropped
                         RETURN nodePropertiesWritten AS updated
-                    """, collection=collection)
+                    """, graphName=graph_name)
                     record = result.single()
                     updated = record["updated"] if record else 0
+
+                    # Cleanup graph projection
+                    try:
+                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                    except Exception:
+                        pass
+
                     if updated > 0:
                         logger.debug(f"GDS PageRank: updated {updated} symbols in {collection}")
                     return updated
@@ -1562,7 +1574,7 @@ class Neo4jGraphBackend(GraphBackend):
         db = self._get_database()
         collection = self._get_collection(graph_store)
 
-        # Try GDS PageRank first
+        # Try GDS PageRank first (using new aggregation function syntax)
         try:
             with driver.session(database=db) as session:
                 # Check if GDS is available
@@ -1574,43 +1586,47 @@ class Neo4jGraphBackend(GraphBackend):
                     # Build graph projection with repo filter if specified
                     graph_name = f"pagerank_{collection}_{repo or 'all'}"
 
+                    # Drop existing graph if it exists
+                    try:
+                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                    except Exception:
+                        pass  # Graph doesn't exist, that's fine
+
                     with session.begin_transaction(timeout=timeout) as tx:
+                        # Use new GDS aggregation function syntax (non-deprecated)
                         if repo and repo != "*":
-                            result = tx.run("""
-                                CALL gds.graph.project.cypher(
-                                    $graphName,
-                                    'MATCH (n:Symbol {collection: $collection}) WHERE n.repo = $repo RETURN id(n) AS id',
-                                    'MATCH (s:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(t:Symbol {collection: $collection}) WHERE s.repo = $repo RETURN id(s) AS source, id(t) AS target',
-                                    {parameters: {collection: $collection, repo: $repo}}
-                                )
-                                YIELD graphName
-                                CALL gds.pageRank.write(graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
-                                YIELD nodePropertiesWritten
-                                CALL gds.graph.drop(graphName)
-                                YIELD graphName AS dropped
-                                RETURN nodePropertiesWritten AS cnt
+                            tx.run("""
+                                MATCH (source:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(target:Symbol {collection: $collection})
+                                WHERE source.repo = $repo
+                                WITH gds.graph.project($graphName, source, target) AS g
+                                RETURN g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels
                             """, graphName=graph_name, collection=collection, repo=repo)
                         else:
-                            result = tx.run("""
-                                CALL gds.graph.project.cypher(
-                                    $graphName,
-                                    'MATCH (n:Symbol {collection: $collection}) RETURN id(n) AS id',
-                                    'MATCH (s:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(t:Symbol {collection: $collection}) RETURN id(s) AS source, id(t) AS target',
-                                    {parameters: {collection: $collection}}
-                                )
-                                YIELD graphName
-                                CALL gds.pageRank.write(graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
-                                YIELD nodePropertiesWritten
-                                CALL gds.graph.drop(graphName)
-                                YIELD graphName AS dropped
-                                RETURN nodePropertiesWritten AS cnt
+                            tx.run("""
+                                MATCH (source:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(target:Symbol {collection: $collection})
+                                WITH gds.graph.project($graphName, source, target) AS g
+                                RETURN g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels
                             """, graphName=graph_name, collection=collection)
+
+                        # Run PageRank and write results
+                        result = tx.run("""
+                            CALL gds.pageRank.write($graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
+                            YIELD nodePropertiesWritten
+                            RETURN nodePropertiesWritten AS cnt
+                        """, graphName=graph_name)
 
                         record = result.single()
                         cnt = record["cnt"] if record else 0
                         tx.commit()
-                        logger.info(f"GDS PageRank: computed for {cnt} nodes in {collection}")
-                        return cnt
+
+                    # Cleanup graph projection
+                    try:
+                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                    except Exception:
+                        pass
+
+                    logger.info(f"GDS PageRank: computed for {cnt} nodes in {collection}")
+                    return cnt
         except Exception as e:
             # GDS not available or failed - fall back to simple approximation
             logger.debug(f"GDS PageRank unavailable, using in-degree fallback: {e}")
