@@ -610,6 +610,8 @@ class Neo4jGraphBackend(GraphBackend):
 
                     calls = meta.get("calls", []) or []
                     imports = meta.get("imports", []) or []
+                    # Extract import_map for qualified callee resolution
+                    import_map = meta.get("import_map", {}) or {}
 
                     # Extract edges using ingest_adapter for consistent resolution
                     call_edges = extract_call_edges(
@@ -621,6 +623,7 @@ class Neo4jGraphBackend(GraphBackend):
                         end_line=end_line,
                         language=language,
                         caller_point_id=str(p.id),
+                        import_paths=import_map,
                         collection=collection,
                         qdrant_client=qdrant_client,
                     )

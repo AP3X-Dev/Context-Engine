@@ -1086,6 +1086,7 @@ def _index_single_file_inner(
                                 start_line=start_line,
                                 end_line=end_line,
                                 language=language,
+                                import_paths=import_map,
                                 collection=collection,
                                 qdrant_client=client,
                             )
@@ -1111,6 +1112,7 @@ def _index_single_file_inner(
                             calls=calls,
                             path=source_file_path,
                             repo=repo_tag,
+                            import_paths=import_map,
                             collection=collection,
                             qdrant_client=client,
                         ))
@@ -2045,6 +2047,7 @@ def process_file_with_smart_reindexing(
                                 repo=per_file_repo,
                                 start_line=start_line,
                                 language=language,
+                                import_paths=import_map,
                             )
                         )
                     if imports:
@@ -2067,12 +2070,14 @@ def process_file_with_smart_reindexing(
                         meta0 = {}
                     file_calls = meta0.get("calls", []) or []
                     file_imports = meta0.get("imports", []) or []
+                    file_import_map = meta0.get("import_map", {}) or {}
                     if file_calls:
                         all_edges.extend(extract_call_edges(
                             symbol_path=fp,
                             calls=file_calls,
                             path=fp,
                             repo=per_file_repo,
+                            import_paths=file_import_map,
                         ))
                     if file_imports:
                         all_edges.extend(extract_import_edges(
@@ -2393,6 +2398,7 @@ def graph_backfill_tick(
 
                 calls = md.get("calls") or []
                 imports = md.get("imports") or []
+                import_map = md.get("import_map") or {}
 
                 repo = md.get("repo") or repo_name or ""
                 language = md.get("language")
@@ -2419,6 +2425,7 @@ def graph_backfill_tick(
                             path=path,
                             repo=repo,
                             language=language,
+                            import_paths=import_map,
                         ))
 
                     if imports:
