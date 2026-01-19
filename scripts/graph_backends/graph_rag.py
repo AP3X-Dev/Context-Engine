@@ -387,9 +387,10 @@ def get_k_hop_context(
             for node in ctx.get("nodes", []):
                 name = node.get("name", "")
                 if name and name not in all_nodes:
+                    labels = node.get("labels") or ["Unknown"]
                     all_nodes[name] = {
                         "name": name,
-                        "type": node.get("labels", ["Unknown"])[0] if node.get("labels") else "Unknown",
+                        "type": labels[0] if labels else "Unknown",
                         "path": node.get("path", "") if include_paths else None,
                         "start_line": node.get("start_line"),
                         "importance": node.get("pagerank", 0.0) or 0.0,
@@ -401,8 +402,8 @@ def get_k_hop_context(
                     "target": rel.get("target", ""),
                     "type": rel.get("type", ""),
                 })
-        except Exception as e:
-            logger.debug(f"Suppressed exception, continuing: {e}")
+        except Exception:
+            logger.debug("Suppressed exception, continuing", exc_info=True)
             continue
 
     # Sort by importance and limit

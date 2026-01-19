@@ -707,55 +707,58 @@ class Neo4jKnowledgeGraph:
         symbol_name: str,
         repo: Optional[str] = None,
         max_depth: int = 3,
+        timeout: int = DEFAULT_TX_TIMEOUT,
     ) -> Dict[str, Any]:
         """Analyze impact of changing a symbol."""
         driver = self._get_driver()
         safe_depth = _sanitize_depth(max_depth, default=3)
 
         with driver.session(database=self._database) as session:
-            # Get direct and transitive callers with proper parameterized query
-            if repo:
-                callers = session.run(f"""
-                    MATCH (target {{name: $name}})
-                    WHERE target.repo = $repo
-                    MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
-                    WHERE caller <> target
-                    RETURN caller.name AS name, caller.path AS path,
-                           labels(caller)[0] AS type, length(path) AS depth
-                    ORDER BY depth
-                """, name=symbol_name, repo=repo)
-            else:
-                callers = session.run(f"""
-                    MATCH (target {{name: $name}})
-                    MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
-                    WHERE caller <> target
-                    RETURN caller.name AS name, caller.path AS path,
-                           labels(caller)[0] AS type, length(path) AS depth
-                    ORDER BY depth
-                """, name=symbol_name)
+            with session.begin_transaction(timeout=timeout) as tx:
+                # Get direct and transitive callers with proper parameterized query
+                if repo:
+                    callers = tx.run(f"""
+                        MATCH (target {{name: $name}})
+                        WHERE target.repo = $repo
+                        MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
+                        WHERE caller <> target
+                        RETURN caller.name AS name, caller.path AS path,
+                               labels(caller)[0] AS type, length(path) AS depth
+                        ORDER BY depth
+                    """, name=symbol_name, repo=repo)
+                else:
+                    callers = tx.run(f"""
+                        MATCH (target {{name: $name}})
+                        MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
+                        WHERE caller <> target
+                        RETURN caller.name AS name, caller.path AS path,
+                               labels(caller)[0] AS type, length(path) AS depth
+                        ORDER BY depth
+                    """, name=symbol_name)
 
-            caller_list = [dict(r) for r in callers]
+                # Process results within the transaction context
+                caller_list = [dict(r) for r in callers]
 
-            # Get affected files
-            affected_files = set()
-            for c in caller_list:
-                if c.get("path"):
-                    affected_files.add(c["path"])
+        # Get affected files (processing outside transaction is fine)
+        affected_files = set()
+        for c in caller_list:
+            if c.get("path"):
+                affected_files.add(c["path"])
 
-            # Count by depth
-            by_depth: Dict[int, int] = {}
-            for c in caller_list:
-                d = c.get("depth", 1)
-                by_depth[d] = by_depth.get(d, 0) + 1
+        # Count by depth
+        by_depth: Dict[int, int] = {}
+        for c in caller_list:
+            d = c.get("depth", 1)
+            by_depth[d] = by_depth.get(d, 0) + 1
 
-            return {
-                "symbol": symbol_name,
-                "total_impacted": len(caller_list),
-                "affected_files": len(affected_files),
-                "files": list(affected_files)[:20],
-                "by_depth": by_depth,
-                "callers": caller_list[:50],
-            }
+        return {
+            "symbol": symbol_name,
+            "total_impacted": len(caller_list),
+            "affected_files": len(affected_files),
+            "files": list(affected_files)[:20],
+            "by_depth": by_depth,
+            "callers": caller_list[:50],
+        }
 
     def find_similar(
         self,
@@ -770,6 +773,9 @@ class Neo4jKnowledgeGraph:
         with driver.session(database=self._database) as session:
             with session.begin_transaction(timeout=timeout) as tx:
                 # Jaccard similarity on callees with proper parameterization
+                # Jaccard similarity: intersection / union
+                # Safeguard against division by zero with CASE (though should never happen
+                # since MATCH requires shared_calls >= 1)
                 if repo:
                     result = tx.run("""
                         MATCH (target {name: $name})
@@ -781,8 +787,10 @@ class Neo4jKnowledgeGraph:
                         WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
                         MATCH (similar)-[:CALLS]->(s_calls)
                         WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                        WITH similar, shared_calls, target_calls, similar_calls,
+                             (target_calls + similar_calls - shared_calls) AS union_size
                         WITH similar,
-                             toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
+                             CASE WHEN union_size > 0 THEN toFloat(shared_calls) / union_size ELSE 0.0 END AS jaccard
                         WHERE jaccard > 0.1
                         RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
                                similar.path AS path, similar.signature AS signature,
@@ -800,8 +808,10 @@ class Neo4jKnowledgeGraph:
                         WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
                         MATCH (similar)-[:CALLS]->(s_calls)
                         WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                        WITH similar, shared_calls, target_calls, similar_calls,
+                             (target_calls + similar_calls - shared_calls) AS union_size
                         WITH similar,
-                             toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
+                             CASE WHEN union_size > 0 THEN toFloat(shared_calls) / union_size ELSE 0.0 END AS jaccard
                         WHERE jaccard > 0.1
                         RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
                                similar.path AS path, similar.signature AS signature,

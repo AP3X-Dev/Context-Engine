@@ -11,6 +11,10 @@ def test_rerank_timeout_floor_and_env_defaults(monkeypatch):
     # Force rerank via env default when arg not provided
     monkeypatch.setenv("RERANKER_ENABLED", "1")
     monkeypatch.setenv("RERANK_IN_PROCESS", "0")
+    # Disable learning reranker to force subprocess rerank path
+    monkeypatch.setenv("RERANK_LEARNING", "0")
+    # Force subprocess hybrid search to ensure rerank subprocess is called
+    monkeypatch.delenv("HYBRID_IN_PROCESS", raising=False)
 
     # Floor 1500ms; client asks 200ms -> effective >= 1500ms -> 1.5s
     monkeypatch.setenv("RERANK_TIMEOUT_FLOOR_MS", "1500")

@@ -65,8 +65,8 @@ def _cleanup_drivers():
             if backend._driver is not None:
                 backend._driver.close()
                 logger.debug("Neo4j sync driver closed on shutdown")
-        except Exception as e:
-            logger.debug(f"Suppressed exception closing sync driver: {e}")
+        except Exception:
+            logger.debug("Suppressed exception closing sync driver", exc_info=True)
         # Note: async driver cleanup requires async context.
         # For atexit, we attempt synchronous close via internal driver method.
         try:
@@ -77,8 +77,8 @@ def _cleanup_drivers():
                     backend._async_driver._pool.close()
                 backend._async_driver = None
                 logger.debug("Neo4j async driver pool closed on shutdown")
-        except Exception as e:
-            logger.debug(f"Suppressed exception closing async driver: {e}")
+        except Exception:
+            logger.debug("Suppressed exception closing async driver", exc_info=True)
 
 
 # Register cleanup on process exit

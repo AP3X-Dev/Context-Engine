@@ -21,6 +21,7 @@ import logging
 import argparse
 import subprocess
 import re
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -187,7 +188,10 @@ def _extract_repo_name_from_path(workspace_path: str) -> str:
 
 # Simple file-based hash cache (simplified from workspace_state.py)
 class SimpleHashCache:
-    """Simple file-based hash cache for tracking file changes."""
+    """Simple file-based hash cache for tracking file changes.
+    
+    Thread-safe via internal lock for concurrent watch mode access.
+    """
 
     def __init__(self, workspace_path: str, repo_name: str):
         self.workspace_path = Path(workspace_path).resolve()
@@ -199,43 +203,44 @@ class SimpleHashCache:
         self._cache_loaded = False
         self._cache: Dict[str, str] = {}
         self._stale_checked = False
+        self._lock = threading.Lock()
         self._load_cache()  # Load once on init
 
     def _load_cache(self) -> Dict[str, str]:
-        """Load cache from disk."""
-        if self._cache_loaded:
-            return self._cache
+        """Load cache from disk. Thread-safe."""
+        with self._lock:
+            if self._cache_loaded:
+                return self._cache.copy()
 
-        if not self.cache_file.exists():
-            self._cache = {}
+            if not self.cache_file.exists():
+                self._cache = {}
+                self._cache_loaded = True
+                return self._cache.copy()
+
+            try:
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    file_hashes = data.get("file_hashes", {})
+                    # Run stale check only once per process to avoid O(N^2) scans
+                    if not self._stale_checked and self._cache_seems_stale(file_hashes):
+                        self._stale_checked = True
+                        logger.warning(
+                            "[hash_cache] Detected stale cache with missing paths; resetting %s",
+                            self.cache_file,
+                        )
+                        self._save_cache_internal({})
+                        self._cache = {}
+                    else:
+                        self._stale_checked = True
+                        self._cache = file_hashes if isinstance(file_hashes, dict) else {}
+            except Exception:
+                self._cache = {}
+
             self._cache_loaded = True
-            return self._cache
+            return self._cache.copy()
 
-        try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                file_hashes = data.get("file_hashes", {})
-                # Run stale check only once per process to avoid O(N^2) scans
-                if not self._stale_checked and self._cache_seems_stale(file_hashes):
-                    self._stale_checked = True
-                    logger.warning(
-                        "[hash_cache] Detected stale cache with missing paths; resetting %s",
-                        self.cache_file,
-                    )
-                    self._save_cache({})
-                    self._cache = {}
-                else:
-                    self._stale_checked = True
-                    self._cache = file_hashes if isinstance(file_hashes, dict) else {}
-        except Exception:
-            self._cache = {}
-
-        self._cache_loaded = True
-        return self._cache
-
-    def _save_cache(self, file_hashes: Dict[str, str]):
-        """Save cache to disk."""
-        # Keep in-memory view in sync
+    def _save_cache_internal(self, file_hashes: Dict[str, str]):
+        """Save cache to disk. Must be called with lock held."""
         self._cache = file_hashes
         self._cache_loaded = True
         try:
@@ -248,33 +253,41 @@ class SimpleHashCache:
         except Exception as e:
             logger.debug(f"Suppressed exception: {e}")
 
+    def _save_cache(self, file_hashes: Dict[str, str]):
+        """Save cache to disk. Thread-safe."""
+        with self._lock:
+            self._save_cache_internal(file_hashes)
+
     def get_hash(self, file_path: str) -> str:
-        """Get cached file hash."""
-        file_hashes = self._load_cache()
+        """Get cached file hash. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        return file_hashes.get(abs_path, "")
+        with self._lock:
+            if not self._cache_loaded:
+                # Trigger load without lock held for file I/O
+                pass
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            return self._cache.get(abs_path, "")
 
     def set_hash(self, file_path: str, file_hash: str):
-        """Set cached file hash."""
-        file_hashes = self._load_cache()
+        """Set cached file hash. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        file_hashes[abs_path] = file_hash
-        self._cache = file_hashes
-        self._cache_loaded = True
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            self._cache[abs_path] = file_hash
 
     def all_paths(self) -> List[str]:
-        """Return all cached absolute file paths."""
-        file_hashes = self._load_cache()
-        return list(file_hashes.keys())
+        """Return all cached absolute file paths. Thread-safe."""
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            return list(self._cache.keys())
 
     def remove_hash(self, file_path: str) -> None:
-        """Remove a cached file hash if present."""
-        file_hashes = self._load_cache()
+        """Remove a cached file hash if present. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        if abs_path in file_hashes:
-            file_hashes.pop(abs_path, None)
-            self._cache = file_hashes
-            self._cache_loaded = True
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            self._cache.pop(abs_path, None)
 
     def _cache_seems_stale(self, file_hashes: Dict[str, str]) -> bool:
         """Return True if a large portion of cached paths no longer exist on disk."""
