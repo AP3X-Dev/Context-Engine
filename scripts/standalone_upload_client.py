@@ -1157,33 +1157,38 @@ class RemoteUploadClient:
                 # Check bundle size (server-side enforcement)
                 bundle_size = os.path.getsize(bundle_path)
 
-                files = {
-                    "bundle": open(bundle_path, "rb"),
-                }
-                data = {
-                    "workspace_path": self._translate_to_container_path(self.workspace_path),
-                    "collection_name": self.collection_name,
-                    "sequence_number": manifest.get("sequence_number"),
-                    "force": False,
-                    "source_path": self.workspace_path,
-                    "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
-                }
+                # Use context manager to ensure file handle is closed
+                bundle_file = open(bundle_path, "rb")
+                try:
+                    files = {
+                        "bundle": bundle_file,
+                    }
+                    data = {
+                        "workspace_path": self._translate_to_container_path(self.workspace_path),
+                        "collection_name": self.collection_name,
+                        "sequence_number": manifest.get("sequence_number"),
+                        "force": False,
+                        "source_path": self.workspace_path,
+                        "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
+                    }
 
-                sess = get_auth_session(self.upload_endpoint)
-                if sess:
-                    data["session"] = sess
+                    sess = get_auth_session(self.upload_endpoint)
+                    if sess:
+                        data["session"] = sess
 
-                if getattr(self, "logical_repo_id", None):
-                    data['logical_repo_id'] = self.logical_repo_id
+                    if getattr(self, "logical_repo_id", None):
+                        data['logical_repo_id'] = self.logical_repo_id
 
-                logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
+                    logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
 
-                response = self.session.post(
-                    f"{self.upload_endpoint}/api/v1/delta/upload",
-                    files=files,
-                    data=data,
-                    timeout=(10, self.timeout)
-                )
+                    response = self.session.post(
+                        f"{self.upload_endpoint}/api/v1/delta/upload",
+                        files=files,
+                        data=data,
+                        timeout=(10, self.timeout)
+                    )
+                finally:
+                    bundle_file.close()
 
                 result = None
                 try:

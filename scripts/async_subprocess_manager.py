@@ -462,13 +462,17 @@ async def run_subprocess_async(
         Dictionary with execution results
     """
     manager = await get_async_subprocess_manager()
-    
+
     if timeout is not None:
-        # Create a temporary manager with custom timeout
+        # Create a temporary manager with custom timeout and ensure cleanup
         temp_manager = AsyncSubprocessManager(timeout=timeout)
-        return await temp_manager.run_async(
-            cmd, env=env, cwd=cwd, input_data=input_data, shell=shell
-        )
+        try:
+            return await temp_manager.run_async(
+                cmd, env=env, cwd=cwd, input_data=input_data, shell=shell
+            )
+        finally:
+            # Clean up any lingering processes from the temp manager
+            await temp_manager.cleanup_all_processes()
     else:
         return await manager.run_async(
             cmd, env=env, cwd=cwd, input_data=input_data, shell=shell

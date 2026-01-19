@@ -45,7 +45,9 @@ __all__ = [
 _DRIVER_INSTANCES: weakref.WeakSet = weakref.WeakSet()
 
 # Track collections that have been checked for auto-backfill (avoid repeated checks)
+# Use a lock to prevent race conditions in multi-threaded environments
 _BACKFILL_CHECKED: set = set()
+_BACKFILL_LOCK = threading.Lock()
 
 # Environment variable to disable auto-backfill (enabled by default)
 AUTO_BACKFILL_DISABLED = os.environ.get("NEO4J_AUTO_BACKFILL_DISABLE", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -508,6 +510,11 @@ class Neo4jGraphBackend(GraphBackend):
                     CREATE INDEX inherits_caller_point_idx IF NOT EXISTS
                     FOR ()-[r:INHERITS_FROM]-() ON (r.caller_point_id)
                 """)
+                # Index for simple_name lookups (symbol resolution)
+                session.run("""
+                    CREATE INDEX symbol_simple_name_idx IF NOT EXISTS
+                    FOR (s:Symbol) ON (s.simple_name)
+                """)
 
             self._initialized_databases.add(db)
             logger.info(f"Neo4j graph store initialized: {db}")
@@ -543,6 +550,8 @@ class Neo4jGraphBackend(GraphBackend):
 
         This runs once per collection per process. If Neo4j has no edges but Qdrant
         has data, edges are automatically backfilled.
+
+        Thread-safe: uses a lock to prevent race conditions.
         """
         global _BACKFILL_CHECKED
 
@@ -550,10 +559,11 @@ class Neo4jGraphBackend(GraphBackend):
         if AUTO_BACKFILL_DISABLED:
             return
 
-        # Only check once per collection
-        if collection in _BACKFILL_CHECKED:
-            return
-        _BACKFILL_CHECKED.add(collection)
+        # Thread-safe check-and-add to prevent duplicate backfills
+        with _BACKFILL_LOCK:
+            if collection in _BACKFILL_CHECKED:
+                return
+            _BACKFILL_CHECKED.add(collection)
 
         # Check if Neo4j already has edges for this collection
         edge_count = self._count_edges_for_collection(collection)
@@ -1005,28 +1015,62 @@ class Neo4jGraphBackend(GraphBackend):
         return total_resolved
 
     def _compute_simple_pagerank(self, collection: str) -> int:
-        """Compute degree-based importance scores (simple PageRank approximation).
+        """Compute PageRank scores for symbols in a collection.
 
-        This sets n.pagerank = (in_degree / max_in_degree) for all nodes.
-        No GDS library required - uses simple Cypher aggregation.
+        Tries GDS PageRank first (if available), falls back to in-degree approximation.
         Includes CALLS, IMPORTS, and INHERITS_FROM relationships.
         """
         driver = self._get_driver()
         db = self._get_database()
 
+        # Try GDS PageRank first
+        try:
+            with driver.session(database=db) as session:
+                # Check if GDS is available
+                gds_check = session.run("RETURN gds.version() AS version")
+                gds_version = gds_check.single()
+                if gds_version:
+                    logger.debug(f"GDS available: {gds_version['version']}")
+
+                    # Use GDS PageRank with graph projection
+                    result = session.run("""
+                        CALL gds.graph.project.cypher(
+                            'pagerank_' + $collection,
+                            'MATCH (n:Symbol {collection: $collection}) RETURN id(n) AS id',
+                            'MATCH (s:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(t:Symbol {collection: $collection}) RETURN id(s) AS source, id(t) AS target',
+                            {parameters: {collection: $collection}}
+                        )
+                        YIELD graphName
+                        CALL gds.pageRank.write(graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
+                        YIELD nodePropertiesWritten
+                        CALL gds.graph.drop(graphName)
+                        YIELD graphName AS dropped
+                        RETURN nodePropertiesWritten AS updated
+                    """, collection=collection)
+                    record = result.single()
+                    updated = record["updated"] if record else 0
+                    if updated > 0:
+                        logger.debug(f"GDS PageRank: updated {updated} symbols in {collection}")
+                    return updated
+        except Exception as e:
+            # GDS not available or failed - fall back to simple approximation
+            logger.debug(f"GDS PageRank unavailable, using in-degree fallback: {e}")
+
+        # Fallback: simple in-degree approximation
         try:
             with driver.session(database=db) as session:
                 # Two-pass approach:
                 # 1. Calculate max in-degree for normalization
                 # 2. Set pagerank as normalized in-degree
+                # Use coalesce() to handle null values and avoid Neo4j warnings
                 result = session.run("""
                     MATCH (n:Symbol {collection: $collection})
                     OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS|INHERITS_FROM]-()
-                    WITH n, count(r) AS in_degree
-                    WITH max(in_degree) AS max_degree
+                    WITH n, coalesce(count(r), 0) AS in_degree
+                    WITH coalesce(max(in_degree), 0) AS max_degree
                     MATCH (n2:Symbol {collection: $collection})
                     OPTIONAL MATCH (n2)<-[r2:CALLS|IMPORTS|INHERITS_FROM]-()
-                    WITH n2, count(r2) AS in_degree, max_degree
+                    WITH n2, coalesce(count(r2), 0) AS in_degree, max_degree
                     WHERE max_degree > 0
                     SET n2.pagerank = toFloat(in_degree) / toFloat(max_degree)
                     RETURN count(n2) AS updated
@@ -1034,10 +1078,10 @@ class Neo4jGraphBackend(GraphBackend):
                 record = result.single()
                 updated = record["updated"] if record else 0
                 if updated > 0:
-                    logger.debug(f"Updated pagerank for {updated} symbols in {collection}")
+                    logger.debug(f"In-degree PageRank: updated {updated} symbols in {collection}")
                 return updated
         except Exception as e:
-            logger.warning(f"Pagerank computation failed: {e}")
+            logger.warning(f"PageRank computation failed: {e}")
             return 0
 
     def delete_edges_by_path(
@@ -1136,7 +1180,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get callers for {symbol}: {e}")
-            raise  # Let caller handle the error
+            return []  # Return empty list for consistency with Qdrant backend
 
     def get_callees(
         self,
@@ -1197,7 +1241,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get callees for {symbol}: {e}")
-            raise  # Let caller handle the error
+            return []  # Return empty list for consistency with Qdrant backend
 
     def get_importers(
         self,
@@ -1252,7 +1296,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get importers for {module}: {e}")
-            raise  # Let caller handle the error
+            return []  # Return empty list for consistency with Qdrant backend
 
     def get_base_classes(
         self,
@@ -1306,7 +1350,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get base classes for {class_name}: {e}")
-            raise
+            return []  # Return empty list for consistency with Qdrant backend
 
     def get_subclasses(
         self,
@@ -1360,7 +1404,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         except Exception as e:
             logger.error(f"Failed to get subclasses for {class_name}: {e}")
-            raise
+            return []  # Return empty list for consistency with Qdrant backend
 
     def resolve_symbol(
         self,
@@ -1369,9 +1413,10 @@ class Neo4jGraphBackend(GraphBackend):
         repo: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve a symbol name to its definition file path via Neo4j.
-        
+
         Matches against simple_name (leaf part of qualified path) for better resolution
         of calls like 'append' to their actual definitions.
+        Falls back to matching against 'name' if simple_name is not set.
         """
         driver = self._get_driver()
         db = self._get_database()
@@ -1379,22 +1424,25 @@ class Neo4jGraphBackend(GraphBackend):
 
         try:
             with driver.session(database=db) as session:
-                # Find symbol with matching simple_name that has a real file path
+                # Find symbol with matching simple_name OR name that has a real file path
                 # simple_name is the leaf part (e.g., "_worker" from "_start_pseudo_backfill_worker._worker")
+                # Falls back to name if simple_name is not yet indexed
                 if repo and repo != "*":
                     result = session.run("""
-                        MATCH (s:Symbol {simple_name: $symbol, collection: $collection, repo: $repo})
-                        WHERE s.path IS NOT NULL AND NOT s.path STARTS WITH '<'
+                        MATCH (s:Symbol {collection: $collection, repo: $repo})
+                        WHERE (s.simple_name = $symbol OR s.name ENDS WITH $symbol_suffix OR s.name = $symbol)
+                          AND s.path IS NOT NULL AND NOT s.path STARTS WITH '<'
                         RETURN s.path as path
                         LIMIT 1
-                    """, {"symbol": symbol_name, "collection": collection, "repo": repo})
+                    """, {"symbol": symbol_name, "symbol_suffix": '.' + symbol_name, "collection": collection, "repo": repo})
                 else:
                     result = session.run("""
-                        MATCH (s:Symbol {simple_name: $symbol, collection: $collection})
-                        WHERE s.path IS NOT NULL AND NOT s.path STARTS WITH '<'
+                        MATCH (s:Symbol {collection: $collection})
+                        WHERE (s.simple_name = $symbol OR s.name ENDS WITH $symbol_suffix OR s.name = $symbol)
+                          AND s.path IS NOT NULL AND NOT s.path STARTS WITH '<'
                         RETURN s.path as path
                         LIMIT 1
-                    """, {"symbol": symbol_name, "collection": collection})
+                    """, {"symbol": symbol_name, "symbol_suffix": '.' + symbol_name, "collection": collection})
 
                 record = result.single()
                 if record:
@@ -1498,9 +1546,9 @@ class Neo4jGraphBackend(GraphBackend):
     ) -> int:
         """Compute PageRank for code symbols (importance scoring).
 
-        Uses simple in-degree approximation as a fallback since GDS may not be available.
+        Tries GDS PageRank first (if available), falls back to in-degree approximation.
         All nodes get a base rank (0.001), nodes with incoming edges get rank proportional
-        to in-degree.
+        to their importance in the call graph.
 
         Args:
             graph_store: Graph store name (collection)
@@ -1514,31 +1562,83 @@ class Neo4jGraphBackend(GraphBackend):
         db = self._get_database()
         collection = self._get_collection(graph_store)
 
+        # Try GDS PageRank first
+        try:
+            with driver.session(database=db) as session:
+                # Check if GDS is available
+                gds_check = session.run("RETURN gds.version() AS version")
+                gds_version = gds_check.single()
+                if gds_version:
+                    logger.debug(f"GDS available: {gds_version['version']}, using real PageRank")
+
+                    # Build graph projection with repo filter if specified
+                    graph_name = f"pagerank_{collection}_{repo or 'all'}"
+
+                    with session.begin_transaction(timeout=timeout) as tx:
+                        if repo and repo != "*":
+                            result = tx.run("""
+                                CALL gds.graph.project.cypher(
+                                    $graphName,
+                                    'MATCH (n:Symbol {collection: $collection}) WHERE n.repo = $repo RETURN id(n) AS id',
+                                    'MATCH (s:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(t:Symbol {collection: $collection}) WHERE s.repo = $repo RETURN id(s) AS source, id(t) AS target',
+                                    {parameters: {collection: $collection, repo: $repo}}
+                                )
+                                YIELD graphName
+                                CALL gds.pageRank.write(graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
+                                YIELD nodePropertiesWritten
+                                CALL gds.graph.drop(graphName)
+                                YIELD graphName AS dropped
+                                RETURN nodePropertiesWritten AS cnt
+                            """, graphName=graph_name, collection=collection, repo=repo)
+                        else:
+                            result = tx.run("""
+                                CALL gds.graph.project.cypher(
+                                    $graphName,
+                                    'MATCH (n:Symbol {collection: $collection}) RETURN id(n) AS id',
+                                    'MATCH (s:Symbol {collection: $collection})-[r:CALLS|IMPORTS|INHERITS_FROM]->(t:Symbol {collection: $collection}) RETURN id(s) AS source, id(t) AS target',
+                                    {parameters: {collection: $collection}}
+                                )
+                                YIELD graphName
+                                CALL gds.pageRank.write(graphName, {writeProperty: 'pagerank', maxIterations: 20, dampingFactor: 0.85})
+                                YIELD nodePropertiesWritten
+                                CALL gds.graph.drop(graphName)
+                                YIELD graphName AS dropped
+                                RETURN nodePropertiesWritten AS cnt
+                            """, graphName=graph_name, collection=collection)
+
+                        record = result.single()
+                        cnt = record["cnt"] if record else 0
+                        tx.commit()
+                        logger.info(f"GDS PageRank: computed for {cnt} nodes in {collection}")
+                        return cnt
+        except Exception as e:
+            # GDS not available or failed - fall back to simple approximation
+            logger.debug(f"GDS PageRank unavailable, using in-degree fallback: {e}")
+
+        # Fallback: simple in-degree approximation
         try:
             with driver.session(database=db) as session:
                 # Simple in-degree approximation with OPTIONAL MATCH
                 # Ensures ALL nodes get a base rank, not just those with incoming edges
-                # Includes CALLS, IMPORTS, and INHERITS_FROM relationships
+                # Use coalesce() to handle null values and avoid Neo4j warnings
                 with session.begin_transaction(timeout=timeout) as tx:
                     if repo and repo != "*":
-                        # Scope relationships to same collection AND repo
                         result = tx.run("""
                             MATCH (n:Symbol {collection: $collection})
                             WHERE n.repo = $repo
                             OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS|INHERITS_FROM {collection: $collection}]-(caller)
                             WHERE caller.repo = $repo
-                            WITH n, count(r) AS in_degree
+                            WITH n, coalesce(count(r), 0) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0
                                                   ELSE 0.001 END
                             RETURN count(n) AS cnt
                         """, collection=collection, repo=repo)
                     else:
-                        # Scope relationships to same collection
                         result = tx.run("""
                             MATCH (n:Symbol {collection: $collection})
                             OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS|INHERITS_FROM {collection: $collection}]-()
-                            WITH n, count(r) AS in_degree
+                            WITH n, coalesce(count(r), 0) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0
                                                   ELSE 0.001 END
@@ -1548,7 +1648,7 @@ class Neo4jGraphBackend(GraphBackend):
                     record = result.single()
                     cnt = record["cnt"] if record else 0
                     tx.commit()
-                    logger.info(f"Computed PageRank for {cnt} nodes in {collection}")
+                    logger.info(f"In-degree PageRank: computed for {cnt} nodes in {collection}")
                     return cnt
 
         except Exception as e:

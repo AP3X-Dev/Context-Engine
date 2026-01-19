@@ -501,6 +501,7 @@ def upsert_edges(
     graph_collection: str,
     edges: List[Dict[str, Any]],
     batch_size: int = 100,
+    max_retries: int = 3,
 ) -> int:
     """Upsert edge documents to the graph collection.
 
@@ -509,10 +510,12 @@ def upsert_edges(
         graph_collection: Graph collection name
         edges: List of edge documents with 'id' and 'payload' keys
         batch_size: Batch size for upserts
+        max_retries: Maximum retries per batch on transient failures
 
     Returns:
         Number of edges upserted
     """
+    import time
     from qdrant_client import models as qmodels
 
     if not edges:
@@ -529,11 +532,29 @@ def upsert_edges(
             )
             for edge in batch
         ]
-        try:
-            client.upsert(collection_name=graph_collection, points=points, wait=True)
-            total += len(points)
-        except Exception as e:
-            logger.error(f"Failed to upsert edges batch: {e}")
+
+        # Retry loop with exponential backoff for transient failures
+        for attempt in range(max_retries):
+            try:
+                client.upsert(collection_name=graph_collection, points=points, wait=True)
+                total += len(points)
+                break  # Success - exit retry loop
+            except Exception as e:
+                is_last_attempt = attempt == max_retries - 1
+                error_str = str(e).lower()
+
+                # Check if error is retryable (timeout, connection, etc.)
+                is_retryable = any(err in error_str for err in [
+                    "timeout", "connection", "unavailable", "reset", "broken pipe"
+                ])
+
+                if is_retryable and not is_last_attempt:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Retrying edge upsert (attempt {attempt + 1}/{max_retries}) after {wait_time}s: {e}")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to upsert edges batch after {attempt + 1} attempts: {e}")
+                    break  # Non-retryable error or max retries reached
 
     return total
 
