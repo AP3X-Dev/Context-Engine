@@ -105,6 +105,7 @@ No complicated path setup - Context-Engine automatically handles the mapping bet
 | Windsurf | SSE / RMCP |
 | Cline | SSE / RMCP |
 | Roo | SSE / RMCP |
+| OpenCode | RMCP |
 | Augment | SSE |
 | Codex | RMCP |
 | Copilot | RMCP |
