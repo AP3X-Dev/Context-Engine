@@ -113,6 +113,94 @@ def parse_args():
     return parser.parse_args()
 
 
+def _run_post_index_backfill(qdrant_url: str, api_key: str, collection: str, model_name: str) -> None:
+    """Run post-indexing backfill for pseudo-tags and graph edges."""
+    from scripts.ingest.pipeline import pseudo_backfill_tick, graph_backfill_tick
+    from qdrant_client import QdrantClient
+
+    try:
+        # Get model dimension for vector operations
+        try:
+            from scripts.embedder import get_model_dimension
+            dim = get_model_dimension(model_name)
+        except Exception:
+            dim = 384  # Default for BGE models
+
+        # Connect to Qdrant
+        client = QdrantClient(
+            url=qdrant_url,
+            api_key=api_key if api_key else None,
+            timeout=int(os.environ.get("QDRANT_TIMEOUT", "60")),
+        )
+
+        # --- Pseudo backfill ---
+        print("[backfill] Starting deferred pseudo-tag generation...")
+
+        # Temporarily enable REFRAG_PSEUDO_DESCRIBE for backfill
+        orig_pseudo = os.environ.get("REFRAG_PSEUDO_DESCRIBE")
+        os.environ["REFRAG_PSEUDO_DESCRIBE"] = "1"
+
+        pseudo_total = 0
+        max_iterations = 1000  # Safety limit
+        batch_size = int(os.environ.get("PSEUDO_BACKFILL_BATCH_SIZE", "128"))
+
+        try:
+            for iteration in range(max_iterations):
+                processed = pseudo_backfill_tick(
+                    client,
+                    collection,
+                    repo_name=None,
+                    max_points=batch_size,
+                    dim=dim,
+                )
+                if processed == 0:
+                    break
+                pseudo_total += processed
+                print(f"[backfill] Pseudo: {pseudo_total} points processed...")
+        finally:
+            # Restore original env
+            if orig_pseudo is not None:
+                os.environ["REFRAG_PSEUDO_DESCRIBE"] = orig_pseudo
+            else:
+                os.environ.pop("REFRAG_PSEUDO_DESCRIBE", None)
+
+        print(f"[backfill] Pseudo complete: {pseudo_total} points enriched")
+
+        # --- Graph backfill (Neo4j edges from Qdrant metadata) ---
+        neo4j_enabled = (os.environ.get("NEO4J_GRAPH", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if neo4j_enabled:
+            print("[backfill] Starting graph edge backfill...")
+            graph_total = 0
+
+            try:
+                for iteration in range(max_iterations):
+                    processed = graph_backfill_tick(
+                        client,
+                        collection,
+                        repo_name=None,
+                        max_points=batch_size,
+                    )
+                    if processed == 0:
+                        break
+                    graph_total += processed
+                    print(f"[backfill] Graph: {graph_total} points processed...")
+            except Exception as e:
+                print(f"[backfill] Graph backfill error: {e}")
+                logger.warning(f"Graph backfill failed: {e}", exc_info=True)
+
+            print(f"[backfill] Graph complete: {graph_total} points processed for edges")
+
+        print("[backfill] Post-indexing backfill complete")
+
+    except Exception as e:
+        print(f"[backfill] Warning: backfill failed: {e}")
+        logger.warning(f"Post-index backfill failed: {e}", exc_info=True)
+
+
+# Alias for backward compatibility
+_run_pseudo_backfill = _run_post_index_backfill
+
+
 def main():
     """Main entry point for the CLI."""
     # Load .env file for REFRAG_*, GLM_*, and other settings
@@ -222,6 +310,10 @@ def main():
             print(f"[multi_repo] No repo directories found under: {root_path}")
             return
 
+        multi_flag = (os.environ.get("PSEUDO_DEFER_TO_WORKER") or "").strip().lower()
+        multi_defer_pseudo = multi_flag in {"1", "true", "yes", "on"}
+        indexed_collections = set()
+
         for repo_root in repos:
             repo_name = repo_root.name
             repo_collection = collection
@@ -244,9 +336,15 @@ def main():
                 args.recreate,
                 dedupe=(not args.no_dedupe),
                 skip_unchanged=(not args.no_skip_unchanged),
-                pseudo_mode="off" if (os.environ.get("PSEUDO_DEFER_TO_WORKER") or "").strip().lower() in {"1", "true", "yes", "on"} else "full",
+                pseudo_mode="off" if multi_defer_pseudo else "full",
                 schema_mode=args.schema_mode,
             )
+            indexed_collections.add(repo_collection)
+
+        # Run pseudo backfill for all indexed collections if deferred
+        if multi_defer_pseudo:
+            for coll in indexed_collections:
+                _run_pseudo_backfill(qdrant_url, api_key, coll, model_name)
         return
     else:
         if get_collection_name:
@@ -262,7 +360,8 @@ def main():
         print(f"[single_repo] Single-repo mode enabled - using collection: {collection}")
 
     flag = (os.environ.get("PSEUDO_DEFER_TO_WORKER") or "").strip().lower()
-    pseudo_mode = "off" if flag in {"1", "true", "yes", "on"} else "full"
+    defer_pseudo = flag in {"1", "true", "yes", "on"}
+    pseudo_mode = "off" if defer_pseudo else "full"
 
     index_repo(
         Path(args.root).resolve(),
@@ -276,6 +375,10 @@ def main():
         pseudo_mode=pseudo_mode,
         schema_mode=args.schema_mode,
     )
+
+    # Run pseudo backfill after indexing if deferred
+    if defer_pseudo:
+        _run_pseudo_backfill(qdrant_url, api_key, collection, model_name)
 
 
 if __name__ == "__main__":

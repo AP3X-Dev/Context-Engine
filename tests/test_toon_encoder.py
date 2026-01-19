@@ -388,11 +388,9 @@ class TestDynamicFieldInclusion:
             {"path": "/src/main.py", "start_line": 10, "end_line": 20,
              "score": 0.95, "snippet": "def main():\n    pass"},
         ]
-
         output = encode_search_results(results, compact=False)
-
-        assert "snippet" in output
-        assert "def main()" in output
+        decoded = toon_decode(output)
+        assert decoded["results"][0]["snippet"] == "def main():\n    pass"
 
     def test_encode_with_information_field(self):
         """Test that info_request's information field is included."""
@@ -401,25 +399,21 @@ class TestDynamicFieldInclusion:
              "score": 0.9, "information": "Authentication handler at /src/auth.py:1-50",
              "relevance_score": 0.9},
         ]
-
         output = encode_search_results(results, compact=False)
-
-        assert "information" in output
-        assert "relevance_score" in output
-        assert "Authentication handler" in output
+        decoded = toon_decode(output)
+        assert decoded["results"][0]["information"] == "Authentication handler at /src/auth.py:1-50"
+        assert decoded["results"][0]["relevance_score"] == 0.9
 
     def test_encode_with_relationships_field(self):
-        """Test that relationships dict is encoded as JSON."""
+        """Test that relationships dict is encoded correctly."""
         results = [
             {"path": "/src/api.py", "start_line": 10, "end_line": 30,
              "relationships": {"imports_from": ["os", "sys"], "calls": ["auth.login"]}},
         ]
-
         output = encode_search_results(results, compact=False)
-
-        assert "relationships" in output
-        # Nested objects become compact JSON
-        assert "imports_from" in output
+        decoded = toon_decode(output)
+        assert decoded["results"][0]["relationships"]["imports_from"] == ["os", "sys"]
+        assert decoded["results"][0]["relationships"]["calls"] == ["auth.login"]
 
     def test_encode_preserves_all_custom_fields(self):
         """Test that any custom fields added by tools are preserved."""
@@ -427,13 +421,10 @@ class TestDynamicFieldInclusion:
             {"path": "/a.py", "start_line": 1, "end_line": 5,
              "custom_field": "custom_value", "another_field": 123},
         ]
-
         output = encode_search_results(results, compact=False)
-
-        assert "custom_field" in output
-        assert "custom_value" in output
-        assert "another_field" in output
-        assert "123" in output
+        decoded = toon_decode(output)
+        assert decoded["results"][0]["custom_field"] == "custom_value"
+        assert decoded["results"][0]["another_field"] == 123
 
     def test_context_results_with_extra_memory_fields(self):
         """Test memory results preserve all fields in full mode."""
@@ -441,11 +432,9 @@ class TestDynamicFieldInclusion:
             {"source": "memory", "content": "API note", "score": 0.9,
              "id": "mem-123", "created_at": "2024-01-01", "tags": ["api", "docs"]},
         ]
-
         output = encode_context_results(results, compact=False)
-
-        assert "content" in output
-        assert "id" in output
-        assert "created_at" in output
-        assert "tags" in output
-
+        decoded = toon_decode(output)
+        assert decoded["memory"][0]["content"] == "API note"
+        assert decoded["memory"][0]["id"] == "mem-123"
+        assert decoded["memory"][0]["created_at"] == "2024-01-01"
+        assert decoded["memory"][0]["tags"] == ["api", "docs"]

@@ -348,6 +348,10 @@ def reset(
             if var in os.environ:
                 indexer_env[var] = os.environ[var]
 
+        # Defer pseudo-describe to backfill worker for much faster initial indexing
+        # The watch_index worker will backfill pseudo/tags after indexing completes
+        indexer_env["PSEUDO_DEFER_TO_WORKER"] = "1"
+
         # Run indexer detached (-d) so CLI doesn't block
         # Use --rm to auto-remove container on exit; first remove any stale container with same name
         # to ensure idempotent operation across multiple runs
@@ -362,7 +366,7 @@ def reset(
         indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])
 
         _run_cmd(indexer_cmd, "Starting indexer (detached)")
-        _print("[green]✓[/green] Indexer started in background")
+        _print("[green]✓[/green] Indexer started in background (pseudo-tags deferred)")
         _print("[dim]  Monitor with: docker logs -f ctx-reset-indexer[/dim]")
 
         # Step 7: Download model and start services
