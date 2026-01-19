@@ -17,7 +17,25 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from scripts.ctx_cli.utils.env import get_qdrant_url_for_host
+from scripts.ctx_cli.utils.env import (
+    get_qdrant_url_for_host,
+    find_env_file,
+    load_env_file,
+)
+
+# Load .env file into os.environ (if not already set)
+# This ensures NEO4J_GRAPH, REFRAG_RUNTIME, etc. are available
+def _load_env_to_environ():
+    """Load .env file values into os.environ if not already set."""
+    # Check both project root .env and scripts/.env
+    for env_path in [find_env_file(), Path("scripts/.env")]:
+        if env_path and env_path.exists():
+            env_vars = load_env_file(env_path)
+            for key, value in env_vars.items():
+                if key not in os.environ:
+                    os.environ[key] = value
+
+_load_env_to_environ()
 
 try:
     from rich.console import Console

@@ -289,9 +289,11 @@ _TS_LANG_CONFIG = {
         "calls": ["call_expression", "macro_invocation"],
         "constructors": [],
         "member": {"field_expression": ("value", "field")},
-        # Rust uses impl blocks for traits, not class inheritance
-        "class_def": ["struct_item", "impl_item"],
-        "superclass": {"child_types": ["type_identifier"]},  # impl Trait for Type
+        # Rust uses impl blocks for traits, not traditional class inheritance
+        # We don't extract INHERITS_FROM for Rust since trait implementations
+        # are semantically different from class inheritance
+        "class_def": [],
+        "superclass": None,
     },
     "java": {
         "calls": ["method_invocation"],
@@ -1139,12 +1141,23 @@ def _get_inheritance(language: str, text: str) -> InheritanceMap:
                         if interfaces_node:
                             bases.extend(extract_identifiers(interfaces_node))
 
-                    # Check child node types
-                    child_types = superclass_config.get("child_types", [])
-                    if child_types:
-                        for child in node.children:
-                            if child.type in child_types:
-                                bases.extend(extract_identifiers(child))
+                    # Check child node types ONLY if field access didn't find anything
+                    if not bases:
+                        child_types = superclass_config.get("child_types", [])
+                        if child_types:
+                            for child in node.children:
+                                if child.type in child_types:
+                                    bases.extend(extract_identifiers(child))
+
+                # Deduplicate while preserving order
+                if bases:
+                    seen = set()
+                    unique_bases = []
+                    for b in bases:
+                        if b not in seen:
+                            seen.add(b)
+                            unique_bases.append(b)
+                    bases = unique_bases
 
                 if bases:
                     # Filter out common non-base identifiers
