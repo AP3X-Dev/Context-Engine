@@ -189,6 +189,7 @@ class Neo4jGraphBackend(GraphBackend):
         """Get or create Neo4j driver (lazy singleton per instance with connection pooling).
 
         Uses circuit breaker pattern to avoid repeated timeouts when Neo4j is down.
+        Includes liveness check to detect and recover from stale connections.
         """
         # Check circuit breaker first
         if not self._check_circuit():
@@ -197,8 +198,19 @@ class Neo4jGraphBackend(GraphBackend):
                 f"Will retry after {self._CIRCUIT_RESET_TIMEOUT}s"
             )
 
+        # If driver exists, validate it's still alive
         if self._driver is not None:
-            return self._driver
+            try:
+                self._driver.verify_connectivity()
+                return self._driver
+            except Exception as e:
+                logger.warning(f"Stale Neo4j connection detected, recreating driver: {e}")
+                try:
+                    self._driver.close()
+                except Exception:
+                    pass
+                self._driver = None
+                self._driver_initialized = False
 
         try:
             from neo4j import GraphDatabase
@@ -211,6 +223,10 @@ class Neo4jGraphBackend(GraphBackend):
         user = os.environ.get("NEO4J_USER", "neo4j")
         password = os.environ.get("NEO4J_PASSWORD", "")
         max_pool = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
+        # Connection stability settings
+        max_lifetime = int(os.environ.get("NEO4J_MAX_CONNECTION_LIFETIME", "300") or 300)
+        connection_timeout = float(os.environ.get("NEO4J_CONNECTION_TIMEOUT", "30.0") or 30.0)
+        acquisition_timeout = float(os.environ.get("NEO4J_ACQUISITION_TIMEOUT", "60.0") or 60.0)
 
         if not password:
             logger.warning("NEO4J_PASSWORD not set - using empty password")
@@ -220,12 +236,16 @@ class Neo4jGraphBackend(GraphBackend):
                 uri,
                 auth=(user, password),
                 max_connection_pool_size=max_pool,
+                # Connection stability settings
+                max_connection_lifetime=max_lifetime,  # Max lifetime per connection (seconds)
+                connection_timeout=connection_timeout,  # Timeout for establishing connection
+                connection_acquisition_timeout=acquisition_timeout,  # Timeout to acquire from pool
             )
             # Verify connection works
             self._driver.verify_connectivity()
             self._driver_initialized = True
             self._record_success()
-            logger.info(f"Neo4j driver initialized: {uri}")
+            logger.info(f"Neo4j driver initialized: {uri} (pool={max_pool}, max_lifetime={max_lifetime}s)")
             return self._driver
         except Exception as e:
             self._record_failure()
@@ -256,6 +276,7 @@ class Neo4jGraphBackend(GraphBackend):
         """Get or create async Neo4j driver (lazy singleton with connection pooling).
 
         Uses the same circuit breaker as sync driver.
+        Includes liveness check to detect and recover from stale connections.
         """
         # Check circuit breaker first
         if not self._check_circuit():
@@ -264,8 +285,19 @@ class Neo4jGraphBackend(GraphBackend):
                 f"Will retry after {self._CIRCUIT_RESET_TIMEOUT}s"
             )
 
+        # If driver exists, validate it's still alive
         if self._async_driver is not None:
-            return self._async_driver
+            try:
+                await self._async_driver.verify_connectivity()
+                return self._async_driver
+            except Exception as e:
+                logger.warning(f"Stale Neo4j async connection detected, recreating driver: {e}")
+                try:
+                    await self._async_driver.close()
+                except Exception:
+                    pass
+                self._async_driver = None
+                self._async_driver_initialized = False
 
         try:
             from neo4j import AsyncGraphDatabase
@@ -279,6 +311,10 @@ class Neo4jGraphBackend(GraphBackend):
         user = os.environ.get("NEO4J_USER", "neo4j")
         password = os.environ.get("NEO4J_PASSWORD", "")
         max_pool = int(os.environ.get("NEO4J_MAX_POOL_SIZE", "50") or 50)
+        # Connection stability settings
+        max_lifetime = int(os.environ.get("NEO4J_MAX_CONNECTION_LIFETIME", "300") or 300)
+        connection_timeout = float(os.environ.get("NEO4J_CONNECTION_TIMEOUT", "30.0") or 30.0)
+        acquisition_timeout = float(os.environ.get("NEO4J_ACQUISITION_TIMEOUT", "60.0") or 60.0)
 
         if not password:
             logger.warning("NEO4J_PASSWORD not set - using empty password")
@@ -288,12 +324,16 @@ class Neo4jGraphBackend(GraphBackend):
                 uri,
                 auth=(user, password),
                 max_connection_pool_size=max_pool,
+                # Connection stability settings
+                max_connection_lifetime=max_lifetime,  # Max lifetime per connection (seconds)
+                connection_timeout=connection_timeout,  # Timeout for establishing connection
+                connection_acquisition_timeout=acquisition_timeout,  # Timeout to acquire from pool
             )
             # Verify connection works
             await self._async_driver.verify_connectivity()
             self._async_driver_initialized = True
             self._record_success()
-            logger.info(f"Neo4j async driver initialized: {uri}")
+            logger.info(f"Neo4j async driver initialized: {uri} (pool={max_pool}, max_lifetime={max_lifetime}s)")
             return self._async_driver
         except Exception as e:
             self._record_failure()
@@ -564,6 +604,9 @@ class Neo4jGraphBackend(GraphBackend):
                     language = meta.get("language", "")
                     start_line = meta.get("start_line")
                     end_line = meta.get("end_line")
+                    # Extract symbol metadata for Neo4j node enrichment
+                    symbol_signature = meta.get("symbol_signature", "") or ""
+                    symbol_docstring = meta.get("symbol_docstring", "") or ""
 
                     calls = meta.get("calls", []) or []
                     imports = meta.get("imports", []) or []
@@ -581,6 +624,10 @@ class Neo4jGraphBackend(GraphBackend):
                         collection=collection,
                         qdrant_client=qdrant_client,
                     )
+                    # Enrich edges with symbol metadata
+                    for edge in call_edges:
+                        edge.caller_signature = symbol_signature
+                        edge.caller_docstring = symbol_docstring
                     edges.extend(call_edges)
 
                     import_edges = extract_import_edges(
@@ -593,6 +640,10 @@ class Neo4jGraphBackend(GraphBackend):
                         collection=collection,
                         qdrant_client=qdrant_client,
                     )
+                    # Enrich edges with symbol metadata
+                    for edge in import_edges:
+                        edge.caller_signature = symbol_signature
+                        edge.caller_docstring = symbol_docstring
                     edges.extend(import_edges)
 
                     total_points += 1
@@ -660,6 +711,9 @@ class Neo4jGraphBackend(GraphBackend):
                 "language": edge.language or "",
                 "edge_id": edge.id,
                 "caller_point_id": edge.caller_point_id or "",
+                # Symbol metadata for caller node
+                "caller_signature": edge.caller_signature or "",
+                "caller_docstring": edge.caller_docstring or "",
             }
 
             if edge.edge_type == EDGE_TYPE_CALLS:
@@ -669,7 +723,7 @@ class Neo4jGraphBackend(GraphBackend):
 
         # Batch upsert CALLS edges using UNWIND
         # ON CREATE SET: populate Symbol node properties when first created
-        # ON MATCH SET: update start_line if we now have a more specific value
+        # ON MATCH SET: update start_line/signature/docstring if we now have more specific values
         for i in range(0, len(calls_edges), batch_size):
             batch = calls_edges[i:i + batch_size]
             try:
@@ -679,14 +733,23 @@ class Neo4jGraphBackend(GraphBackend):
                         MERGE (caller:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
                         ON CREATE SET caller.start_line = edge.start_line,
                                       caller.language = edge.language,
+                                      caller.signature = edge.caller_signature,
+                                      caller.docstring = edge.caller_docstring,
                                       caller.indexed_at = timestamp()
-                        // On match, prefer non-zero/non-null incoming value if existing is 0/null
-                        // This ensures "more specific" values (actual line numbers) overwrite placeholders
+                        // On match, prefer non-empty incoming values over existing null/empty
                         ON MATCH SET caller.start_line = CASE
                                          WHEN edge.start_line IS NOT NULL AND edge.start_line > 0 THEN edge.start_line
                                          ELSE COALESCE(caller.start_line, edge.start_line)
                                      END,
-                                     caller.language = COALESCE(edge.language, caller.language)
+                                     caller.language = COALESCE(edge.language, caller.language),
+                                     caller.signature = CASE
+                                         WHEN edge.caller_signature IS NOT NULL AND edge.caller_signature <> '' THEN edge.caller_signature
+                                         ELSE COALESCE(caller.signature, edge.caller_signature)
+                                     END,
+                                     caller.docstring = CASE
+                                         WHEN edge.caller_docstring IS NOT NULL AND edge.caller_docstring <> '' THEN edge.caller_docstring
+                                         ELSE COALESCE(caller.docstring, edge.caller_docstring)
+                                     END
                         MERGE (callee:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
                         ON CREATE SET callee.indexed_at = timestamp()
                         MERGE (caller)-[r:CALLS {edge_id: edge.edge_id}]->(callee)
@@ -714,9 +777,19 @@ class Neo4jGraphBackend(GraphBackend):
                         UNWIND $edges AS edge
                         MERGE (importer:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
                         ON CREATE SET importer.language = edge.language,
+                                      importer.signature = edge.caller_signature,
+                                      importer.docstring = edge.caller_docstring,
                                       importer.indexed_at = timestamp()
-                        // Prefer incoming language value (consistent with CALLS upsert behavior)
-                        ON MATCH SET importer.language = COALESCE(edge.language, importer.language)
+                        // Prefer incoming values (consistent with CALLS upsert behavior)
+                        ON MATCH SET importer.language = COALESCE(edge.language, importer.language),
+                                     importer.signature = CASE
+                                         WHEN edge.caller_signature IS NOT NULL AND edge.caller_signature <> '' THEN edge.caller_signature
+                                         ELSE COALESCE(importer.signature, edge.caller_signature)
+                                     END,
+                                     importer.docstring = CASE
+                                         WHEN edge.caller_docstring IS NOT NULL AND edge.caller_docstring <> '' THEN edge.caller_docstring
+                                         ELSE COALESCE(importer.docstring, edge.caller_docstring)
+                                     END
                         MERGE (imported:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
                         ON CREATE SET imported.indexed_at = timestamp()
                         MERGE (importer)-[r:IMPORTS {edge_id: edge.edge_id}]->(imported)
