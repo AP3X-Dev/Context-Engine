@@ -699,9 +699,15 @@ class Neo4jGraphBackend(GraphBackend):
             caller_path = _normalize_path(edge.caller_path)
             callee_path = edge.callee_path or f"<unresolved>/{edge.callee_symbol}"
 
+            # Extract simple names (leaf part of qualified paths) for resolution
+            caller_simple = edge.caller_symbol.rsplit(".", 1)[-1] if edge.caller_symbol else ""
+            callee_simple = edge.callee_symbol.rsplit(".", 1)[-1] if edge.callee_symbol else edge.callee_symbol
+
             edge_params = {
                 "caller_symbol": edge.caller_symbol,
                 "callee_symbol": edge.callee_symbol,
+                "caller_simple": caller_simple,
+                "callee_simple": callee_simple,
                 "repo": edge.repo,
                 "collection": collection,
                 "caller_path": caller_path,
@@ -731,13 +737,14 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (caller:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
-                        ON CREATE SET caller.start_line = edge.start_line,
+                        ON CREATE SET caller.simple_name = edge.caller_simple,
+                                      caller.start_line = edge.start_line,
                                       caller.language = edge.language,
                                       caller.signature = edge.caller_signature,
                                       caller.docstring = edge.caller_docstring,
                                       caller.indexed_at = timestamp()
-                        // On match, prefer non-empty incoming values over existing null/empty
-                        ON MATCH SET caller.start_line = CASE
+                        ON MATCH SET caller.simple_name = COALESCE(caller.simple_name, edge.caller_simple),
+                                     caller.start_line = CASE
                                          WHEN edge.start_line IS NOT NULL AND edge.start_line > 0 THEN edge.start_line
                                          ELSE COALESCE(caller.start_line, edge.start_line)
                                      END,
@@ -751,7 +758,8 @@ class Neo4jGraphBackend(GraphBackend):
                                          ELSE COALESCE(caller.docstring, edge.caller_docstring)
                                      END
                         MERGE (callee:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET callee.indexed_at = timestamp()
+                        ON CREATE SET callee.simple_name = edge.callee_simple, callee.indexed_at = timestamp()
+                        ON MATCH SET callee.simple_name = COALESCE(callee.simple_name, edge.callee_simple)
                         MERGE (caller)-[r:CALLS {edge_id: edge.edge_id}]->(callee)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
@@ -776,12 +784,13 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (importer:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
-                        ON CREATE SET importer.language = edge.language,
+                        ON CREATE SET importer.simple_name = edge.caller_simple,
+                                      importer.language = edge.language,
                                       importer.signature = edge.caller_signature,
                                       importer.docstring = edge.caller_docstring,
                                       importer.indexed_at = timestamp()
-                        // Prefer incoming values (consistent with CALLS upsert behavior)
-                        ON MATCH SET importer.language = COALESCE(edge.language, importer.language),
+                        ON MATCH SET importer.simple_name = COALESCE(importer.simple_name, edge.caller_simple),
+                                     importer.language = COALESCE(edge.language, importer.language),
                                      importer.signature = CASE
                                          WHEN edge.caller_signature IS NOT NULL AND edge.caller_signature <> '' THEN edge.caller_signature
                                          ELSE COALESCE(importer.signature, edge.caller_signature)
@@ -791,7 +800,8 @@ class Neo4jGraphBackend(GraphBackend):
                                          ELSE COALESCE(importer.docstring, edge.caller_docstring)
                                      END
                         MERGE (imported:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET imported.indexed_at = timestamp()
+                        ON CREATE SET imported.simple_name = edge.callee_simple, imported.indexed_at = timestamp()
+                        ON MATCH SET imported.simple_name = COALESCE(imported.simple_name, edge.callee_simple)
                         MERGE (importer)-[r:IMPORTS {edge_id: edge.edge_id}]->(imported)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
@@ -814,6 +824,82 @@ class Neo4jGraphBackend(GraphBackend):
                 logger.warning(f"Failed to compute pagerank: {e}")
 
         return total
+
+    def resolve_unresolved_edges(self, collection: str) -> int:
+        """Post-process: redirect edges from unresolved stubs to real definitions.
+
+        For each CALLS/IMPORTS edge pointing to an unresolved stub (<unresolved>/...),
+        find a real Symbol with matching simple_name and redirect the edge.
+        Then delete orphaned stub nodes.
+        """
+        driver = self._get_driver()
+        db = self._get_database()
+        total_resolved = 0
+
+        try:
+            with driver.session(database=db) as session:
+                # Redirect CALLS edges from unresolved stubs to real definitions
+                result = session.run("""
+                    MATCH (caller:Symbol)-[r:CALLS]->(stub:Symbol)
+                    WHERE stub.collection = $collection
+                      AND stub.path STARTS WITH '<unresolved>'
+                    WITH caller, r, stub
+                    MATCH (real:Symbol)
+                    WHERE real.collection = $collection
+                      AND real.simple_name = stub.simple_name
+                      AND NOT real.path STARTS WITH '<'
+                    WITH caller, r, stub, real
+                    LIMIT 50000
+                    CREATE (caller)-[r2:CALLS]->(real)
+                    SET r2 = properties(r)
+                    DELETE r
+                    RETURN count(r2) AS resolved
+                """, collection=collection)
+                record = result.single()
+                calls_resolved = record["resolved"] if record else 0
+                total_resolved += calls_resolved
+
+                # Redirect IMPORTS edges similarly
+                result = session.run("""
+                    MATCH (importer:Symbol)-[r:IMPORTS]->(stub:Symbol)
+                    WHERE stub.collection = $collection
+                      AND stub.path STARTS WITH '<unresolved>'
+                    WITH importer, r, stub
+                    MATCH (real:Symbol)
+                    WHERE real.collection = $collection
+                      AND real.simple_name = stub.simple_name
+                      AND NOT real.path STARTS WITH '<'
+                    WITH importer, r, stub, real
+                    LIMIT 50000
+                    CREATE (importer)-[r2:IMPORTS]->(real)
+                    SET r2 = properties(r)
+                    DELETE r
+                    RETURN count(r2) AS resolved
+                """, collection=collection)
+                record = result.single()
+                imports_resolved = record["resolved"] if record else 0
+                total_resolved += imports_resolved
+
+                # Delete orphaned stub nodes (no incoming or outgoing edges)
+                result = session.run("""
+                    MATCH (stub:Symbol)
+                    WHERE stub.collection = $collection
+                      AND stub.path STARTS WITH '<unresolved>'
+                      AND NOT (stub)<-[:CALLS|IMPORTS]-()
+                      AND NOT (stub)-[:CALLS|IMPORTS]->()
+                    DELETE stub
+                    RETURN count(stub) AS deleted
+                """, collection=collection)
+                record = result.single()
+                deleted = record["deleted"] if record else 0
+
+                if total_resolved > 0:
+                    logger.info(f"Resolved {calls_resolved} CALLS + {imports_resolved} IMPORTS edges, deleted {deleted} orphan stubs")
+
+        except Exception as e:
+            logger.error(f"Edge resolution failed: {e}")
+
+        return total_resolved
 
     def _compute_simple_pagerank(self, collection: str) -> int:
         """Compute degree-based importance scores (simple PageRank approximation).
@@ -1070,24 +1156,29 @@ class Neo4jGraphBackend(GraphBackend):
         symbol_name: str,
         repo: Optional[str] = None,
     ) -> Optional[str]:
-        """Resolve a symbol name to its definition file path via Neo4j."""
+        """Resolve a symbol name to its definition file path via Neo4j.
+        
+        Matches against simple_name (leaf part of qualified path) for better resolution
+        of calls like 'append' to their actual definitions.
+        """
         driver = self._get_driver()
         db = self._get_database()
         collection = self._get_collection(graph_store)
 
         try:
             with driver.session(database=db) as session:
-                # Find symbol with matching name that has a real file path
+                # Find symbol with matching simple_name that has a real file path
+                # simple_name is the leaf part (e.g., "_worker" from "_start_pseudo_backfill_worker._worker")
                 if repo and repo != "*":
                     result = session.run("""
-                        MATCH (s:Symbol {name: $symbol, collection: $collection, repo: $repo})
+                        MATCH (s:Symbol {simple_name: $symbol, collection: $collection, repo: $repo})
                         WHERE s.path IS NOT NULL AND NOT s.path STARTS WITH '<'
                         RETURN s.path as path
                         LIMIT 1
                     """, {"symbol": symbol_name, "collection": collection, "repo": repo})
                 else:
                     result = session.run("""
-                        MATCH (s:Symbol {name: $symbol, collection: $collection})
+                        MATCH (s:Symbol {simple_name: $symbol, collection: $collection})
                         WHERE s.path IS NOT NULL AND NOT s.path STARTS WITH '<'
                         RETURN s.path as path
                         LIMIT 1

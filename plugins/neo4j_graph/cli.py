@@ -66,14 +66,14 @@ def cmd_backfill(args):
     from qdrant_client import QdrantClient
     from .backend import Neo4jGraphBackend
 
-    # Import edge extraction from ingest_adapter for consistent resolution
+    # Try to import ingest_adapter for proper symbol resolution
     try:
         from scripts.graph_backends.ingest_adapter import extract_call_edges, extract_import_edges
+        use_ingest_adapter = True
     except ImportError:
-        # Fallback to local base if ingest_adapter not available
         from .base import GraphEdge
-        extract_call_edges = None
-        extract_import_edges = None
+        use_ingest_adapter = False
+        print("  Warning: ingest_adapter not available, edges will have unresolved callee paths")
 
     collection = args.collection
     limit = args.limit
@@ -155,9 +155,14 @@ def cmd_backfill(args):
 
             calls = meta.get("calls", []) or []
             imports = meta.get("imports", []) or []
+            # import_map maps local names to qualified paths for resolution
+            # e.g., {"QdrantClient": "qdrant_client.QdrantClient"}
+            import_map = meta.get("import_map", {}) or {}
+            symbol_signature = meta.get("symbol_signature", "") or ""
+            symbol_docstring = meta.get("symbol_docstring", "") or ""
 
-            # Use ingest_adapter for consistent edge extraction with full resolution
-            if extract_call_edges is not None:
+            if use_ingest_adapter:
+                # Use ingest_adapter for proper symbol resolution
                 call_edges = extract_call_edges(
                     symbol_path=symbol_path,
                     calls=calls,
@@ -167,12 +172,16 @@ def cmd_backfill(args):
                     end_line=end_line,
                     language=language,
                     caller_point_id=str(p.id),
+                    import_paths=import_map,  # Pass import_map for resolution
                     collection=collection,
                     qdrant_client=client,
                 )
+                # Enrich edges with symbol metadata
+                for edge in call_edges:
+                    edge.caller_signature = symbol_signature
+                    edge.caller_docstring = symbol_docstring
                 edges.extend(call_edges)
 
-            if extract_import_edges is not None:
                 import_edges = extract_import_edges(
                     symbol_path=symbol_path,
                     imports=imports,
@@ -183,7 +192,48 @@ def cmd_backfill(args):
                     collection=collection,
                     qdrant_client=client,
                 )
+                # Enrich edges with symbol metadata
+                for edge in import_edges:
+                    edge.caller_signature = symbol_signature
+                    edge.caller_docstring = symbol_docstring
                 edges.extend(import_edges)
+            else:
+                # Fallback: Create edges directly without resolution
+                for callee in calls:
+                    if callee and isinstance(callee, str):
+                        edge_id = f"{symbol_path}:calls:{callee}"
+                        edges.append(GraphEdge(
+                            id=edge_id,
+                            edge_type="calls",
+                            caller_symbol=symbol_path,
+                            callee_symbol=callee,
+                            caller_path=path,
+                            callee_path="",  # Unknown - will be resolved if found
+                            repo=repo,
+                            language=language,
+                            start_line=start_line,
+                            end_line=end_line,
+                            caller_signature=symbol_signature,
+                            caller_docstring=symbol_docstring,
+                        ))
+
+                for imported in imports:
+                    if imported and isinstance(imported, str):
+                        edge_id = f"{symbol_path}:imports:{imported}"
+                        edges.append(GraphEdge(
+                            id=edge_id,
+                            edge_type="imports",
+                            caller_symbol=symbol_path,
+                            callee_symbol=imported,
+                            caller_path=path,
+                            callee_path="",
+                            repo=repo,
+                            language=language,
+                            start_line=start_line,
+                            end_line=end_line,
+                            caller_signature=symbol_signature,
+                            caller_docstring=symbol_docstring,
+                        ))
 
             total_points += 1
 
@@ -205,6 +255,15 @@ def cmd_backfill(args):
         total_edges += count
 
     print(f"\n✓ Backfilled {total_edges} edges from {total_points} points to Neo4j")
+
+    # Post-process: resolve unresolved edges to real definitions
+    print("  Resolving unresolved edges to real definitions...")
+    resolved = backend.resolve_unresolved_edges(collection)
+    if resolved > 0:
+        print(f"  ✓ Resolved {resolved} edges")
+    else:
+        print("  (no edges could be resolved)")
+
     return 0
 
 

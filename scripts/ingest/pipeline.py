@@ -692,8 +692,10 @@ def _index_single_file_inner(
     symbols = ast_info.get("symbol_spans") or _extract_symbols(language, text)
     imports = ast_info.get("imports")
     calls = ast_info.get("calls")
+    # Always get import_map for callee resolution (ast_info doesn't provide it)
+    _, _, import_map = _get_imports_calls(language, text)
     if "imports" not in ast_info or "calls" not in ast_info:
-        base_imports, base_calls = _get_imports_calls(language, text)
+        base_imports, base_calls, _ = _get_imports_calls(language, text)
         if "imports" not in ast_info:
             imports = base_imports
         if "calls" not in ast_info:
@@ -872,6 +874,8 @@ def _index_single_file_inner(
                 # otherwise fall back to file-level calls/imports
                 "imports": ch.get("imports") if ch.get("imports") else imports,
                 "calls": ch.get("calls") if ch.get("calls") else calls,
+                # Import map for callee resolution: local_name -> qualified_path
+                "import_map": import_map if import_map else None,
                 "symbol_start_line": ch.get("symbol_start_line"),
                 "symbol_end_line": ch.get("symbol_end_line"),
                 "symbol_signature": ch.get("symbol_signature"),
@@ -1636,8 +1640,10 @@ def process_file_with_smart_reindexing(
 
     imports = ast_info.get("imports")
     calls = ast_info.get("calls")
+    # Always get import_map for callee resolution (ast_info doesn't provide it)
+    _, _, import_map = _get_imports_calls(language, text)
     if "imports" not in ast_info or "calls" not in ast_info:
-        base_imports, base_calls = _get_imports_calls(language, text)
+        base_imports, base_calls, _ = _get_imports_calls(language, text)
         if "imports" not in ast_info:
             imports = base_imports
         if "calls" not in ast_info:
@@ -1715,6 +1721,8 @@ def process_file_with_smart_reindexing(
                 # otherwise fall back to file-level calls/imports
                 "imports": ch.get("imports") if ch.get("imports") else imports,
                 "calls": ch.get("calls") if ch.get("calls") else calls,
+                # Import map for callee resolution: local_name -> qualified_path
+                "import_map": import_map if import_map else None,
                 "symbol_start_line": ch.get("symbol_start_line"),
                 "symbol_end_line": ch.get("symbol_end_line"),
                 "symbol_signature": ch.get("symbol_signature"),
