@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import sys
@@ -9,6 +10,8 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     from qdrant_client import QdrantClient
@@ -923,12 +926,13 @@ def delete_collection_qdrant(*, qdrant_url: str, api_key: Optional[str], collect
         return
     try:
         cli = QdrantClient(url=qdrant_url, api_key=api_key or None)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to connect to Qdrant to delete collection '{name}': {e}")
         return
     try:
         cli.delete_collection(collection_name=name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to delete collection '{name}' from Qdrant: {e}")
     finally:
         try:
             cli.close()

@@ -7,11 +7,14 @@ and vector schema handling for the indexing pipeline.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from qdrant_client import QdrantClient, models
 
@@ -616,8 +619,8 @@ def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: 
         return
     try:
         client.delete_collection(name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Collection {name} could not be deleted (may not exist): {e}")
     vectors_cfg = {
         vector_name: models.VectorParams(size=dim, distance=models.Distance.COSINE),
         LEX_VECTOR_NAME: models.VectorParams(

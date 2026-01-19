@@ -1987,8 +1987,8 @@ def process_file_with_smart_reindexing(
                     ent_vecs = _embed_batch(model, list(ent_texts))
                     for idx, evec in zip(ent_indices, ent_vecs):
                         entity_vectors[idx] = evec
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to embed {len(entity_to_embed)} entity texts: {e}")
 
             # Batch embed relation texts
             if relation_to_embed:
@@ -1997,8 +1997,8 @@ def process_file_with_smart_reindexing(
                     rel_vecs = _embed_batch(model, list(rel_texts))
                     for idx, rvec in zip(rel_indices, rel_vecs):
                         relation_vectors[idx] = rvec
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to embed {len(relation_to_embed)} relation texts: {e}")
         else:
             entity_vectors = [[] for _ in embed_texts]
             relation_vectors = [[] for _ in embed_texts]
@@ -2328,13 +2328,16 @@ def pseudo_backfill_tick(
         if new_points:
             try:
                 upsert_points(client, collection, new_points)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Upsert failed for {len(new_points)} points, retrying after ensure_collection: {e}")
                 if _maybe_ensure_collection():
                     try:
                         upsert_points(client, collection, new_points)
-                    except Exception:
+                    except Exception as e2:
+                        logger.error(f"Upsert retry failed for {len(new_points)} points: {e2}")
                         break
                 else:
+                    logger.error(f"Upsert failed and collection ensure failed; aborting backfill")
                     break
 
         if next_offset is None:

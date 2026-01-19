@@ -12,6 +12,7 @@ This module provides functionality to track workspace-specific state including:
 - Multi-repo support with per-repo state files
 """
 import json
+import logging
 import os
 import re
 import uuid
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Literal, TypedDict
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 _CANONICAL_SLUG_RE = re.compile(r"^.+-[0-9a-f]{16}$")
 _SLUGGED_REPO_RE = re.compile(r"^.+-[0-9a-f]{16}(?:_old)?$")
@@ -919,8 +922,8 @@ def set_indexing_started(workspace_path: str, total_files: int) -> None:
                 "progress": {"files_processed": 0, "total_files": int(total_files)},
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to set indexing started status for {workspace_path}: {e}")
 
 
 def set_indexing_progress(
@@ -945,8 +948,8 @@ def set_indexing_progress(
                 },
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to update indexing progress for {workspace_path}: {e}")
 
 
 def log_watcher_activity(
@@ -973,8 +976,8 @@ def log_watcher_activity(
             file_path=str(file_path),
             details=details,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to log watcher activity for {file_path}: {e}")
 
 def update_indexing_status(
     workspace_path: Optional[str] = None,
