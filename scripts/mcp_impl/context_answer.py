@@ -2866,13 +2866,15 @@ async def _context_answer_impl(
     # Enforce sane minimums to avoid empty span selection
     try:
         lim = int(lim)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - limit cast")
         lim = 15
     if lim <= 0:
         lim = 1
     try:
         ppath = int(ppath)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e} - per_path cast")
         ppath = 5
     if ppath <= 0:
         ppath = 1
