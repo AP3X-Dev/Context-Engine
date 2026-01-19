@@ -49,7 +49,8 @@ def is_staging_enabled() -> bool:
 def _cache_memo_recheck_seconds() -> float:
     try:
         return float(os.environ.get("CACHE_MEMO_RECHECK_SECONDS", "60") or 60)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse CACHE_MEMO_RECHECK_SECONDS, using default: {e}")
         return 60.0
 
 
@@ -61,10 +62,12 @@ def _normalize_cache_key_path(file_path: str) -> str:
     """
     try:
         return os.path.abspath(file_path)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to normalize path with abspath, trying Path: {e}")
         try:
             return str(Path(file_path))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to normalize path with Path, using raw string: {e}")
             return str(file_path)
 
 
@@ -95,7 +98,8 @@ def _cache_file_sig(cache_path: Path) -> Optional[tuple[int, int]]:
         mtime_ns = int(
             getattr(st, "st_mtime_ns", int(getattr(st, "st_mtime", 0) * 1_000_000_000))
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get mtime_ns, using st_mtime fallback: {e}")
         mtime_ns = int(getattr(st, "st_mtime", 0) * 1_000_000_000)
     return (mtime_ns, int(getattr(st, "st_size", 0)))
 
@@ -339,14 +343,16 @@ def _detect_git_common_dir(start: Path) -> Optional[Path]:
         if not p.is_absolute():
             p = base / p
         return p.resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to detect git common dir for {start}: {e}")
         return None
 
 
 def compute_logical_repo_id(workspace_path: str) -> str:
     try:
         p = Path(workspace_path).resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve workspace path, using raw Path: {e}")
         p = Path(workspace_path)
 
     common = _detect_git_common_dir(p)
@@ -484,7 +490,8 @@ def is_file_locked(file_path: str) -> bool:
                 logger.debug(f"Suppressed exception: {e}")
             return False
         return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to check file lock for {file_path}: {e}")
         return False
 
 
@@ -543,8 +550,8 @@ def file_indexing_lock(file_path: str):
         if fd is not None:
             try:
                 os.close(fd)
-            except Exception as e:
-                logger.debug(f"Suppressed exception: {e}")
+            except Exception as close_err:
+                logger.debug(f"Suppressed exception: {close_err}")
         raise RuntimeError(f"Could not acquire file lock: {e}")
 
     try:
@@ -594,7 +601,7 @@ def _git_remote_repo_name(repo_path: Path) -> Optional[str]:
             if name:
                 return name
     except Exception as e:
-        logger.debug(f"Suppressed exception: {e}")
+        logger.debug(f"Failed to get git remote origin URL: {e}")
 
     try:
         r = subprocess.run(
@@ -607,7 +614,7 @@ def _git_remote_repo_name(repo_path: Path) -> Optional[str]:
         if r.returncode == 0 and top:
             return Path(top).name
     except Exception as e:
-        logger.debug(f"Suppressed exception: {e}")
+        logger.debug(f"Failed to get git toplevel: {e}")
     return None
 
 
@@ -631,12 +638,14 @@ def _detect_repo_name_from_path(path: Path) -> str:
     # root instead of spawning git processes or falling back to "work".
     try:
         ws_root = Path(_resolve_workspace_root()).resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve workspace root, using raw Path: {e}")
         ws_root = Path(_resolve_workspace_root())
 
     try:
         resolved = path.resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve path, using raw path: {e}")
         resolved = path if path.is_dir() else path.parent
 
     try:

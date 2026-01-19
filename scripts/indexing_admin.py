@@ -154,16 +154,18 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
     api_key = os.environ.get("QDRANT_API_KEY") or None
     try:
         client = QdrantClient(url=qdrant_url, api_key=api_key)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to connect to Qdrant for schema probe: {e}")
         return None
 
     try:
         info = client.get_collection(collection_name=collection)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get collection info for '{collection}': {e}")
         try:
             client.close()
-        except Exception as e:
-            logger.debug(f"Suppressed exception: {e}")
+        except Exception as close_e:
+            logger.debug(f"Suppressed exception during close: {close_e}")
         return None
 
     try:
@@ -177,13 +179,15 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
             else:
                 try:
                     items = raw_vectors.items()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to get items from raw_vectors: {e}")
                     items = None
             if items:
                 for name, params in items:
                     try:
                         size = getattr(params, "size", None)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Failed to get vector size from params: {e}")
                         size = None
                     vectors[str(name)] = size
 
@@ -196,7 +200,8 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
             else:
                 try:
                     keys_iter = raw_sparse.keys()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to get keys from raw_sparse: {e}")
                     keys_iter = None
             if keys_iter:
                 for name in keys_iter:
@@ -209,7 +214,8 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
         }
         _COLLECTION_SCHEMA_CACHE[collection] = schema
         return schema
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to build schema for collection '{collection}': {e}")
         return None
     finally:
         try:
@@ -290,7 +296,8 @@ def _auto_refresh_snapshot_if_needed(
     # Skip when indexing is currently running; wait for a quiescent window.
     try:
         normalized_index_state = (indexing_state or "").strip().lower()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to normalize indexing state: {e}")
         normalized_index_state = ""
     if normalized_index_state in {"initializing", "indexing", "running"}:
         return False
@@ -310,7 +317,8 @@ def _auto_refresh_snapshot_if_needed(
             has_pending = False
             applied_hash = ""
             pending_hash = ""
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get workspace state for snapshot refresh: {e}")
         has_pending = False
         applied_hash = ""
         pending_hash = ""
@@ -383,8 +391,9 @@ def _delete_path_tree(p: Path) -> bool:
             try:
                 shutil.rmtree(p)
                 return True
-            except Exception:
+            except Exception as e:
                 # Best-effort permission fixup for shared volumes / root-owned files.
+                logger.debug(f"Initial rmtree failed for {p}, attempting permission fixup: {e}")
                 try:
                     for sub in p.rglob("*"):
                         try:
@@ -403,11 +412,13 @@ def _delete_path_tree(p: Path) -> bool:
                 try:
                     shutil.rmtree(p)
                     return True
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to rmtree {p} after permission fixup: {e}")
                     return False
         p.unlink()
         return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to delete path {p}: {e}")
         return False
 
 
@@ -427,7 +438,8 @@ def _resolve_codebase_root(work_root: Path) -> Path:
     for candidate in candidates:
         try:
             base = candidate.resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve candidate path {candidate}: {e}")
             base = candidate
         try:
             if (base / ".codebase" / "repos").exists():
@@ -469,7 +481,8 @@ def _cleanup_old_clone(
         env_work = work_dir or os.environ.get("WORK_DIR") or os.environ.get("WORKDIR") or "/work"
         try:
             return Path(env_work).resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve work path {env_work}: {e}")
             return Path(env_work)
 
     base_work_root = _resolve_base_work_root()
@@ -479,11 +492,13 @@ def _cleanup_old_clone(
             return base_work_root
         try:
             resolved_candidate = candidate.resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve candidate {candidate}: {e}")
             resolved_candidate = candidate
         try:
             resolved_base = base_work_root.resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve base work root: {e}")
             resolved_base = base_work_root
         try:
             if resolved_base == resolved_candidate or resolved_base in resolved_candidate.parents:
@@ -502,10 +517,12 @@ def _cleanup_old_clone(
     if workspace_root:
         try:
             work_root = Path(workspace_root).resolve().parent
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve workspace_root {workspace_root}: {e}")
             try:
                 work_root = Path(workspace_root).parent
-            except Exception:
+            except Exception as e2:
+                logger.debug(f"Failed to get parent of workspace_root: {e2}")
                 work_root = None
     if work_root is None:
         try:
@@ -513,7 +530,8 @@ def _cleanup_old_clone(
                 work_root = Path(work_dir).resolve()
             else:
                 work_root = Path(os.environ.get("WORK_DIR") or os.environ.get("WORKDIR") or "/work").resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve work_root, falling back to /work: {e}")
             work_root = Path("/work")
     work_root = _clamp_to_base(work_root)
 
@@ -523,11 +541,13 @@ def _cleanup_old_clone(
         try:
             resolved_target = target.resolve()
             resolved_base = work_root.resolve()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve paths for safe_delete: {e}")
             try:
                 resolved_target = target
                 resolved_base = work_root
-            except Exception:
+            except Exception as e2:
+                logger.debug(f"Failed to fallback resolve for safe_delete: {e2}")
                 return
         try:
             if resolved_base == resolved_target or resolved_base in resolved_target.parents:
@@ -600,7 +620,8 @@ def current_env_indexing_hash() -> str:
     try:
         if get_indexing_config_snapshot and compute_indexing_config_hash:
             return compute_indexing_config_hash(get_indexing_config_snapshot())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to compute current env indexing hash: {e}")
         return ""
     return ""
 
@@ -614,7 +635,8 @@ def _current_env_indexing_config_and_hash() -> Tuple[Dict[str, Any], str]:
             if isinstance(snapshot, dict):
                 cfg = snapshot
             cfg_hash = compute_indexing_config_hash(snapshot or {})
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get indexing config snapshot: {e}")
             cfg = {}
             cfg_hash = ""
     if not cfg_hash:
@@ -661,11 +683,13 @@ def collection_mapping_index(*, work_dir: str) -> Dict[str, List[Dict[str, Any]]
         return {}
     try:
         ttl = float(os.environ.get("CTXCE_COLLECTION_MAPPING_INDEX_TTL_SECS", "5") or 5)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse TTL from env, using default: {e}")
         ttl = 5.0
     try:
         now = time.time()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get current time: {e}")
         now = 0.0
     try:
         if (
@@ -680,13 +704,15 @@ def collection_mapping_index(*, work_dir: str) -> Dict[str, List[Dict[str, Any]]
         logger.debug(f"Suppressed exception: {e}")
     try:
         mappings = get_collection_mappings(search_root=work_dir) or []
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get collection mappings: {e}")
         mappings = []
     out: Dict[str, List[Dict[str, Any]]] = {}
     for m in mappings:
         try:
             name = str(m.get("collection_name") or "").strip()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to extract collection name from mapping: {e}")
             name = ""
         if not name:
             continue
@@ -713,11 +739,13 @@ def resolve_collection_root(*, collection: str, work_dir: str) -> Tuple[Optional
     container_path = chosen.get("container_path")
     try:
         repo_name = str(repo_name) if repo_name is not None else None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to convert repo_name to string: {e}")
         repo_name = None
     try:
         container_path = str(container_path) if container_path is not None else None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to convert container_path to string: {e}")
         container_path = None
     if container_path:
         return container_path, repo_name
@@ -732,7 +760,8 @@ def _get_workspace_state_safe(workspace_path: str, repo_name: Optional[str]) -> 
         if isinstance(state, dict):
             return state
         return {}
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get workspace state for {workspace_path}/{repo_name}: {e}")
         return {}
 
 
@@ -744,7 +773,8 @@ def get_indexing_state(*, workspace_path: str, repo_name: Optional[str]) -> str:
         idx_status = st.get("indexing_status") or {}
         if isinstance(idx_status, dict):
             return str(idx_status.get("state") or "")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get indexing state: {e}")
         return ""
     return ""
 
@@ -757,7 +787,8 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
     for c in collections or []:
         try:
             coll_name = str(getattr(c, "qdrant_collection", None) or c.get("qdrant_collection") or "").strip()  # type: ignore[union-attr]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to extract qdrant_collection name: {e}")
             coll_name = ""
 
         applied_hash = ""
@@ -779,7 +810,8 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
                 m = matches[0]
                 repo_name = m.get("repo_name")
                 container_path = m.get("container_path")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get mapping info for {coll_name}: {e}")
             mapping_count = 0
 
         st: Dict[str, Any] = {}
@@ -787,7 +819,8 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
             try:
                 st_raw = get_workspace_state(str(container_path), repo_name) or {}
                 st = st_raw if isinstance(st_raw, dict) else {}
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to get workspace state for {container_path}: {e}")
                 st = {}
         if st:
             try:
@@ -803,17 +836,21 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
                     if isinstance(progress, dict):
                         try:
                             progress_files_processed = int(progress.get("files_processed"))
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse files_processed: {e}")
                             progress_files_processed = None
                         try:
                             progress_total_files = int(progress.get("total_files"))
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse total_files: {e}")
                             progress_total_files = None
                         try:
                             progress_current_file = str(progress.get("current_file") or "")
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse current_file: {e}")
                             progress_current_file = ""
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to extract state info from workspace state: {e}")
                 applied_hash = ""
                 applied_config = {}
                 pending_hash = ""
@@ -838,7 +875,8 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
                         staging_state = str(staging_status_info.get("state") or "")
                 else:
                     staging_status = "none"
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to extract staging info: {e}")
                 staging_status = "none"
 
         # "maintenance needed" should reflect actual config drift requiring a maintenance reindex.
@@ -882,7 +920,8 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
 
         try:
             cid = getattr(c, "id", None) if hasattr(c, "id") else c.get("id")  # type: ignore[union-attr]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get collection id: {e}")
             cid = None
 
         enriched.append(
@@ -1037,7 +1076,8 @@ def _determine_embedding_dim(model_name: str) -> int:
 
         model = TextEmbedding(model_name=model_name)
         return len(next(model.embed(["dimension probe"])))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to determine embedding dimension via fastembed, using default 1536: {e}")
         return 1536
 
 
@@ -1050,11 +1090,13 @@ def _normalize_cloned_collection_schema(*, collection_name: str, qdrant_url: str
     if _sanitize_vector_name is not None:
         try:
             vector_name = _sanitize_vector_name(model_name)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to sanitize vector name: {e}")
             vector_name = None
     try:
         client = QdrantClient(url=qdrant_url, api_key=os.environ.get("QDRANT_API_KEY") or None)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to connect to Qdrant for schema normalization: {e}")
         return
     try:
         # IMPORTANT: This function is called on a freshly cloned "*_old" collection which may
@@ -1082,13 +1124,15 @@ def _get_collection_point_count(*, collection_name: str, qdrant_url: str) -> Opt
         return None
     try:
         client = QdrantClient(url=qdrant_url, api_key=os.environ.get("QDRANT_API_KEY") or None)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to connect to Qdrant to get point count: {e}")
         return None
     try:
         try:
             result = client.count(collection_name=collection_name, exact=True)
             return int(getattr(result, "count", 0))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to count points in {collection_name}: {e}")
             return None
     finally:
         try:
@@ -1109,7 +1153,8 @@ def _wait_for_clone_points(
         return
     try:
         client = QdrantClient(url=qdrant_url, api_key=os.environ.get("QDRANT_API_KEY") or None)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to connect to Qdrant for clone verification: {e}")
         return
 
     try:
@@ -1122,7 +1167,8 @@ def _wait_for_clone_points(
             try:
                 result = client.count(collection_name=cloned_collection, exact=True)
                 clone_count = int(getattr(result, "count", 0))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to count points during clone verification: {e}")
                 clone_count = 0
 
             if clone_count >= expected_count:
@@ -1161,7 +1207,8 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
     staging_status_state = ""
     try:
         staging_status_state = str(((current_staging.get("status") or {}).get("state") or "")).strip().lower()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to extract staging status state: {e}")
         staging_status_state = ""
     queued_marker = staging_status_state in {"", "queued"}
     if isinstance(current_staging, dict) and current_staging.get("collection") and not queued_marker:
@@ -1358,7 +1405,8 @@ def activate_staging_rebuild(*, collection: str, work_dir: str) -> None:
     try:
         if isinstance(staging, dict) and staging.get("collection"):
             staging_active = True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to check staging dict for activation: {e}")
         staging_active = False
     try:
         if str(state.get("serving_collection") or "").strip() == f"{collection}_old":
@@ -1433,7 +1481,8 @@ def abort_staging_rebuild(
     try:
         if isinstance(staging, dict) and staging.get("collection"):
             staging_active = True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to check staging dict for abort: {e}")
         staging_active = False
     try:
         if str(state.get("serving_collection") or "").strip() == f"{collection}_old":

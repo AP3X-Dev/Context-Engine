@@ -1672,7 +1672,16 @@ Examples:
                 output = sanitize_citations(rewritten.strip(), allowed_paths)
 
         if args.cmd:
-            subprocess.run(args.cmd, input=output.encode("utf-8"), shell=True, check=False)
+            # Security: Use shell=False with proper argument parsing to prevent injection
+            # The cmd is expected to be a single command that receives output via stdin
+            import shlex
+            try:
+                cmd_parts = shlex.split(args.cmd)
+                subprocess.run(cmd_parts, input=output.encode("utf-8"), check=False)
+            except ValueError as e:
+                # shlex.split can fail on malformed input (e.g., unmatched quotes)
+                print(f"Error: Invalid command syntax: {e}", file=sys.stderr)
+                sys.exit(1)
         else:
             print(output)
 

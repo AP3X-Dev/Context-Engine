@@ -258,8 +258,7 @@ def _ensure_collection_with_mode(
     mode: str,
 ) -> None:
     if not name:
-        print("[BUG] ensure_collection called with name=None! Fix the caller - collection name is required.", flush=True)
-        return
+        raise ValueError("ensure_collection called with name=None - collection name is required. Check caller stack trace.")
 
     vectors_cfg, sparse_cfg = _desired_vector_configs(dim, vector_name)
     desired_vectors = set(vectors_cfg.keys())
@@ -364,13 +363,15 @@ def ensure_collection(
     Always includes dense (vector_name) and lexical (LEX_VECTOR_NAME).
     When REFRAG_MODE=1, also includes a compact mini vector (MINI_VECTOR_NAME).
     When PATTERN_VECTORS=1, also includes pattern_vector for structural similarity.
+
+    Raises:
+        ValueError: If name is None or empty.
     """
+    if not name:
+        raise ValueError("ensure_collection called with name=None - collection name is required. Check caller stack trace.")
     mode = _normalize_schema_mode(schema_mode)
     if mode != "legacy":
         _ensure_collection_with_mode(client, name, dim, vector_name, mode)
-        return
-    if not name:
-        print("[BUG] ensure_collection called with name=None! Fix the caller - collection name is required.", flush=True)
         return
     backup_file = None
     try:
@@ -613,10 +614,13 @@ def _restore_memories_after_recreate(name: str, backup_file: Optional[str]):
 
 
 def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: str):
-    """Drop and recreate collection with named vectors."""
+    """Drop and recreate collection with named vectors.
+
+    Raises:
+        ValueError: If name is None or empty.
+    """
     if not name:
-        print("[BUG] recreate_collection called with name=None! Fix the caller - collection name is required.", flush=True)
-        return
+        raise ValueError("recreate_collection called with name=None - collection name is required. Check caller stack trace.")
     try:
         client.delete_collection(name)
     except Exception as e:
@@ -675,9 +679,15 @@ def ensure_collection_and_indexes_once(
     *,
     schema_mode: str | None = None,
 ) -> None:
-    """Ensure collection and indexes exist (cached per-process)."""
+    """Ensure collection and indexes exist (cached per-process).
+
+    Raises:
+        ValueError: If collection or vector_name is None or empty.
+    """
     if not collection:
-        return
+        raise ValueError("ensure_collection_and_indexes_once called with collection=None - collection name is required.")
+    if not vector_name:
+        raise ValueError("ensure_collection_and_indexes_once called with vector_name=None - vector name is required.")
     mode = _normalize_schema_mode(schema_mode)
     if mode not in {"validate", "create"} and collection in ENSURED_COLLECTIONS:
         try:
@@ -724,10 +734,13 @@ def get_indexed_file_hash(
     repo_id: str | None = None,
     repo_rel_path: str | None = None,
 ) -> str:
-    """Return previously indexed file hash for this logical path, or empty string."""
+    """Return previously indexed file hash for this logical path, or empty string.
+
+    Raises:
+        ValueError: If collection is None or empty.
+    """
     if not collection:
-        print("[BUG] get_indexed_file_hash called with collection=None! Fix the caller.", flush=True)
-        return ""
+        raise ValueError("get_indexed_file_hash called with collection=None - collection name is required. Check caller stack trace.")
     if logical_repo_reuse_enabled() and repo_id and repo_rel_path:
         try:
             filt = models.Filter(
@@ -780,10 +793,13 @@ def get_indexed_file_hash(
 
 
 def delete_points_by_path(client: QdrantClient, collection: str, file_path: str):
-    """Delete all points for a given file path."""
+    """Delete all points for a given file path.
+
+    Raises:
+        ValueError: If collection is None or empty.
+    """
     if not collection:
-        print("[BUG] delete_points_by_path called with collection=None! Fix the caller.", flush=True)
-        return
+        raise ValueError("delete_points_by_path called with collection=None - collection name is required. Check caller stack trace.")
     try:
         filt = models.Filter(
             must=[
@@ -805,12 +821,15 @@ def delete_points_by_path(client: QdrantClient, collection: str, file_path: str)
 def upsert_points(
     client: QdrantClient, collection: str, points: List[models.PointStruct]
 ):
-    """Upsert points with retry and batching."""
+    """Upsert points with retry and batching.
+
+    Raises:
+        ValueError: If collection is None or empty.
+    """
     if not points:
         return
     if not collection:
-        print("[BUG] upsert_points called with collection=None! Fix the caller.", flush=True)
-        return
+        raise ValueError("upsert_points called with collection=None - collection name is required. Check caller stack trace.")
     try:
         bsz = int(os.environ.get("INDEX_UPSERT_BATCH", "256") or 256)
     except Exception:
