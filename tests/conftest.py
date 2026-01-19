@@ -77,6 +77,25 @@ def _ensure_mcp_imported():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _clean_module_pollution():
+    """Clean up module pollution after each test.
+
+    Tests that monkeypatch sys.modules (e.g., test_reranker_verification)
+    can leave stale module references that pollute subsequent tests.
+    This fixture removes potentially-polluted modules after each test.
+    """
+    yield
+    # After test completes, remove polluted modules so next test gets fresh imports
+    modules_to_remove = [
+        "scripts.mcp_indexer_server",
+        "scripts.hybrid_search",
+        "scripts.rerank_local",
+    ]
+    for mod in modules_to_remove:
+        sys.modules.pop(mod, None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _preload_real_embedding_model():
     """Pre-load the real embedding model to prevent fake model pollution.
