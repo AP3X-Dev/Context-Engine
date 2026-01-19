@@ -123,7 +123,8 @@ async def _search_commits_for_impl(
                 try:
                     from scripts.utils import sanitize_vector_name as _sanitize_vector_name
                 except Exception as e:
-                    logger.debug(f"Suppressed exception (import sanitize_vector_name): {e}")
+                    logger.debug(f"Suppressed exception while importing sanitize_vector_name: {e}")
+                    logger.debug(f"Suppressed exception: {e}")
                     _sanitize_vector_name = None
 
                 model_name = os.environ.get("MODEL_NAME", "BAAI/bge-base-en-v1.5")
@@ -132,7 +133,8 @@ async def _search_commits_for_impl(
                     try:
                         vec_name = _sanitize_vector_name(model_name)
                     except Exception as e:
-                        logger.debug(f"Suppressed exception (sanitize_vector_name): {e}")
+                        logger.debug(f"Suppressed exception while sanitizing vector name: {e}")
+                        logger.debug(f"Suppressed exception: {e}")
                         vec_name = None
                 else:
                     vec_name = None
