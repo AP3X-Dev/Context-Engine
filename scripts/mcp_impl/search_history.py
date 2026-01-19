@@ -170,14 +170,16 @@ async def _search_commits_for_impl(
                             try:
                                 vs = float(getattr(sp, "score", 0.0) or 0.0)
                             except Exception as e:
-                                logger.debug(f"Suppressed exception (score parse): {e}")
+                                logger.debug(f"Suppressed exception while parsing vector score: {e}")
+                                logger.debug(f"Suppressed exception: {e}")
                                 vs = 0.0
                             if vs <= 0.0:
                                 continue
                             if scid_v not in vector_scores or vs > vector_scores[scid_v]:
                                 vector_scores[scid_v] = vs
             except Exception as e:
-                logger.debug(f"Suppressed exception (vector search): {e}")
+                logger.debug(f"Suppressed exception while scoring commit vectors: {e}")
+                logger.debug(f"Suppressed exception: {e}")
                 vector_scores = {}
 
         page = None
@@ -209,7 +211,8 @@ async def _search_commits_for_impl(
                 try:
                     files_list = [str(f) for f in files]
                 except Exception as e:
-                    logger.debug(f"Suppressed exception (files_list parse): {e}")
+                    logger.debug(f"Suppressed exception while parsing files list: {e}")
+                    logger.debug(f"Suppressed exception: {e}")
                     files_list = []
                 # Optional lineage-style metadata
                 lg = md.get("lineage_goal")
@@ -279,7 +282,9 @@ async def _search_commits_for_impl(
                             )
                             score += weight * vec_score
                 except Exception as e:
+                    logger.debug(f"Suppressed exception while blending vector score: {e}")
                     logger.debug(f"Suppressed exception: {e}")
+
                 seen_ids.add(scid)
                 out.append(
                     {

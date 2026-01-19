@@ -3310,7 +3310,8 @@ async def _context_answer_impl(
                     ),
                 )
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e} - token budget cap")
             _allow_tokens = int(max(16, int(mtok)))
         mtok = int(_allow_tokens)
         _llama_timeout = int(max(5.0, min(_decoder_timeout_cap, max(1.0, _remain - 1.0))))
