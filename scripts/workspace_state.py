@@ -1863,13 +1863,13 @@ def get_collection_mappings(search_root: Optional[str] = None) -> List[Dict[str,
                     )
         else:
             state_path = root_path / STATE_DIRNAME / STATE_FILENAME
-             if state_path.exists():
-                 try:
-                     with open(state_path, "r", encoding="utf-8-sig") as f:
-                         state = json.load(f) or {}
-                 except Exception as e:
-                     logger.debug(f"Failed to read state file {state_path}: {e}")
-                     state = {}
+            if state_path.exists():
+                try:
+                    with open(state_path, "r", encoding="utf-8-sig") as f:
+                        state = json.load(f) or {}
+                except Exception as e:
+                    logger.debug(f"Failed to read state file {state_path}: {e}")
+                    state = {}
 
                 origin = state.get("origin", {}) or {}
                 repo_name = origin.get("repo_name") or Path(root_path).name
@@ -2060,7 +2060,8 @@ def get_or_create_collection_for_logical_repo(
         base_repo = preferred_repo_name
         try:
             coll = get_collection_name(base_repo)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get collection name for {base_repo}, using None: {e}")
             coll = get_collection_name(None)
         try:
             update_workspace_state(
@@ -2073,7 +2074,8 @@ def get_or_create_collection_for_logical_repo(
         return coll
     try:
         ws = Path(workspace_path).resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve workspace path, using raw Path: {e}")
         ws = Path(workspace_path)
 
     common = _detect_git_common_dir(ws)
@@ -2086,7 +2088,8 @@ def get_or_create_collection_for_logical_repo(
 
     try:
         state = get_workspace_state(workspace_path=ws_path, repo_name=preferred_repo_name)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get workspace state for {ws_path}: {e}")
         state = {}
 
     if not isinstance(state, dict):
@@ -2117,7 +2120,8 @@ def get_or_create_collection_for_logical_repo(
         base_repo = preferred_repo_name
         try:
             coll = get_collection_name(base_repo)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get collection name for {base_repo}, using None: {e}")
             coll = get_collection_name(None)
         try:
             update_workspace_state(
@@ -2145,8 +2149,9 @@ def _get_symbol_cache_path(file_path: str) -> Path:
                 state_dir = _get_repo_state_dir(repo_name)
                 return state_dir / "symbols" / f"{file_hash}.json"
         return _get_cache_path(_resolve_workspace_root()).parent / "symbols" / f"{file_hash}.json"
-    except Exception:
+    except Exception as e:
         # Fallback: use file name
+        logger.debug(f"Failed to get symbol cache path, using fallback: {e}")
         return _get_cache_path(_resolve_workspace_root()).parent / "symbols" / f"{Path(file_path).name}.json"
 
 
@@ -2161,7 +2166,8 @@ def get_cached_symbols(file_path: str) -> dict:
         with open(cache_path, 'r', encoding='utf-8-sig') as f:
             cache_data = json.load(f)
             return cache_data.get("symbols", {})
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to load cached symbols for {file_path}: {e}")
         return {}
 
 
@@ -2293,7 +2299,8 @@ def clear_symbol_cache(
     else:
         try:
             cache_parent = _get_cache_path(workspace_root).parent
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get cache parent, using fallback: {e}")
             cache_parent = Path(workspace_root) / ".codebase"
         target_dirs.append(cache_parent / "symbols")
 
@@ -2306,7 +2313,8 @@ def clear_symbol_cache(
                 with cache_file.open("r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                 file_path = str(data.get("file_path") or "")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to read cache file {cache_file}: {e}")
                 file_path = ""
             if file_path:
                 remove_cached_symbols(file_path)
@@ -2382,7 +2390,8 @@ def list_workspaces(
         # Default to parent of workspace root
         try:
             search_root = str(Path(_resolve_workspace_root()).parent)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve workspace root parent, using /work: {e}")
             search_root = "/work"
 
     root_path = Path(search_root).resolve()
@@ -2579,8 +2588,9 @@ def _list_workspaces_from_qdrant(seen_paths: set) -> List[Dict[str, Any]]:
                     "repo_name": repo_name or "",
                     "source": "qdrant",
                 })
-            except Exception:
+            except Exception as e:
                 # Collection exists but couldn't sample - still report it
+                logger.debug(f"Failed to sample collection {coll_name}: {e}")
                 workspaces.append({
                     "workspace_path": f"[{coll_name}]",
                     "collection_name": coll_name,
