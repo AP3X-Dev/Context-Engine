@@ -26,7 +26,12 @@ from qdrant_client import QdrantClient, models
 
 # Import production pipeline components
 from scripts.ingest.chunking import chunk_by_tokens, chunk_lines, chunk_semantic
-from scripts.ingest.pipeline import build_information, _select_dense_text
+from scripts.ingest.pipeline import (
+    build_information,
+    _select_dense_text,
+    _select_entity_text,
+    _select_relation_text,
+)
 from scripts.ingest.vectors import project_mini, extract_pattern_vector
 from scripts.ingest.qdrant import (
     hash_id,
@@ -47,6 +52,12 @@ from scripts.ingest.config import (
     MINI_VEC_DIM,
     LEX_SPARSE_NAME,
     LEX_SPARSE_MODE,
+    # Multi-granular vectors
+    MULTI_GRANULAR_VECTORS,
+    ENTITY_DENSE_NAME,
+    ENTITY_DENSE_DIM,
+    RELATION_DENSE_NAME,
+    RELATION_DENSE_DIM,
 )
 
 # Optional AST/symbol extraction
@@ -388,6 +399,15 @@ def create_collection(
             size=PATTERN_VECTOR_DIM, distance=models.Distance.COSINE
         )
 
+    # Multi-granular vectors (entity/relation embeddings)
+    if MULTI_GRANULAR_VECTORS:
+        vectors_config[ENTITY_DENSE_NAME] = models.VectorParams(
+            size=ENTITY_DENSE_DIM, distance=models.Distance.COSINE
+        )
+        vectors_config[RELATION_DENSE_NAME] = models.VectorParams(
+            size=RELATION_DENSE_DIM, distance=models.Distance.COSINE
+        )
+
     sparse_cfg = None
     if LEX_SPARSE_MODE:
         sparse_params_kwargs = {
@@ -589,12 +609,16 @@ def index_benchmark_corpus(
         dense_text: str
         payload: Dict[str, Any]
         language: str
+        # Multi-granular vector texts
+        entity_text: str = ""
+        relation_text: str = ""
 
     chunk_metas: List[ChunkMeta] = []
 
     use_semantic = os.environ.get("INDEX_SEMANTIC_CHUNKS", "1") == "1"
     chunk_lines_val = int(os.environ.get("INDEX_CHUNK_LINES", "120"))
     chunk_overlap = int(os.environ.get("INDEX_CHUNK_OVERLAP", "20"))
+    use_multi_granular = MULTI_GRANULAR_VECTORS
 
     def prepare_doc_chunks(doc: BenchmarkDoc) -> List[ChunkMeta]:
         """Prepare chunk metadata for a single document."""
@@ -663,6 +687,15 @@ def index_benchmark_corpus(
                 )
 
                 synthetic_path = doc.metadata.get("path", f"bench/{doc.doc_id}.py")
+                # Extract imports/calls for relation text
+                imports_list = []
+                calls_list = []
+                if _AST_AVAILABLE:
+                    try:
+                        imports_list, calls_list = _get_imports_calls(doc.language, chunk_text)
+                    except Exception:
+                        pass
+
                 payload = {
                     "doc_id": doc.doc_id,
                     "text": chunk_text,
@@ -685,8 +718,28 @@ def index_benchmark_corpus(
                         "end_line": end_line,
                         "text": chunk_text,
                         "code": chunk_text,
+                        "imports": imports_list,
+                        "calls": calls_list,
                     },
                 }
+
+                # Generate multi-granular vector texts
+                entity_text = ""
+                relation_text = ""
+                if use_multi_granular:
+                    entity_text = _select_entity_text(
+                        symbol=symbol_name,
+                        symbol_path=symbol_name,
+                        kind=symbol_kind,
+                        signature=doc.metadata.get("signature", ""),
+                        docstring=doc.metadata.get("docstring", "") or pseudo,
+                        parent="",
+                    )
+                    relation_text = _select_relation_text(
+                        symbol=symbol_name,
+                        calls=calls_list,
+                        imports=imports_list,
+                    )
 
                 results.append(ChunkMeta(
                     doc_id=doc.doc_id,
@@ -695,6 +748,8 @@ def index_benchmark_corpus(
                     dense_text=dense_text,
                     payload=payload,
                     language=doc.language,
+                    entity_text=entity_text,
+                    relation_text=relation_text,
                 ))
         except Exception as e:
             print(f"  Warning: Failed to prepare doc {doc.doc_id}: {e}")
@@ -724,37 +779,75 @@ def index_benchmark_corpus(
     
     print(f"  Phase 2: Streaming embed + upsert ({total_chunks} chunks, mega-batch={mega_batch_size})...", flush=True)
     
+    # Check if multi-granular vectors are supported in the collection
+    allow_entity = ENTITY_DENSE_NAME in available_dense
+    allow_relation = RELATION_DENSE_NAME in available_dense
+    use_mg_in_collection = use_multi_granular and allow_entity and allow_relation
+
     for mega_start in range(0, total_chunks, mega_batch_size):
         mega_end = min(mega_start + mega_batch_size, total_chunks)
         mega_batch = chunk_metas[mega_start:mega_end]
-        
-        # Step 1: Embed this mega-batch
+
+        # Step 1: Embed this mega-batch (dense embeddings)
         dense_texts = [cm.dense_text for cm in mega_batch]
         mega_vecs: List[List[float]] = []
-        
+
         for i in range(0, len(dense_texts), embed_batch_size):
             batch_texts = dense_texts[i:i + embed_batch_size]
             batch_vecs = list(model.embed(batch_texts))
             mega_vecs.extend([v.tolist() for v in batch_vecs])
-        
+
+        # Step 1b: Embed multi-granular vectors if enabled
+        entity_vecs: List[Optional[List[float]]] = [None] * len(mega_batch)
+        relation_vecs: List[Optional[List[float]]] = [None] * len(mega_batch)
+
+        if use_mg_in_collection:
+            # Collect non-empty entity texts
+            entity_to_embed = [(i, cm.entity_text) for i, cm in enumerate(mega_batch) if cm.entity_text.strip()]
+            relation_to_embed = [(i, cm.relation_text) for i, cm in enumerate(mega_batch) if cm.relation_text.strip()]
+
+            # Embed entity texts
+            if entity_to_embed:
+                for batch_start in range(0, len(entity_to_embed), embed_batch_size):
+                    batch_items = entity_to_embed[batch_start:batch_start + embed_batch_size]
+                    batch_texts = [t for _, t in batch_items]
+                    try:
+                        batch_vecs = list(model.embed(batch_texts))
+                        for (orig_idx, _), vec in zip(batch_items, batch_vecs):
+                            entity_vecs[orig_idx] = vec.tolist()
+                    except Exception:
+                        pass
+
+            # Embed relation texts
+            if relation_to_embed:
+                for batch_start in range(0, len(relation_to_embed), embed_batch_size):
+                    batch_items = relation_to_embed[batch_start:batch_start + embed_batch_size]
+                    batch_texts = [t for _, t in batch_items]
+                    try:
+                        batch_vecs = list(model.embed(batch_texts))
+                        for (orig_idx, _), vec in zip(batch_items, batch_vecs):
+                            relation_vecs[orig_idx] = vec.tolist()
+                    except Exception:
+                        pass
+
         # Step 2: Build points for this mega-batch
         points = []
         for idx, cm in enumerate(mega_batch):
             dense_vec = mega_vecs[idx]
             lex_vec = create_lexical_vector(cm.chunk_text)
-            
+
             vectors_dict = {
                 vector_name: dense_vec,
                 LEX_VECTOR_NAME: lex_vec,
             }
-            
+
             if MINI_VECTOR_NAME in available_dense:
                 try:
                     mini_vec = project_mini(dense_vec)
                     vectors_dict[MINI_VECTOR_NAME] = mini_vec
                 except Exception:
                     pass
-            
+
             if PATTERN_VECTOR_NAME in available_dense:
                 try:
                     pattern_vec = extract_pattern_vector(cm.chunk_text, cm.language)
@@ -762,7 +855,14 @@ def index_benchmark_corpus(
                         vectors_dict[PATTERN_VECTOR_NAME] = pattern_vec
                 except Exception:
                     pass
-            
+
+            # Add multi-granular vectors
+            if use_mg_in_collection:
+                if entity_vecs[idx] is not None:
+                    vectors_dict[ENTITY_DENSE_NAME] = entity_vecs[idx]
+                if relation_vecs[idx] is not None:
+                    vectors_dict[RELATION_DENSE_NAME] = relation_vecs[idx]
+
             sparse_dict = None
             if LEX_SPARSE_MODE and LEX_SPARSE_NAME in available_sparse:
                 try:
@@ -771,7 +871,7 @@ def index_benchmark_corpus(
                         sparse_dict = {LEX_SPARSE_NAME: models.SparseVector(**sparse_vec)}
                 except Exception:
                     pass
-            
+
             point_id = generate_point_id(f"{cm.doc_id}:{cm.chunk_idx}")
             point = models.PointStruct(
                 id=point_id,
@@ -780,7 +880,7 @@ def index_benchmark_corpus(
             )
             if sparse_dict:
                 point.vector.update(sparse_dict)  # type: ignore
-            
+
             points.append(point)
         
         # Step 3: Upsert this mega-batch in smaller batches
@@ -813,7 +913,7 @@ def index_benchmark_corpus(
 
     return {
         "indexed_count": indexed_count,
-        "skipped_count": 0,
+        "skipped_count": skipped_count,
         "duration_sec": duration,
         "reused": False,
     }
