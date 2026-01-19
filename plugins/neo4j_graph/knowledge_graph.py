@@ -447,12 +447,14 @@ class Neo4jKnowledgeGraph:
             except Exception:
                 # Fallback: simple in-degree approximation with timeout
                 # Uses OPTIONAL MATCH to give base rank to ALL nodes, not just those with incoming edges
+                # Scopes relationships to same repo to keep PageRank isolated per graph
                 with session.begin_transaction(timeout=timeout) as tx:
                     if repo:
                         result = tx.run("""
                             MATCH (n:Symbol)
                             WHERE n.repo = $repo
-                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-(caller)
+                            WHERE caller.repo = $repo
                             WITH n, count(r) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0
