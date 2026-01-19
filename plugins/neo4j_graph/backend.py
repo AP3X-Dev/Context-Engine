@@ -1144,10 +1144,12 @@ class Neo4jGraphBackend(GraphBackend):
                 # Ensures ALL nodes get a base rank, not just those with incoming edges
                 with session.begin_transaction(timeout=timeout) as tx:
                     if repo and repo != "*":
+                        # Scope relationships to same collection AND repo
                         result = tx.run("""
                             MATCH (n:Symbol {collection: $collection})
                             WHERE n.repo = $repo
-                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS {collection: $collection}]-(caller)
+                            WHERE caller.repo = $repo
                             WITH n, count(r) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0
@@ -1155,9 +1157,10 @@ class Neo4jGraphBackend(GraphBackend):
                             RETURN count(n) AS cnt
                         """, collection=collection, repo=repo)
                     else:
+                        # Scope relationships to same collection
                         result = tx.run("""
                             MATCH (n:Symbol {collection: $collection})
-                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS {collection: $collection}]-()
                             WITH n, count(r) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0
