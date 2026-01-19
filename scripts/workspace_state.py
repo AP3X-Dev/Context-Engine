@@ -708,12 +708,12 @@ def _atomic_write_state(state_path: Path, state: WorkspaceState) -> None:
             os.chmod(state_path, 0o664)
         except PermissionError:
             pass
-    except Exception:
+    except Exception as e:
         # Clean up temp file if something went wrong
         try:
             temp_path.unlink(missing_ok=True)
-        except Exception as e:
-            logger.debug(f"Suppressed exception: {e}")
+        except Exception as cleanup_err:
+            logger.debug(f"Failed to clean up temp file: {cleanup_err}")
         raise
 
 def get_workspace_state(
@@ -739,12 +739,14 @@ def get_workspace_state(
             try:
                 ws_root = Path(_resolve_workspace_root())
                 ws_dir = ws_root / repo_name
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to resolve workspace root for repo {repo_name}: {e}")
                 ws_dir = None
             try:
                 if not state_dir.exists() and (ws_dir is None or not ws_dir.exists()):
                     return {}
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to check state dir existence for repo {repo_name}: {e}")
                 return {}
             state_dir.mkdir(parents=True, exist_ok=True)
             # Ensure repo state dir is group-writable so root upload service and
@@ -835,7 +837,8 @@ def update_workspace_state(
             state_dir = _get_repo_state_dir(repo_name)
             if not (ws_root / repo_name).exists() and not state_dir.exists():
                 return {}
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check repo state dir for {repo_name}: {e}")
             return {}
 
 
@@ -1273,7 +1276,8 @@ def log_activity(
             ws_root = Path(_resolve_workspace_root())
             if not (ws_root / repo_name).exists():
                 return
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check workspace root for repo {repo_name}: {e}")
             return
         state_dir = _get_repo_state_dir(repo_name)
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -1287,7 +1291,8 @@ def log_activity(
                         state = json.load(f)
                 else:
                     state = {"created_at": datetime.now().isoformat()}
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to read state file for repo {repo_name}, using default: {e}")
                 state = {"created_at": datetime.now().isoformat()}
 
             state["last_activity"] = activity
@@ -1327,7 +1332,8 @@ def _normalize_repo_name_for_collection(repo_name: str) -> str:
             if raw.endswith("_old"):
                 is_old = True
                 raw = raw[:-4]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check _old suffix: {e}")
             is_old = False
             raw = repo_name
 
@@ -1352,7 +1358,8 @@ def _collection_name_for_repo_slug(normalized_repo: str, *, is_old_slug: bool) -
             base_repo = normalized_repo[:-4] if normalized_repo.endswith("_old") else normalized_repo
             base_coll = _generate_collection_name_from_repo(base_repo)
             return f"{base_coll}_old"
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to generate collection name for old slug {normalized_repo}: {e}")
             return None
 
     if is_multi_repo_mode():
@@ -1390,7 +1397,8 @@ def get_collection_name(repo_name: Optional[str] = None) -> str:
     try:
         if isinstance(repo_name, str) and repo_name.endswith("_old"):
             is_old_slug = True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to check _old suffix for repo {repo_name}: {e}")
         is_old_slug = False
 
     derived = None
@@ -1406,7 +1414,8 @@ def _detect_repo_name_from_path_by_structure(path: Path) -> str:
     """Detect repository name from path structure (fallback when git is unavailable)."""
     try:
         resolved_path = path.resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve path for structure detection: {e}")
         return None
 
     candidate_roots: List[Path] = []
@@ -1463,7 +1472,8 @@ def _extract_repo_name_from_path(workspace_path: str) -> str:
 
     try:
         path = Path(workspace_path).resolve()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve workspace path, using raw Path: {e}")
         path = Path(workspace_path)
 
     slug = _server_managed_slug_from_path(path)
@@ -1521,7 +1531,8 @@ def _ensure_repo_slug_defaults(state: WorkspaceState, repo_name: Optional[str]) 
         if allow:
             try:
                 qc = str(state.get("qdrant_collection") or "").strip()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to get qdrant_collection from state: {e}")
                 qc = ""
             if qc and qc not in PLACEHOLDER_COLLECTION_NAMES:
                 state["serving_collection"] = qc
@@ -1532,7 +1543,8 @@ def _get_cache_path(workspace_path: str) -> Path:
     """Get the path to the cache.json file."""
     try:
         workspace = Path(os.path.abspath(workspace_path))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get absolute path for cache, using raw Path: {e}")
         workspace = Path(workspace_path)
     return workspace / STATE_DIRNAME / CACHE_FILENAME
 
@@ -1640,7 +1652,8 @@ def set_cached_file_hash(file_path: str, file_hash: str, repo_name: Optional[str
         st = Path(file_path).stat()
         st_size = int(getattr(st, "st_size", 0))
         st_mtime = int(getattr(st, "st_mtime", 0))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to stat file {file_path}: {e}")
         st_size = None
         st_mtime = None
 
@@ -1649,7 +1662,8 @@ def set_cached_file_hash(file_path: str, file_hash: str, repo_name: Optional[str
             ws_root = Path(_resolve_workspace_root())
             if not (ws_root / repo_name).exists():
                 return
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check workspace root for repo {repo_name}: {e}")
             return
         state_dir = _get_repo_state_dir(repo_name)
         cache_path = state_dir / CACHE_FILENAME
@@ -1787,13 +1801,15 @@ def cleanup_old_cache_locks(max_idle_seconds: int = 900) -> int:
             ws_exists = True
             try:
                 ws_exists = Path(ws).exists()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to check if workspace exists: {e}")
                 ws_exists = False
             if (now - last) > max_idle_seconds or not ws_exists:
                 acquired = False
                 try:
                     acquired = lock.acquire(blocking=False)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to acquire lock: {e}")
                     acquired = False
                 if acquired:
                     try:
@@ -1847,12 +1863,13 @@ def get_collection_mappings(search_root: Optional[str] = None) -> List[Dict[str,
                     )
         else:
             state_path = root_path / STATE_DIRNAME / STATE_FILENAME
-            if state_path.exists():
-                try:
-                    with open(state_path, "r", encoding="utf-8-sig") as f:
-                        state = json.load(f) or {}
-                except Exception:
-                    state = {}
+             if state_path.exists():
+                 try:
+                     with open(state_path, "r", encoding="utf-8-sig") as f:
+                         state = json.load(f) or {}
+                 except Exception as e:
+                     logger.debug(f"Failed to read state file {state_path}: {e}")
+                     state = {}
 
                 origin = state.get("origin", {}) or {}
                 repo_name = origin.get("repo_name") or Path(root_path).name
@@ -1868,7 +1885,8 @@ def get_collection_mappings(search_root: Optional[str] = None) -> List[Dict[str,
                         "updated_at": state.get("updated_at"),
                     }
                 )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to build repo mappings: {e}")
         return mappings
 
     return mappings
@@ -1880,7 +1898,8 @@ def _env_truthy(name: str, default: bool = False) -> bool:
         if v is None:
             return bool(default)
         return str(v).strip().lower() in {"1", "true", "yes", "on"}
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse env var {name} as bool: {e}")
         return bool(default)
 
 
@@ -1893,7 +1912,8 @@ def _env_int(name: str) -> Optional[int]:
         if not v:
             return None
         return int(v)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse env var {name} as int: {e}")
         return None
 
 
@@ -1920,7 +1940,8 @@ def get_indexing_config_snapshot() -> Dict[str, Any]:
 def compute_indexing_config_hash(cfg: Dict[str, Any]) -> str:
     try:
         payload = json.dumps(cfg, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to JSON serialize config, using str: {e}")
         payload = str(cfg)
     return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
 
