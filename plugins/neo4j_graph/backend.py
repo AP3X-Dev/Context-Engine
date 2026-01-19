@@ -1628,9 +1628,12 @@ class Neo4jGraphBackend(GraphBackend):
                         cnt = record["cnt"] if record else 0
                         tx.commit()
 
-                    # Cleanup graph projection
+                    # Cleanup graph projection (use YIELD to avoid deprecated schema field)
                     try:
-                        session.run("CALL gds.graph.drop($graphName, false)", graphName=graph_name)
+                        session.run(
+                            "CALL gds.graph.drop($graphName, false) YIELD graphName",
+                            graphName=graph_name
+                        )
                     except Exception:
                         pass
 
