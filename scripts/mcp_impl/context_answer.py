@@ -79,80 +79,8 @@ def _slim_citations(citations: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Answer cleanup
+# Answer cleanup and style guidance
 # ---------------------------------------------------------------------------
-def _cleanup_answer(text: str, max_chars: int | None = None) -> str:
-    """Lightweight cleanup to reduce repetition from small models."""
-    try:
-        t = (text or "").strip()
-        if not t:
-            return t
-        # If model emitted 'insufficient context' anywhere, handle it
-        low = t.lower()
-        idx = low.find("insufficient context")
-        if idx >= 0:
-            prefix = t[:idx].strip()
-            if prefix:
-                t = prefix
-            else:
-                return "insufficient context"
-        # Collapse excessive whitespace
-        t = re.sub(r"\s+", " ", t)
-        # Sentence-split and normalize
-        sents = re.split(r"(?<=[.!?])\s+", t)
-        out, seen = [], set()
-        drop_substr = [
-            "the provided code snippets only show",
-            "without additional context",
-            "i cannot provide a complete summary",
-            "to understand",
-        ]
-        for s in sents:
-            ss = s.strip()
-            if not ss:
-                continue
-            base = re.sub(r"[.!?]+$", "", ss).strip().lower()
-            if any(pat in base for pat in drop_substr):
-                continue
-            if base == "insufficient context":
-                continue
-            key = base
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(ss)
-        if not out:
-            return "insufficient context" if "insufficient context" in low else t
-        t2 = " ".join(out)
-        if max_chars and max_chars > 0 and len(t2) > max_chars:
-            t2 = t2[: max(0, max_chars - 3)] + "..."
-        return t2
-    except Exception as e:
-        logger.debug(f"Suppressed exception: {e} - cleanup answer (primary)")
-        return text
-
-
-def _answer_style_guidance() -> str:
-    """Compact instruction to keep answers direct and grounded."""
-    try:
-        from scripts.refrag_glm import detect_glm_runtime
-        is_glm = detect_glm_runtime()
-    except ImportError:
-        is_glm = False
-    
-    if is_glm:
-        sentence_guidance = "Write a clear, comprehensive answer in 4-8 sentences."
-    else:
-        sentence_guidance = "Write a direct answer in 2-4 sentences."
-    
-    return (
-        f"{sentence_guidance} No headings or labels. "
-        "Ground non-trivial claims with bracketed citations like [n] using the numbered Sources. "
-        "Never invent functions or parameters that do not appear in the snippets. "
-        "Do not include URLs or Markdown links of any kind; cite only with [n]. "
-        "If the Sources list is empty or the snippets are insufficient, respond exactly: insufficient context."
-    )
-
 
 def _strip_preamble_labels(text: str) -> str:
     """Remove 'Definition:'/'Usage:' labels and collapse lines to a single paragraph."""

@@ -818,6 +818,8 @@ def _index_single_file_inner(
     use_batch_pseudo = pseudo_batch_concurrency > 1 and pseudo_mode == "full"
 
     chunk_data: list[dict] = []
+    # Mapping from symbol_path to point_id for graph edge extraction
+    symbol_path_to_point_id: dict[str, str] = {}
     for ch in chunks:
         info = build_information(
             language, file_path, ch["start"], ch["end"],
@@ -983,7 +985,12 @@ def _index_single_file_inner(
         )
         batch_texts.append(dense_text)
         batch_meta.append(payload)
-        batch_ids.append(hash_id(ch["text"], str(file_path), ch["start"], ch["end"]))
+        point_id = hash_id(ch["text"], str(file_path), ch["start"], ch["end"])
+        batch_ids.append(point_id)
+        # Track symbol_path -> point_id for graph edge extraction
+        chunk_symbol_path = ch.get("symbol_path") or ""
+        if chunk_symbol_path:
+            symbol_path_to_point_id[chunk_symbol_path] = str(point_id)
         aug_lex_text = (ch.get("text") or "") + (" " + pseudo if pseudo else "") + (" " + " ".join(tags) if tags else "")
         batch_lex.append(_lex_hash_vector_text(aug_lex_text))
         batch_lex_text.append(aug_lex_text)
@@ -1087,6 +1094,8 @@ def _index_single_file_inner(
                             except Exception:
                                 start_line = None
                                 end_line = None
+                        # Get caller_point_id from symbol_path mapping
+                        caller_pid = symbol_path_to_point_id.get(caller)
                         all_edges.extend(
                             extract_call_edges(
                                 symbol_path=caller,
@@ -1096,12 +1105,15 @@ def _index_single_file_inner(
                                 start_line=start_line,
                                 end_line=end_line,
                                 language=language,
+                                caller_point_id=caller_pid,
                                 import_paths=import_map,
                                 collection=collection,
                                 qdrant_client=client,
                             )
                         )
                     if imports:
+                        # For file-level imports, use first point ID if available
+                        file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
                         all_edges.extend(
                             extract_import_edges(
                                 symbol_path=str(file_path),
@@ -1109,6 +1121,7 @@ def _index_single_file_inner(
                                 path=str(file_path),
                                 repo=repo_tag,
                                 language=language,
+                                caller_point_id=file_pid,
                                 collection=collection,
                                 qdrant_client=client,
                             )
@@ -1116,12 +1129,15 @@ def _index_single_file_inner(
                 else:
                     # File-level fallback: emit file→symbol edges
                     source_file_path = str(file_path)
+                    # Use first point ID for file-level edges
+                    file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
                     if calls:
                         all_edges.extend(extract_call_edges(
                             symbol_path=source_file_path,
                             calls=calls,
                             path=source_file_path,
                             repo=repo_tag,
+                            caller_point_id=file_pid,
                             import_paths=import_map,
                             collection=collection,
                             qdrant_client=client,
@@ -1132,6 +1148,7 @@ def _index_single_file_inner(
                             imports=imports,
                             path=source_file_path,
                             repo=repo_tag,
+                            caller_point_id=file_pid,
                             collection=collection,
                             qdrant_client=client,
                         ))
@@ -1683,6 +1700,8 @@ def process_file_with_smart_reindexing(
     use_batch_pseudo = pseudo_batch_concurrency > 1
 
     chunk_data_sr: list[dict] = []
+    # Mapping from symbol_path to point_id for graph edge extraction
+    symbol_path_to_point_id_sr: dict[str, str] = {}
     for ch in chunks:
         info = build_information(
             language, file_path, ch["start"], ch["end"],
@@ -1838,8 +1857,13 @@ def process_file_with_smart_reindexing(
         info = cd["info"]
         kind = cd["kind"]
         sym = cd["sym"]
+        sym_path = cd.get("sym_path") or ""
 
         code_text = ch.get("text") or ""
+        # Compute point ID early for symbol_path mapping
+        chunk_point_id = hash_id(code_text, fp, ch["start"], ch["end"])
+        if sym_path:
+            symbol_path_to_point_id_sr[sym_path] = str(chunk_point_id)
         dense_mode = (
             str(os.environ.get("INDEX_DENSE_MODE", "info+pseudo+tags") or "")
             .strip()
@@ -1929,9 +1953,8 @@ def process_file_with_smart_reindexing(
                         if dense is None:
                             raise ValueError("reused vector has no dense component")
                         vec = dense
-                pid = hash_id(code_text, fp, ch["start"], ch["end"])
                 reused_points.append(
-                    models.PointStruct(id=pid, vector=vec, payload=payload)
+                    models.PointStruct(id=chunk_point_id, vector=vec, payload=payload)
                 )
                 continue
             except Exception as e:
@@ -1939,7 +1962,7 @@ def process_file_with_smart_reindexing(
 
         embed_texts.append(dense_text)
         embed_payloads.append(payload)
-        embed_ids.append(hash_id(code_text, fp, ch["start"], ch["end"]))
+        embed_ids.append(chunk_point_id)
         aug_lex_text = (code_text or "") + (" " + pseudo if pseudo else "") + (" " + " ".join(tags) if tags else "")
         embed_lex.append(_lex_hash_vector_text(aug_lex_text))
         embed_lex_text.append(aug_lex_text)
@@ -2068,6 +2091,8 @@ def process_file_with_smart_reindexing(
                                 start_line = int(getattr(sym_info, "start_line", 0) or 0)
                             except Exception:
                                 start_line = None
+                        # Get caller_point_id from symbol_path mapping
+                        caller_pid = symbol_path_to_point_id_sr.get(caller)
                         all_edges.extend(
                             extract_call_edges(
                                 symbol_path=caller,
@@ -2076,10 +2101,13 @@ def process_file_with_smart_reindexing(
                                 repo=per_file_repo,
                                 start_line=start_line,
                                 language=language,
+                                caller_point_id=caller_pid,
                                 import_paths=import_map,
                             )
                         )
                     if imports:
+                        # For file-level imports, use first point ID if available
+                        file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
                         all_edges.extend(
                             extract_import_edges(
                                 symbol_path=fp,
@@ -2087,6 +2115,7 @@ def process_file_with_smart_reindexing(
                                 path=fp,
                                 repo=per_file_repo,
                                 language=language,
+                                caller_point_id=file_pid,
                             )
                         )
                 else:
@@ -2100,12 +2129,15 @@ def process_file_with_smart_reindexing(
                     file_calls = meta0.get("calls", []) or []
                     file_imports = meta0.get("imports", []) or []
                     file_import_map = meta0.get("import_map", {}) or {}
+                    # Use first point ID for file-level edges
+                    file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
                     if file_calls:
                         all_edges.extend(extract_call_edges(
                             symbol_path=fp,
                             calls=file_calls,
                             path=fp,
                             repo=per_file_repo,
+                            caller_point_id=file_pid,
                             import_paths=file_import_map,
                         ))
                     if file_imports:
@@ -2114,6 +2146,7 @@ def process_file_with_smart_reindexing(
                             imports=file_imports,
                             path=fp,
                             repo=per_file_repo,
+                            caller_point_id=file_pid,
                         ))
 
                 # Extract inheritance edges (INHERITS_FROM) for all classes
@@ -2451,20 +2484,19 @@ def graph_backfill_tick(
                 language = md.get("language")
                 symbol_path = md.get("symbol_path")  # No fallback to path - only use true symbol identifiers
 
-                # Delete old edges for this path ONCE before adding new ones
-                # This ensures we don't have stale edges from removed calls/imports
-                if path not in paths_cleaned:
-                    try:
-                        delete_edges_by_path(client, graph_coll, path, repo=repo)
-                    except Exception as e:
-                        logger.debug(f"Suppressed exception: {e}")  # Non-fatal: proceed with upsert
-                    paths_cleaned.add(path)
+                # NOTE: During backfill, we do NOT delete edges - we only upsert.
+                # Deletion would cause data loss since paths_cleaned resets on each call
+                # and multiple chunks can exist per path.
+                # Edge upsert uses MERGE on edge_id which handles updates correctly.
+                paths_cleaned.add(path)  # Track for logging only
 
                 # Skip if no relationship data (but still mark as processed)
                 if not calls and not imports and not inheritance_map:
                     pass  # Still mark point below
                 else:
                     # Extract edges - only if we have a true symbol identifier
+                    # Use point ID as caller_point_id for graph edge linking
+                    caller_pid = str(pt.id) if pt.id is not None else None
                     if symbol_path:
                         if calls:
                             all_edges.extend(extract_call_edges(
@@ -2473,6 +2505,7 @@ def graph_backfill_tick(
                                 path=path,
                                 repo=repo,
                                 language=language,
+                                caller_point_id=caller_pid,
                                 import_paths=import_map,
                             ))
 
@@ -2483,6 +2516,7 @@ def graph_backfill_tick(
                                 path=path,
                                 repo=repo,
                                 language=language,
+                                caller_point_id=caller_pid,
                             ))
 
                     # Extract inheritance edges (INHERITS_FROM) for all classes
@@ -2504,10 +2538,32 @@ def graph_backfill_tick(
                 print(f"[graph_backfill] Point processing error: {e}")
                 continue
 
-        # Upsert edges in batch
+        # Upsert edges in batch - use dynamic backend detection
         if all_edges:
             try:
-                count = upsert_edges(client, graph_coll, all_edges)
+                # Check if Neo4j is enabled at runtime (not just import time)
+                if is_neo4j_enabled():
+                    from scripts.graph_backends.base import GraphEdge
+                    from scripts.graph_backends.ingest_adapter import upsert_edges as neo4j_upsert
+                    graph_edges = []
+                    for e in all_edges:
+                        payload = e.get("payload", {})
+                        graph_edges.append(GraphEdge(
+                            id=e.get("id", ""),
+                            caller_symbol=payload.get("caller_symbol", ""),
+                            callee_symbol=payload.get("callee_symbol", ""),
+                            caller_path=payload.get("caller_path", ""),
+                            callee_path=payload.get("callee_path"),
+                            edge_type=payload.get("edge_type", ""),
+                            repo=payload.get("repo", ""),
+                            start_line=payload.get("start_line"),
+                            end_line=payload.get("end_line"),
+                            language=payload.get("language"),
+                            caller_point_id=payload.get("caller_point_id"),
+                        ))
+                    count = neo4j_upsert(client, graph_coll, graph_edges)
+                else:
+                    count = upsert_edges(client, graph_coll, all_edges)
                 edges_created += count
             except Exception as e:
                 print(f"[graph_backfill] Edge upsert error: {e}")
