@@ -594,8 +594,8 @@ async def _context_search_impl(
             pass
 
     # First: run code search via internal repo_search for consistent behavior
-    # Force output_format="json" to ensure we get raw results for internal processing
-    # (TOON format returns results as a string which breaks result parsing)
+    # Note: TOON format now preserves 'results_json' for internal parsing (composability fix)
+    # so we no longer need to force output_format="json" - internal callers read results_json
     code_res = await repo_search_fn(
         query=queries if len(queries) > 1 else (queries[0] if queries else ""),
         limit=code_limit,
@@ -621,7 +621,7 @@ async def _context_search_impl(
         compact=False,
         repo=repo,  # Cross-codebase isolation
         session=session,
-        output_format="json",  # Always use JSON for internal processing
+        output_format=output_format,  # Pass through caller's format preference
     )
 
     # Optional debug
@@ -640,9 +640,11 @@ async def _context_search_impl(
             logger.debug(f"Suppressed exception: {e}")
 
     # Shape code results to a common schema
+    # When TOON format is used, results_json contains the original list (composability fix)
     code_hits: List[Dict[str, Any]] = []
     if isinstance(code_res, dict):
-        items = code_res.get("results") or code_res.get("data") or code_res.get("items")
+        # Prefer results_json (preserved structured data from TOON encoding) over results
+        items = code_res.get("results_json") or code_res.get("results") or code_res.get("data") or code_res.get("items")
         # If compact mode was used, results may be a list; support both shapes
         items = items if items is not None else code_res.get("results", code_res)
     else:

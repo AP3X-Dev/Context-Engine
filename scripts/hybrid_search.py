@@ -1547,6 +1547,12 @@ def _run_hybrid_search_impl(
                 for result in mini_results:
                     if hasattr(result, 'id'):
                         candidate_ids.add(result.id)
+                # Cap check: if union exceeds REFRAG_CANDIDATES, gating hurts more than helps
+                if len(candidate_ids) > cand_n:
+                    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                        logger.debug(f"ReFRAG gate-first skipped: {len(candidate_ids)} candidates exceeds cap {cand_n}")
+                    candidate_ids = set()  # Clear to skip gating
+                    break
 
             if candidate_ids:
                 # Server-side gating without requiring payload fields: prefer HasIdCondition

@@ -656,7 +656,8 @@ async def _repo_search_impl(
                     if rt > eff_limit:
                         eff_limit = rt
                 # In-process path_glob/not_glob accept a single string; reduce list inputs safely
-                print(f"[debug] DEBUG_SEARCH_TIMING={os.environ.get('DEBUG_SEARCH_TIMING', 'not set')}", flush=True)
+                if os.environ.get("DEBUG_SEARCH_TIMING"):
+                    logger.debug(f"DEBUG_SEARCH_TIMING={os.environ.get('DEBUG_SEARCH_TIMING', 'not set')}")
                 items = await asyncio.to_thread(
                     lambda: run_hybrid_search(
                         queries=queries,
@@ -688,11 +689,8 @@ async def _repo_search_impl(
                 json_lines = items  # reuse downstream shaping
             except Exception as e:
                 # Fallback to subprocess path if in-process fails
-                logger.debug(f"In-process hybrid search failed, falling back to subprocess: {type(e).__name__}: {e}")
-                # VISIBLE ERROR for debugging silent failures during benchmark runs
-                print(f"[ERROR] In-process hybrid failed: {type(e).__name__}: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
+                # Use logger.exception to capture traceback without corrupting stdio JSON-RPC
+                logger.error(f"In-process hybrid search failed, falling back to subprocess: {type(e).__name__}: {e}", exc_info=True)
                 use_hybrid_inproc = False
 
         if not use_hybrid_inproc:

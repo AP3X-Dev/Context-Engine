@@ -3,10 +3,25 @@
 # Licensed under the Business Source License 1.1.
 # See the LICENSE file in the repository root for full terms.
 """
-Semantic Intent Classifier for Query Routing
+Semantic Intent Classifier for Retrieval Tuning
 
-Uses embedding similarity to classify query intent, replacing brittle keyword matching.
+Uses embedding similarity to classify query intent into broad categories.
 Exemplar-based classification: embed query, compare to intent exemplars, pick best match.
+
+NOTE: This module handles RETRIEVAL-LEVEL intent (4 categories: GRAPH, SEMANTIC,
+IDENTIFIER, HYBRID) for tuning search strategy in QueryOptimizer.
+
+For TOOL-LEVEL intent (12+ categories like "answer", "search", "symbol_graph"),
+see scripts/mcp_router/intent.py which handles MCP tool dispatch.
+
+The split is intentional:
+- Router intent: fine-grained tool selection (which MCP tool to call)
+- Retrieval intent: broad search strategy (how to tune hybrid search)
+
+Example flow:
+  Query: "who calls authenticate"
+  → Router: "symbol_graph" (pick MCP tool)
+  → Retrieval: QueryIntent.GRAPH (favor call graph in search)
 """
 
 import os
