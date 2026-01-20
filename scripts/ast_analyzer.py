@@ -17,6 +17,7 @@ import os
 import re
 import ast
 import hashlib
+import importlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
@@ -57,7 +58,8 @@ try:
             try:
                 raw_lang = fn()
                 return raw_lang if isinstance(raw_lang, Language) else Language(raw_lang)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
         return None
 
@@ -95,8 +97,8 @@ try:
                     tsx_lang = _load_ts_language(mod, preferred=["language_tsx"])
                     if tsx_lang is not None:
                         _TS_LANGUAGES["tsx"] = tsx_lang
-        except Exception:
-            pass  # Language package not installed
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Language package not installed
 
     # Add aliases
     if "javascript" in _TS_LANGUAGES:
@@ -1806,12 +1808,340 @@ _analyzer: Optional[ASTAnalyzer] = None
 def get_ast_analyzer(reset: bool = False) -> ASTAnalyzer:
     """Get or create global AST analyzer instance."""
     global _analyzer
-    
+
     if _analyzer is None or reset:
         use_ts = os.environ.get("USE_TREE_SITTER", "1").lower() in {"1", "true", "yes", "on"}
         _analyzer = ASTAnalyzer(use_tree_sitter=use_ts)
-    
+
     return _analyzer
+
+
+# ---------------------------------------------------------------------------
+# Language-Aware Builtin Detection
+# ---------------------------------------------------------------------------
+# Builtins are detected using tree-sitter's query system directly.
+# This is the most scalable approach - we parse code and check if nodes
+# get @*.builtin captures. Works uniformly for ALL languages.
+
+# Cache for query objects and parsers per language
+_TS_QUERY_CACHE: Dict[str, Tuple[Any, Any, Any]] = {}  # lang -> (parser, query, lang_obj)
+
+
+def _get_ts_query_for_language(language: str) -> Optional[Tuple[Any, Any, Any]]:
+    """Get tree-sitter parser and highlights query for a language.
+
+    Returns (parser, query, lang_obj) tuple or None if unavailable.
+    """
+    if not _TS_AVAILABLE:
+        return None
+
+    lang = language.lower().strip()
+
+    # Normalize aliases
+    if lang in ("js", "jsx"):
+        lang = "javascript"
+    elif lang in ("ts", "tsx"):
+        lang = "typescript"
+    elif lang in ("c++", "cxx", "cc"):
+        lang = "cpp"
+    elif lang in ("c#", "cs"):
+        lang = "csharp"
+
+    # Check cache
+    if lang in _TS_QUERY_CACHE:
+        return _TS_QUERY_CACHE[lang]
+
+    # Get language object from already-loaded _TS_LANGUAGES
+    if lang not in _TS_LANGUAGES:
+        _TS_QUERY_CACHE[lang] = None
+        return None
+
+    lang_obj = _TS_LANGUAGES[lang]
+
+    # Find the module and its highlights.scm
+    lang_to_module = {
+        "python": "tree_sitter_python",
+        "javascript": "tree_sitter_javascript",
+        "typescript": "tree_sitter_typescript",
+        "go": "tree_sitter_go",
+        "rust": "tree_sitter_rust",
+        "java": "tree_sitter_java",
+        "c": "tree_sitter_c",
+        "cpp": "tree_sitter_cpp",
+        "ruby": "tree_sitter_ruby",
+        "c_sharp": "tree_sitter_c_sharp",
+        "csharp": "tree_sitter_c_sharp",
+        "bash": "tree_sitter_bash",
+        "shell": "tree_sitter_bash",
+        "sh": "tree_sitter_bash",
+        "json": "tree_sitter_json",
+        "yaml": "tree_sitter_yaml",
+        "html": "tree_sitter_html",
+        "css": "tree_sitter_css",
+        "markdown": "tree_sitter_markdown",
+    }
+
+    module_name = lang_to_module.get(lang)
+    if not module_name:
+        _TS_QUERY_CACHE[lang] = None
+        return None
+
+    try:
+        import importlib
+        from tree_sitter import Query, QueryCursor
+
+        lang_module = importlib.import_module(module_name)
+        mod_path = os.path.dirname(lang_module.__file__)
+        highlights_path = os.path.join(mod_path, 'queries', 'highlights.scm')
+
+        if not os.path.exists(highlights_path):
+            _TS_QUERY_CACHE[lang] = None
+            return None
+
+        with open(highlights_path) as f:
+            query_text = f.read()
+
+        parser = Parser(lang_obj)
+        query = Query(lang_obj, query_text)
+
+        result = (parser, query, lang_obj)
+        _TS_QUERY_CACHE[lang] = result
+        return result
+    except Exception as e:
+        logger.debug(f"Failed to load tree-sitter query for {lang}: {e}")
+        _TS_QUERY_CACHE[lang] = None
+        return None
+
+
+# Cache for parsers without queries
+_TS_PARSER_CACHE: Dict[str, Optional["Parser"]] = {}
+
+
+def _get_parser_for_language(lang: str) -> Optional["Parser"]:
+    """Get just a parser for a language (for tree-walking without queries)."""
+    if lang in _TS_PARSER_CACHE:
+        return _TS_PARSER_CACHE[lang]
+
+    try:
+        from tree_sitter import Parser, Language
+
+        # Map language to module
+        lang_modules = {
+            "python": "tree_sitter_python",
+            "javascript": "tree_sitter_javascript",
+            "typescript": "tree_sitter_typescript",
+            "go": "tree_sitter_go",
+            "rust": "tree_sitter_rust",
+            "java": "tree_sitter_java",
+            "c": "tree_sitter_c",
+            "cpp": "tree_sitter_cpp",
+            "ruby": "tree_sitter_ruby",
+            "csharp": "tree_sitter_c_sharp",
+            "c_sharp": "tree_sitter_c_sharp",
+            "bash": "tree_sitter_bash",
+        }
+
+        mod_name = lang_modules.get(lang)
+        if not mod_name:
+            _TS_PARSER_CACHE[lang] = None
+            return None
+
+        mod = importlib.import_module(mod_name)
+
+        # Get language object
+        if lang in ("typescript",):
+            lang_obj = Language(mod.language_typescript())
+        elif lang in ("csharp", "c_sharp"):
+            lang_func = getattr(mod, "language_c_sharp", None) or getattr(mod, "language", None)
+            if lang_func:
+                lang_obj = Language(lang_func())
+            else:
+                _TS_PARSER_CACHE[lang] = None
+                return None
+        else:
+            lang_obj = Language(mod.language())
+
+        parser = Parser(lang_obj)
+        _TS_PARSER_CACHE[lang] = parser
+        return parser
+    except Exception as e:
+        logger.debug(f"Failed to load parser for {lang}: {e}")
+        _TS_PARSER_CACHE[lang] = None
+        return None
+
+
+def is_builtin_via_query(name: str, language: str) -> bool:
+    """Check if a symbol is a builtin using tree-sitter's query system.
+
+    This is the scalable approach - we create a minimal code snippet,
+    parse it, and check if the identifier gets a @*.builtin capture.
+    Works for ALL languages uniformly.
+    """
+    # Normalize language name
+    lang = language.lower().strip()
+    if lang in ("js", "jsx"):
+        lang = "javascript"
+    elif lang in ("ts", "tsx"):
+        lang = "typescript"
+    elif lang in ("c++", "cxx", "cc"):
+        lang = "cpp"
+    elif lang in ("c#", "cs"):
+        lang = "csharp"
+    elif lang == "c_sharp":
+        lang = "csharp"
+
+    # Try to get query-based detection (preferred)
+    ts_info = _get_ts_query_for_language(language)
+    parser = None
+    query = None
+    if ts_info is not None:
+        parser, query, _ = ts_info
+    else:
+        # Fallback: load just the parser without query for tree-walking
+        parser = _get_parser_for_language(lang)
+
+    # Generate minimal code snippets containing the identifier in multiple contexts
+    # We try multiple syntactic positions to catch builtins used as functions, types, etc.
+    if lang in ("python",):
+        # Python: builtins as function calls
+        code = f"{name}()".encode()
+    elif lang in ("javascript", "jsx"):
+        # JavaScript: builtins can be objects (console, document, window) or constructors
+        code = f"{name}; {name}()".encode()
+    elif lang in ("typescript", "tsx"):
+        # TypeScript: predefined_type captures for string, number, boolean, etc.
+        # Also try as regular identifier
+        code = f"let x: {name}; {name}()".encode()
+    elif lang == "go":
+        code = f"package main\nfunc f() {{ {name}() }}".encode()
+    elif lang == "rust":
+        # Rust: check both function calls and types
+        code = f"fn f() {{ let _: {name} = {name}(); }}".encode()
+    elif lang == "java":
+        # Java: primitive types in declaration, also as method call
+        code = f"class X {{ {name} x; void f() {{ {name}(); }} }}".encode()
+    elif lang in ("c", "cpp"):
+        # C/C++: primitive types in declarations
+        code = f"{name} x; void f() {{ {name}(); }}".encode()
+    elif lang == "csharp":
+        # C#: primitive types and method calls
+        code = f"class X {{ {name} x; void f() {{ {name}(); }} }}".encode()
+    elif lang == "ruby":
+        # Ruby: method calls and keywords
+        code = f"{name}; {name}()".encode()
+    elif lang in ("bash", "shell", "sh"):
+        # Bash: command names
+        code = f"{name}".encode()
+    else:
+        code = f"{name}()".encode()
+
+    # Node types that indicate language primitives/builtins at the grammar level
+    builtin_node_types = frozenset({
+        'primitive_type',           # C, C++, Java: int, char, void, float, double
+        'predefined_type',          # TypeScript: string, number, boolean
+        'sized_type_specifier',     # C: short, long, unsigned
+        'auto',                     # C++: auto keyword
+        'nullptr',                  # C++: nullptr literal
+        'null',                     # C++/Java: null literal
+        'placeholder_type_specifier',  # C++: auto/decltype
+        'true', 'false',            # Boolean literals
+        'nil',                      # Ruby/Go: nil literal
+        'self',                     # Rust/Python/Ruby: self reference
+    })
+
+    if parser is None:
+        return False
+
+    try:
+        tree = parser.parse(code)
+
+        # Strategy 1: Walk tree directly for builtin node types
+        # This works even if highlights.scm doesn't capture them (like C++, C#)
+        def find_builtin_node(node):
+            if node.type in builtin_node_types:
+                node_text = code[node.start_byte:node.end_byte].decode()
+                if node_text == name:
+                    return True
+            for child in node.children:
+                if find_builtin_node(child):
+                    return True
+            return False
+
+        if find_builtin_node(tree.root_node):
+            return True
+
+        # Strategy 2: Check query captures for @*.builtin (if query available)
+        if query is not None:
+            from tree_sitter import QueryCursor
+            cursor = QueryCursor(query)
+            for _, captures_dict in cursor.matches(tree.root_node):
+                for capture_name, nodes in captures_dict.items():
+                    if 'builtin' not in capture_name:
+                        continue
+                    for node in nodes:
+                        node_text = code[node.start_byte:node.end_byte].decode()
+                        if node_text == name:
+                            return True
+        return False
+    except Exception as e:
+        logger.debug(f"Query failed for {name} in {language}: {e}")
+        return False
+
+
+def is_builtin(name: str, language: str) -> bool:
+    """Check if a symbol name is a builtin for the given language.
+
+    Uses tree-sitter's query system to check if the symbol gets a @*.builtin
+    capture. This works uniformly for ALL languages.
+
+    Args:
+        name: Symbol name (may be qualified like "os.path.join")
+        language: Programming language (e.g., "python", "javascript")
+
+    Returns:
+        True if the symbol is a language builtin
+    """
+    # Check base name (handles qualified names like "os.path.join" -> "join")
+    base_name = name.split(".")[-1] if "." in name else name
+    base_name = base_name.split("::")[-1] if "::" in base_name else base_name
+
+    return is_builtin_via_query(base_name, language)
+
+
+def is_stdlib(module: str, language: str) -> bool:
+    """Check if a module is part of the language's standard library.
+
+    NOTE: No hardcoded stdlib lists - we rely on symbol resolution.
+    If a module can't be resolved in the codebase, it's treated as external.
+    This function exists for API compatibility but always returns False.
+
+    Args:
+        module: Module name (may be qualified like "os.path")
+        language: Programming language
+
+    Returns:
+        Always False - stdlib detection removed in favor of tree-sitter queries
+    """
+    # No hardcoded stdlib lists - unresolved imports are <external>
+    return False
+
+
+def categorize_symbol(name: str, language: str) -> str:
+    """Categorize a symbol as builtin or external.
+
+    Uses tree-sitter query system for builtin detection.
+    Everything else is external (resolved by symbol resolver at graph time).
+
+    Args:
+        name: Symbol or module name
+        language: Programming language
+
+    Returns:
+        Category string: "<builtin>" or "<external>"
+    """
+    if is_builtin(name, language):
+        return "<builtin>"
+    return "<external>"
 
 
 # Convenience functions

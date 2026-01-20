@@ -98,7 +98,8 @@ def get_unique_files_in_collection(collection_name: str, qdrant_url: Optional[st
                     path = metadata.get("path")
                     if path:
                         unique_paths.add(str(path))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception, continuing: {e}")
                     continue
             
             if offset is None:

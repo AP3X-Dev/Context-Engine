@@ -108,6 +108,7 @@ Indexing:
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -116,6 +117,8 @@ from pathlib import Path
 # CRITICAL: Isolate benchmark from user's env settings that can destroy data
 # ---------------------------------------------------------------------------
 # Clear COLLECTION_NAME - benchmark uses per-instance collections
+
+logger = logging.getLogger(__name__)
 if "COLLECTION_NAME" in os.environ:
     del os.environ["COLLECTION_NAME"]
 if "DEFAULT_COLLECTION" in os.environ:
@@ -564,8 +567,8 @@ async def run_full_benchmark(
                     info = client.get_collection(coll_name)
                     if info.points_count and info.points_count > 0:
                         populated[coll_name] = info.points_count
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
         required = set()
         instance_to_coll = {}

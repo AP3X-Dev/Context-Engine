@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { base } from '$app/paths';
-	import { ChevronLeft, Home, ExternalLink } from 'lucide-svelte';
+	import { ChevronLeft, Home, ExternalLink, Mail } from 'lucide-svelte';
 
 	$: currentDoc = $page.params.slug;
 </script>
@@ -15,6 +15,11 @@
 			</a>
 
 			<div class="nav-divider"></div>
+
+			<a href="{base}/contact" class="nav-item contact-link">
+				<Mail size={20} />
+				<span>Contact</span>
+			</a>
 
 			<a
 				href="https://github.com/m1rl0k/Context-Engine/tree/test/docs"

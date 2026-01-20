@@ -71,6 +71,13 @@ services:
       - RERANKER_WEIGHTS_DIR=/tmp/rerank_weights
       - RERANK_EVENTS_DIR=/tmp/rerank_events
       - RERANK_EVENTS_ENABLED=${RERANK_EVENTS_ENABLED:-1}
+      # Lexical sparse vectors for lossless term matching
+      - LEX_SPARSE_MODE=${LEX_SPARSE_MODE:-}
+      - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
+      - LEX_SPARSE_IDF=${LEX_SPARSE_IDF:-1}
+      # Pattern vectors for structural code similarity
+      - PATTERN_VECTORS=${PATTERN_VECTORS:-}
+      - PATTERN_VECTOR_DIM=${PATTERN_VECTOR_DIM:-64}
     ports:
       - "18000:18000"
       - "8000:8000"
@@ -150,6 +157,12 @@ services:
       - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
       # Pattern vectors for structural code similarity
       - PATTERN_VECTORS=${PATTERN_VECTORS:-}
+      # Neo4j graph backend for symbol_graph queries
+      - NEO4J_GRAPH=${NEO4J_GRAPH:-}
+      - NEO4J_URI=${NEO4J_URI:-}
+      - NEO4J_USER=${NEO4J_USER:-}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-}
       # Cross-encoder reranker configuration
       - RERANKER_MODEL=${RERANKER_MODEL:-}
       - RERANKER_ONNX_PATH=${RERANKER_ONNX_PATH:-}
@@ -272,6 +285,13 @@ services:
       - RERANKER_WEIGHTS_DIR=/tmp/rerank_weights
       - RERANK_EVENTS_DIR=/tmp/rerank_events
       - RERANK_EVENTS_ENABLED=${RERANK_EVENTS_ENABLED:-1}
+      # Lexical sparse vectors for lossless term matching
+      - LEX_SPARSE_MODE=${LEX_SPARSE_MODE:-}
+      - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
+      - LEX_SPARSE_IDF=${LEX_SPARSE_IDF:-1}
+      # Pattern vectors for structural code similarity
+      - PATTERN_VECTORS=${PATTERN_VECTORS:-}
+      - PATTERN_VECTOR_DIM=${PATTERN_VECTOR_DIM:-64}
     ports:
       - "${FASTMCP_HTTP_HEALTH_PORT:-18002}:18000"
       - "${FASTMCP_HTTP_PORT:-8002}:8000"
@@ -371,7 +391,7 @@ services:
 
   # Llama.cpp decoder service - same as base compose
   llamacpp:
-    image: ghcr.io/ggerganov/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server
     container_name: llama-decoder-dev-remote
     environment:
       - LLAMA_ARG_MODEL=/models/model.gguf
@@ -472,7 +492,7 @@ services:
       - QWEN3_QUERY_INSTRUCTION=${QWEN3_QUERY_INSTRUCTION:-1}
       - QWEN3_INSTRUCTION_TEXT=${QWEN3_INSTRUCTION_TEXT}
       - WATCH_ROOT=${WATCH_ROOT:-/work}
-      # - WATCH_USE_POLLING=${WATCH_USE_POLLING:-1} SET on MAC OSx
+      - WATCH_USE_POLLING=${WATCH_USE_POLLING:-1} SET on MAC OSx
       - HOST_INDEX_PATH=/work
       - QDRANT_TIMEOUT=${QDRANT_TIMEOUT:-60}
       # Chunking config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -498,6 +518,8 @@ services:
       - INDEX_GRAPH_EDGES=${INDEX_GRAPH_EDGES:-1}
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
       - GRAPH_BACKFILL_ENABLED=${GRAPH_BACKFILL_ENABLED:-1}
+      # Neo4j graph backend (when set, edges go to Neo4j instead of Qdrant _graph collection)
+      - NEO4J_GRAPH=${NEO4J_GRAPH:-}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw

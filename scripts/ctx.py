@@ -2,8 +2,11 @@
 # Copyright 2025 John Donalson and Context-Engine Contributors.
 # Licensed under the Business Source License 1.1.
 # See the LICENSE file in the repository root for full terms.
+import logging
 import re
 import difflib
+
+logger = logging.getLogger(__name__)
 """
 Context-aware prompt enhancer CLI.
 
@@ -72,8 +75,8 @@ def _load_env_file():
 	if workspace_dir:
 		try:
 			candidates.append(Path(workspace_dir) / ".env")
-		except Exception:
-			pass
+		except Exception as e:
+			logger.debug(f"Suppressed exception: {e}")
 
 	# Original project-root-based .env (for CLI / repo-local usage)
 	candidates.append(script_dir.parent / ".env")
@@ -274,7 +277,11 @@ def parse_mcp_response(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        # Unwrap nested {"result": {...}} from MCP bridge responses
+        if isinstance(parsed, dict) and "result" in parsed and isinstance(parsed["result"], dict):
+            return parsed["result"]
+        return parsed
     except json.JSONDecodeError:
         return {"raw": text}
 
@@ -739,13 +746,14 @@ def _generate_plan(enhanced_prompt: str, context: str, note: str) -> str:
             from refrag_glm import GLMRefragClient  # type: ignore
 
             client = GLMRefragClient()
+            # GLM reasoning models need higher token limits (they use 150+ for internal reasoning)
             response = client.client.chat.completions.create(
                 model=os.environ.get("GLM_MODEL", "glm-4.6"),
                 messages=[
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
                 ],
-                max_tokens=200,
+                max_tokens=2048,  # Generous limit for reasoning models
                 temperature=0.3,
                 stream=False,
             )
@@ -1084,8 +1092,8 @@ def fetch_context(query: str, **filters) -> Tuple[str, str]:
             ]
             sys.stderr.write("[DEBUG] repo_search sample paths:\n" + json.dumps(sample, indent=2) + "\n")
             sys.stderr.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     gate_flag = os.environ.get("CTX_RELEVANCE_GATE", "").strip().lower()
     if hits and gate_flag in {"1", "true", "yes", "on"}:
@@ -1222,7 +1230,76 @@ def rewrite_prompt(original_prompt: str, context: str, note: str, max_tokens: Op
     # Check which decoder runtime to use
     runtime_kind = str(os.environ.get("REFRAG_RUNTIME", "llamacpp")).strip().lower()
 
-    if runtime_kind == "glm":
+    # Cloud models (GLM, OpenAI, MiniMax) can handle much higher token limits (3-10k)
+    # Local Granite models should use minimum 1k tokens
+    CLOUD_MAX_TOKENS = 4096
+    GRANITE_MIN_TOKENS = 1024
+
+    if runtime_kind == "openai":
+        # OpenAI API path
+        import openai
+        client = openai.OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("OPENAI_API_BASE"),
+        )
+
+        response = client.chat.completions.create(
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=CLOUD_MAX_TOKENS,
+            temperature=0.45,
+            stream=stream
+        )
+
+        enhanced = ""
+        if stream:
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    sys.stdout.write(token)
+                    sys.stdout.flush()
+                    enhanced += token
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            enhanced = response.choices[0].message.content
+
+    elif runtime_kind == "minimax":
+        # MiniMax API path (OpenAI-compatible)
+        import openai
+        client = openai.OpenAI(
+            api_key=os.environ.get("MINIMAX_API_KEY"),
+            base_url=os.environ.get("MINIMAX_API_BASE", "https://api.minimax.chat/v1"),
+        )
+
+        response = client.chat.completions.create(
+            model=os.environ.get("MINIMAX_MODEL", "abab6.5s-chat"),
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=CLOUD_MAX_TOKENS,
+            temperature=0.45,
+            stream=stream
+        )
+
+        enhanced = ""
+        if stream:
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    sys.stdout.write(token)
+                    sys.stdout.flush()
+                    enhanced += token
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            enhanced = response.choices[0].message.content
+
+    elif runtime_kind == "glm":
         from refrag_glm import GLMRefragClient  # type: ignore
         client = GLMRefragClient()
 
@@ -1248,13 +1325,17 @@ def rewrite_prompt(original_prompt: str, context: str, note: str, max_tokens: Op
             )
 
         # GLM API call
+        # Note: GLM and similar cloud models can handle much higher token limits (3-10k)
+        # compared to local Granite models (~1k). Use generous limits for better output.
+        glm_model = os.environ.get("GLM_MODEL", "glm-4.6")
+        glm_max_tokens = 4096  # GLM models handle 3-10k tokens well
         response = client.client.chat.completions.create(
-            model=os.environ.get("GLM_MODEL", "glm-4.6"),
+            model=glm_model,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ],
-            max_tokens=int(max_tokens or DEFAULT_REWRITE_TOKENS),
+            max_tokens=glm_max_tokens,
             temperature=0.45,
             stream=stream
         )
@@ -1366,7 +1447,7 @@ def rewrite_prompt(original_prompt: str, context: str, note: str, max_tokens: Op
             else:
                 payload = {
                     "prompt": meta_prompt,
-                    "n_predict": int(max_tokens or DEFAULT_REWRITE_TOKENS),
+                    "n_predict": max(GRANITE_MIN_TOKENS, int(max_tokens or DEFAULT_REWRITE_TOKENS)),
                     "temperature": 0.45,
                     "stream": stream,
                 }
@@ -1591,7 +1672,16 @@ Examples:
                 output = sanitize_citations(rewritten.strip(), allowed_paths)
 
         if args.cmd:
-            subprocess.run(args.cmd, input=output.encode("utf-8"), shell=True, check=False)
+            # Security: Use shell=False with proper argument parsing to prevent injection
+            # The cmd is expected to be a single command that receives output via stdin
+            import shlex
+            try:
+                cmd_parts = shlex.split(args.cmd)
+                subprocess.run(cmd_parts, input=output.encode("utf-8"), check=False)
+            except ValueError as e:
+                # shlex.split can fail on malformed input (e.g., unmatched quotes)
+                print(f"Error: Invalid command syntax: {e}", file=sys.stderr)
+                sys.exit(1)
         else:
             print(output)
 

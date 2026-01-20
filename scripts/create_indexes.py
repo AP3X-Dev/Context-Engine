@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import logging
 import os
 import sys
 from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
+
+logger = logging.getLogger(__name__)
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 from datetime import datetime
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -49,8 +52,8 @@ if 'get_collection_name' in globals() and get_collection_name:
             placeholders = {"", "codebase"}
             if COLLECTION in placeholders:
                 COLLECTION = resolved
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 try:
@@ -100,8 +103,8 @@ try:
             file_path="",
             details={"created_indexes": ["metadata.language", "metadata.path_prefix"]},
         )
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 info = cli.get_collection(COLLECTION)
 print(info.payload_schema)

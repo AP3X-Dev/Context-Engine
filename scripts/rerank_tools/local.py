@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import os
 import argparse
 import sys
@@ -7,6 +8,8 @@ from pathlib import Path as _P
 from typing import List, Dict, Any, TYPE_CHECKING
 
 # Ensure project root is on sys.path when run as a script (so 'scripts' package imports work)
+
+logger = logging.getLogger(__name__)
 _ROOT = _P(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -88,8 +91,8 @@ def _get_rerank_session():
         tok = Tokenizer.from_file(RERANKER_TOKENIZER_PATH)
         try:
             tok.enable_truncation(max_length=RERANK_MAX_TOKENS)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         try:
             # Provider selection: explicit RERANK_PROVIDERS overrides
             prov_env = os.environ.get("RERANK_PROVIDERS")
@@ -122,8 +125,8 @@ def _get_rerank_session():
                 so.graph_optimization_level = getattr(
                     ort.GraphOptimizationLevel, "ORT_ENABLE_ALL", 99
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             sess = ort.InferenceSession(
                 RERANKER_ONNX_PATH, sess_options=so, providers=providers
             )
@@ -147,8 +150,8 @@ def warmup_reranker():
             # Dummy inference to warm up the session
             dummy_pairs = [("warmup query", "warmup document")]
             rerank_local(dummy_pairs)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     _WARMUP_DONE = True
 
 
@@ -196,8 +199,8 @@ def _select_dense_vector_name(
                 for name in cfg.keys():
                     if name != "lex":
                         return name
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return _sanitize_vector_name(MODEL_NAME)
 
 

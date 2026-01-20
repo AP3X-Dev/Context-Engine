@@ -4,6 +4,7 @@ mcp_router/scratchpad.py - Persistent scratchpad for context preservation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any, Dict
@@ -11,13 +12,15 @@ from typing import Any, Dict
 from .config import scratchpad_ttl_sec
 
 
+
+logger = logging.getLogger(__name__)
 def scratchpad_path() -> str:
     """Get scratchpad file path."""
     base = os.path.join(os.getcwd(), ".codebase")
     try:
         os.makedirs(base, exist_ok=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return os.path.join(base, "router_scratchpad.json")
 
 
@@ -61,11 +64,11 @@ def load_scratchpad() -> Dict[str, Any]:
                                 }),
                                 file=sys.stderr,
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                 return j
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return {}
 
 
@@ -79,15 +82,15 @@ def save_scratchpad(d: Dict[str, Any]) -> None:
             try:
                 f.flush()
                 os.fsync(f.fileno())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         os.replace(tmp, p)
     except Exception:
         try:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def looks_like_repeat(q: str) -> bool:

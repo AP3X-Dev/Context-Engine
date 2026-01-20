@@ -55,6 +55,7 @@ jobs:
         echo "QDRANT_URL=http://localhost:6333" >> $GITHUB_ENV
         echo "PYTHONPATH=${{ github.workspace }}/scripts:$PYTHONPATH" >> $GITHUB_ENV
         echo "CI=true" >> $GITHUB_ENV
+        echo "USE_TREE_SITTER=1" >> $GITHUB_ENV
         # Note: COLLECTION_NAME is intentionally NOT set globally.
         # Integration tests set their own unique collection names.
         # Unit tests mock Qdrant and don't need a real collection.

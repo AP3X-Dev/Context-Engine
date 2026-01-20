@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -34,6 +35,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 # Add project root to path
+
+logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -200,8 +203,8 @@ class CollectionLearner:
             try:
                 fcntl.flock(self._lock_file, fcntl.LOCK_UN)
                 self._lock_file.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             self._lock_file = None
 
     def _load_checkpoint(self) -> float:
@@ -231,8 +234,8 @@ class CollectionLearner:
             if tmp_path.exists():
                 try:
                     tmp_path.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     def _encode(self, texts: List[str]) -> np.ndarray:
         """Encode texts to BGE embeddings (768-dim, raw without projection)."""

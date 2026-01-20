@@ -9,6 +9,7 @@ Two strategies:
 1. CosineAlphaScheduler: Fixed cosine decay schedule
 2. LearnedAlphaWeights: Per-iteration learnable weights with persistence
 """
+import logging
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 class CosineAlphaScheduler:
     """Fixed cosine schedule for alpha values.
     
@@ -115,8 +118,8 @@ class LearnedAlphaWeights:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     
     def _sigmoid(self, x: np.ndarray) -> np.ndarray:
         """Numerically stable sigmoid."""
@@ -151,8 +154,8 @@ class LearnedAlphaWeights:
                 mtime = os.path.getmtime(self._weights_path)
                 if mtime > self._weights_mtime:
                     self._load_weights()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     
     def learn_from_ranking_loss(
         self,
@@ -285,8 +288,8 @@ class LearnedAlphaWeights:
             if os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics for logging."""

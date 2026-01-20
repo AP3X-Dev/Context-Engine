@@ -11,6 +11,7 @@ Measures the quality and trustworthiness of LLM-generated answers:
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Add project root to path
+
+logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -27,8 +30,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv(PROJECT_ROOT / ".env")
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 # Fix Qdrant URL for running outside Docker
 qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")

@@ -100,6 +100,12 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
     - Use for: structural navigation (callers, definitions, importers).
     - Think: "who calls this function?", "where is this class defined?".
     - **Note**: Results are "hydrated" with ~500-char source snippets for immediate context.
+    - Supports `depth` for multi-hop traversals (depth=2 = callers of callers).
+  - neo4j_graph_query:
+    - Use for: advanced graph traversals that grep CANNOT do.
+    - Query types: `callers`, `callees`, `transitive_callers`, `transitive_callees`, `impact`, `dependencies`, `cycles`.
+    - Think: "what would break if I change X?" (impact), "callers of callers" (transitive_callers), "circular deps?" (cycles).
+    - Example: `neo4j_graph_query(symbol="normalize_path", query_type="impact", depth=2)` → finds all code that would break.
   - info_request:
     - Use for: rapid broad discovery and architectural overviews.
     - Good for: "how does the reranker work?", "overview of database modules".

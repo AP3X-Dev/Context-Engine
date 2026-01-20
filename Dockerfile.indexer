@@ -30,6 +30,8 @@ ENV RERANKER_ONNX_PATH=/app/models/reranker.onnx \
 # Bake scripts into the image so we can mount arbitrary code at /work
 COPY scripts /app/scripts
 
+# Copy plugins for Neo4j graph backend and other extensions
+COPY plugins /app/plugins
 
 WORKDIR /work
 

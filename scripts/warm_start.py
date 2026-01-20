@@ -64,10 +64,14 @@ async def warmup_reranker() -> float:
     try:
         start = time.perf_counter()
 
-        # Import and initialize reranker
-        from scripts.hybrid.rerank import get_reranker
-        reranker = get_reranker()
+        # Import and initialize reranker using centralized factory
+        from scripts.reranker import get_reranker_model, rerank_pairs, is_reranker_available
 
+        if not is_reranker_available():
+            logger.info("Reranker not configured, skipping warmup")
+            return 0.0
+
+        reranker = get_reranker_model()
         if reranker is None:
             return 0.0
 
@@ -79,11 +83,11 @@ async def warmup_reranker() -> float:
             "third candidate text",
         ]
 
-        # Reranker expects list of (score, text) tuples
-        dummy_pairs = [(0.5, c) for c in dummy_candidates]
+        # Reranker expects list of (query, document) tuples
+        dummy_pairs = [(dummy_query, c) for c in dummy_candidates]
 
         # Run inference to cache model
-        await asyncio.to_thread(reranker.rerank, dummy_query, dummy_pairs, top_n=3)
+        await asyncio.to_thread(rerank_pairs, dummy_pairs, reranker)
 
         elapsed = (time.perf_counter() - start) * 1000
         logger.info(f"Reranker warmup: {elapsed:.1f}ms")
@@ -210,8 +214,8 @@ def main():
         _ = qp
         print("Warm start via query_points: OK")
         return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Fallback to search API
     try:

@@ -127,7 +127,8 @@ def _try_parse_python_ast(text: str) -> bool:
         return True
     except SyntaxError:
         return False
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception (python_ast_parse): {e}")
         return False
 
 
@@ -173,7 +174,8 @@ def _try_parse_with_tree_sitter(text: str, language: str) -> bool:
         return False
     except ImportError:
         return False
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception (tree_sitter_parse): {e}")
         return False
 
 

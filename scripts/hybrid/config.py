@@ -12,7 +12,7 @@ __all__ = [
     "LEX_SPARSE_IDF", "LEX_SPLADE_MODE",
     "MINI_VECTOR_NAME", "MINI_VEC_DIM", "HYBRID_MINI_WEIGHT",
     "RRF_K", "DENSE_WEIGHT", "LEXICAL_WEIGHT", "LEX_VECTOR_WEIGHT", "EF_SEARCH",
-    "SYMBOL_BOOST", "SYMBOL_EQUALITY_BOOST", "GRAPH_CONNECTION_BOOST", "FNAME_BOOST", "RECENCY_WEIGHT", "CORE_FILE_BOOST",
+    "SYMBOL_BOOST", "SYMBOL_EQUALITY_BOOST", "GRAPH_CONNECTION_BOOST", "IMPORTANCE_BOOST_MAX", "FNAME_BOOST", "RECENCY_WEIGHT", "CORE_FILE_BOOST",
     "VENDOR_PENALTY", "LANG_MATCH_BOOST", "CLUSTER_LINES", "TEST_FILE_PENALTY",
     "CONFIG_FILE_PENALTY", "IMPLEMENTATION_BOOST", "DOCUMENTATION_PENALTY",
     "PSEUDO_BOOST", "COMMENT_PENALTY", "COMMENT_RATIO_THRESHOLD", "INTENT_IMPL_BOOST",
@@ -22,7 +22,10 @@ __all__ = [
     "MAX_EMBED_CACHE", "MAX_RESULTS_CACHE",
     "INCLUDE_WHY",
 ]
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +111,11 @@ SYMBOL_EQUALITY_BOOST = _safe_float(
 GRAPH_CONNECTION_BOOST = _safe_float(
     os.environ.get("HYBRID_GRAPH_CONNECTION_BOOST", "0.2"), 0.2
 )
+# PageRank-based importance boost (when enhanced graph backend available)
+# Scales symbol importance (0.0-1.0) into a score boost (0.0 to max)
+IMPORTANCE_BOOST_MAX = _safe_float(
+    os.environ.get("HYBRID_IMPORTANCE_BOOST_MAX", "0.15"), 0.15
+)
 FNAME_BOOST = _safe_float(
     os.environ.get("HYBRID_FNAME_BOOST", str(SYMBOL_EQUALITY_BOOST * 0.5)),
     SYMBOL_EQUALITY_BOOST * 0.5,
@@ -118,8 +126,8 @@ VENDOR_PENALTY = _safe_float(os.environ.get("HYBRID_VENDOR_PENALTY", "0.05"), 0.
 LANG_MATCH_BOOST = _safe_float(os.environ.get("HYBRID_LANG_MATCH_BOOST", "0.05"), 0.05)
 CLUSTER_LINES = _safe_int(os.environ.get("HYBRID_CLUSTER_LINES", "15"), 15)
 
-# Test file penalty (increased to ensure implementations rank above tests)
-TEST_FILE_PENALTY = _safe_float(os.environ.get("HYBRID_TEST_FILE_PENALTY", "0.35"), 0.35)
+# Test file penalty (0.8 default ensures implementations rank well above tests)
+TEST_FILE_PENALTY = _safe_float(os.environ.get("HYBRID_TEST_FILE_PENALTY", "0.8"), 0.8)
 
 # Additional file-type weighting knobs
 CONFIG_FILE_PENALTY = _safe_float(os.environ.get("HYBRID_CONFIG_FILE_PENALTY", "0.3"), 0.3)
@@ -213,8 +221,8 @@ def _collection(collection_name: str | None = None) -> str:
                 coll = state.get("qdrant_collection")
                 if isinstance(coll, str) and coll.strip():
                     return coll.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return "codebase"
 

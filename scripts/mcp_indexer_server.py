@@ -32,8 +32,11 @@ from __future__ import annotations
 # CRITICAL: OpenLit must be initialized BEFORE any qdrant_client imports
 # to properly instrument vector DB calls. This import must come first!
 # ---------------------------------------------------------------------------
+import logging
 import os as _os
 import sys as _sys
+
+logger = logging.getLogger(__name__)
 _roots_env = _os.environ.get("WORK_ROOTS", "")
 _roots = [p.strip() for p in _roots_env.split(",") if p.strip()] or ["/work", "/app"]
 for _root in _roots:
@@ -87,8 +90,8 @@ try:
     for _root in _roots:
         if _root and _root not in sys.path:
             sys.path.insert(0, _root)
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 # Note: OpenLit initialization is handled by early import of scripts.openlit_init
 # at the top of this file (before any qdrant_client imports)
@@ -250,8 +253,8 @@ try:
         resolved = _ws_get_collection_name(None)
         if resolved:
             DEFAULT_COLLECTION = resolved
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 MAX_LOG_TAIL = safe_int(
     os.environ.get("MCP_MAX_LOG_TAIL", "4000"),
@@ -372,9 +375,10 @@ def _relax_var_kwarg_defaults() -> None:
             if changed:
                 try:
                     model.model_rebuild(force=True)
-                except Exception:
-                    pass
-        except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
 
@@ -429,8 +433,8 @@ def _start_readyz_server():
                                     for t in tools
                                     if (t.get("name") or "") != "expand_query"
                                 ]
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                         payload = {"ok": True, "tools": tools}
                         self.wfile.write(_json_dumps_bytes(payload))
                     else:
@@ -440,8 +444,8 @@ def _start_readyz_server():
                     try:
                         self.send_response(500)
                         self.end_headers()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
             def log_message(self, *args, **kwargs):
                 # Quiet health server logs
@@ -487,8 +491,8 @@ except ImportError:
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return {
                     "ok": False,
                     "code": -1,
@@ -525,8 +529,8 @@ except ImportError:
                     # Ensure the process is reaped
                     with contextlib.suppress(Exception):
                         await proc.wait()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
 
 # --- Admin tool helpers imported from mcp_admin_tools shim ---
@@ -583,8 +587,8 @@ async def qdrant_index_root(
                 collection = _parsed.get("collection", collection)
                 if recreate is None and "recreate" in _parsed:
                     recreate = _coerce_bool(_parsed.get("recreate"), False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Resolve collection: prefer explicit value; otherwise use workspace state
     try:
@@ -624,8 +628,8 @@ async def qdrant_index_root(
         if ret.get("ok") and int(ret.get("code", 1)) == 0:
             if _invalidate_router_scratchpad("/work"):
                 ret["invalidated_router_scratchpad"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ret
 
 
@@ -769,8 +773,8 @@ async def qdrant_status(
             max_points = _coerce_int(_extra.get("max_points"), None)
         if _extra and batch in (None, "") and _extra.get("batch") is not None:
             batch = _coerce_int(_extra.get("batch"), None)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     coll = collection or _default_collection()
     try:
         from qdrant_client import QdrantClient
@@ -912,8 +916,8 @@ async def qdrant_index(
                 collection = _parsed2.get("collection", collection)
                 if recreate is None and "recreate" in _parsed2:
                     recreate = _coerce_bool(_parsed2.get("recreate"), False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     root = "/work"
     if subdir:
@@ -967,8 +971,8 @@ async def qdrant_index(
         if ret.get("ok") and int(ret.get("code", 1)) == 0:
             if _invalidate_router_scratchpad("/work"):
                 ret["invalidated_router_scratchpad"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ret
 
 
@@ -1002,8 +1006,8 @@ async def set_session_defaults(
                 language = _extra.get("language")
             if (session is None or (isinstance(session, str) and str(session).strip() == "")) and _extra.get("session") is not None:
                 session = _extra.get("session")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     defaults: Dict[str, Any] = {}
     unset_keys: set[str] = set()
@@ -1024,8 +1028,8 @@ async def set_session_defaults(
                     existing2.pop(_k, None)
                 existing2.update(defaults)
                 SESSION_DEFAULTS_BY_SESSION[ctx.session] = existing2
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Optional token storage
     sid = str(session).strip() if session is not None else ""
@@ -1039,8 +1043,8 @@ async def set_session_defaults(
                     existing.pop(_k, None)
                 existing.update(defaults)
                 SESSION_DEFAULTS[sid] = existing
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return {
         "ok": True,
@@ -2123,6 +2127,79 @@ if _PATTERN_SEARCH_ENABLED:
         )
 
 
+# ---------------------------------------------------------------------------
+# Neo4j Graph Query - Advanced graph traversals (conditional on NEO4J_GRAPH=1)
+# ---------------------------------------------------------------------------
+_NEO4J_GRAPH_ENABLED = str(os.environ.get("NEO4J_GRAPH", "")).strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+if _NEO4J_GRAPH_ENABLED:
+    from scripts.mcp_impl.neo4j_graph import _neo4j_graph_query_impl
+
+    @mcp.tool()
+    async def neo4j_graph_query(
+        query_type: Any = None,
+        symbol: Any = None,
+        depth: Any = None,
+        limit: Any = None,
+        repo: Any = None,
+        language: Any = None,
+        include_paths: Any = None,
+        collection: Any = None,
+        output_format: Any = None,
+    ) -> Dict[str, Any]:
+        """Advanced Neo4j graph queries for symbol relationships.
+
+        Graph database queries enabled when NEO4J_GRAPH=1.
+
+        Query types:
+        - callers: Who calls this symbol? (depth 1)
+        - callees: What does this symbol call? (depth 1)
+        - transitive_callers: Multi-hop callers (up to depth)
+        - transitive_callees: Multi-hop callees (up to depth)
+        - impact: What would break if I change this? (reverse transitive)
+        - dependencies: What does this depend on? (calls + imports)
+        - cycles: Detect circular dependencies
+
+        Key parameters:
+        - query_type: str. Type of graph query (see above).
+        - symbol: str. Symbol to analyze (required).
+        - depth: int (default 1). Max traversal depth for transitive queries.
+        - limit: int (default 50). Maximum results.
+        - repo: str. Filter by repository.
+        - include_paths: bool. Include full traversal paths in results.
+        - collection: str. Graph collection scope (defaults to COLLECTION_NAME).
+        - output_format: "json" (default) or "toon".
+
+        Examples:
+        - neo4j_graph_query(query_type="callers", symbol="authenticate")
+        - neo4j_graph_query(query_type="impact", symbol="User", depth=3)
+        - neo4j_graph_query(query_type="cycles", symbol="ServiceA")
+        """
+        _query_type = str(query_type).strip() if query_type else "callers"
+        _symbol = str(symbol).strip() if symbol else None
+        _depth = safe_int(depth, default=1, logger=logger, context="neo4j_graph.depth")
+        _limit = safe_int(limit, default=50, logger=logger, context="neo4j_graph.limit")
+        _repo = str(repo).strip() if repo else None
+        _language = str(language).strip() if language else None
+        _include_paths = _coerce_bool(include_paths, default=False)
+        _collection = str(collection).strip() if collection else None
+        _output_format = str(output_format).strip().lower() if output_format else "json"
+
+        return await _neo4j_graph_query_impl(
+            query_type=_query_type,
+            symbol=_symbol,
+            depth=_depth,
+            limit=_limit,
+            repo=_repo,
+            language=_language,
+            include_paths=_include_paths,
+            collection=_collection,
+            output_format=_output_format,
+        )
+
+
 _relax_var_kwarg_defaults()
 
 if __name__ == "__main__":
@@ -2162,6 +2239,7 @@ if __name__ == "__main__":
     logger.info(f"  Rerank Top N: {os.environ.get('RERANK_TOP_N', '20')}")
     logger.info(f"  Rerank Timeout MS: {os.environ.get('RERANK_TIMEOUT_MS', '500')}")
     logger.info(f"  Pattern Search: {'enabled' if _PATTERN_SEARCH_ENABLED else 'disabled (set PATTERN_VECTORS=1)'}")
+    logger.info(f"  Neo4j Graph: {'enabled' if _NEO4J_GRAPH_ENABLED else 'disabled (set NEO4J_GRAPH=1)'}")
     logger.info("=" * 60)
 
     # Server warmup: async parallel loading of embedding + reranker models
@@ -2194,14 +2272,14 @@ if __name__ == "__main__":
             _ = _get_embedding_model(
                 os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Start lightweight /readyz health endpoint in background (best-effort)
     try:
         _start_readyz_server()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     transport = os.environ.get("FASTMCP_TRANSPORT", "sse").strip().lower()
     if transport == "stdio":
@@ -2212,8 +2290,8 @@ if __name__ == "__main__":
         try:
             mcp.settings.host = HOST
             mcp.settings.port = PORT
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Use the correct FastMCP transport name
         try:
             mcp.run(transport="streamable-http")
