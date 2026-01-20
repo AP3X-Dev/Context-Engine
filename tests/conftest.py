@@ -48,10 +48,10 @@ def get_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         try:
             decoded = toon_decode(results)
         except Exception as e:
-            # Debug: print the problematic TOON string
-            import sys
-            print(f"\n[get_results] TOON decode error: {e}", file=sys.stderr)
-            print(f"[get_results] TOON string (first 500 chars): {results[:500]!r}", file=sys.stderr)
+            # Use logging instead of print to avoid stdio corruption in MCP contexts
+            import logging
+            _logger = logging.getLogger(__name__)
+            _logger.warning(f"TOON decode error: {e}, string prefix: {results[:200]!r}")
             raise
         # TOON decode returns dict with 'results' key containing the list
         if isinstance(decoded, dict):
