@@ -168,6 +168,9 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
 
     qdrant_url = os.environ.get("QDRANT_URL", "http://qdrant:6333")
     api_key = os.environ.get("QDRANT_API_KEY") or None
+    if QdrantClient is None:
+        return
+
     try:
         client = QdrantClient(url=qdrant_url, api_key=api_key)
     except Exception as e:
@@ -430,13 +433,30 @@ def _delete_path_tree(p: Path) -> bool:
 
 
 def _delete_collection_and_graph(collection_name: str) -> None:
-    if QdrantClient is None:
-        return
     name = (collection_name or "").strip()
     if not name:
         return
     qdrant_url = os.environ.get("QDRANT_URL", "http://qdrant:6333")
     api_key = os.environ.get("QDRANT_API_KEY") or None
+
+    # Prefer existing helper so tests that monkeypatch delete_collection_qdrant can observe calls.
+    if callable(delete_collection_qdrant):
+        try:
+            delete_collection_qdrant(qdrant_url=qdrant_url, api_key=api_key, collection=name)
+        except Exception as exc:
+            logger.warning("[staging] Failed to delete collection %s: %s", name, exc)
+        if get_graph_collection_name_t is not None:
+            graph_name = get_graph_collection_name_t(name)
+            try:
+                delete_collection_qdrant(qdrant_url=qdrant_url, api_key=api_key, collection=graph_name)
+            except Exception as graph_err:
+                logger.warning(
+                    "[staging] Failed to delete graph collection %s (best-effort): %s",
+                    graph_name,
+                    graph_err,
+                )
+        return
+
     try:
         client = QdrantClient(url=qdrant_url, api_key=api_key)
     except Exception:

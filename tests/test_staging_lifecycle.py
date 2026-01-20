@@ -151,7 +151,7 @@ def test_staging_start_promote_activate_and_abort_are_consistent(
     def fake_normalize_cloned_collection_schema(**kwargs):
         calls["normalize_schema"] += 1
 
-    monkeypatch.setattr(indexing_admin, "get_graph_collection_name", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
     monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", fake_copy_collection_qdrant)
     monkeypatch.setattr(indexing_admin, "recreate_collection_qdrant", fake_recreate_collection_qdrant)
     monkeypatch.setattr(indexing_admin, "spawn_ingest_code", fake_spawn_ingest_code)
@@ -849,7 +849,7 @@ def test_staging_start_copies_graph_collection(staging_workspace: dict, monkeypa
         lambda *, work_dir: {collection: [{"repo_name": repo_name, "container_path": str(repo_ws)}]},
     )
     monkeypatch.setattr(indexing_admin, "_get_collection_point_count", lambda **_: 0)
-    monkeypatch.setattr(indexing_admin, "get_graph_collection_name", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
     monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", fake_copy_collection_qdrant)
     monkeypatch.setattr(indexing_admin, "_wait_for_clone_points", lambda **_: None)
     monkeypatch.setattr(indexing_admin, "_normalize_cloned_collection_schema", lambda **_: None)
@@ -902,7 +902,7 @@ def test_staging_abort_deletes_graph_collection(staging_workspace: dict, monkeyp
         lambda *, work_dir: {collection: [{"repo_name": repo_name, "container_path": str(repo_ws)}]},
     )
     monkeypatch.setattr(indexing_admin, "_get_collection_point_count", lambda **_: 0)
-    monkeypatch.setattr(indexing_admin, "get_graph_collection_name", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
     monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", lambda **_: None)
     monkeypatch.setattr(indexing_admin, "_wait_for_clone_points", lambda **_: None)
     monkeypatch.setattr(indexing_admin, "_normalize_cloned_collection_schema", lambda **_: None)
@@ -952,7 +952,7 @@ def test_staging_activate_deletes_graph_collection(staging_workspace: dict, monk
         lambda *, work_dir: {collection: [{"repo_name": repo_name, "container_path": str(repo_ws)}]},
     )
     monkeypatch.setattr(indexing_admin, "_get_collection_point_count", lambda **_: 0)
-    monkeypatch.setattr(indexing_admin, "get_graph_collection_name", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
     monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", lambda **_: None)
     monkeypatch.setattr(indexing_admin, "_wait_for_clone_points", lambda **_: None)
     monkeypatch.setattr(indexing_admin, "_normalize_cloned_collection_schema", lambda **_: None)

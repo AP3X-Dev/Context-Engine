@@ -229,8 +229,8 @@ def delete_collection_everywhere(
 
                 # Delete graph collection if it exists
                 if get_graph_collection_name is not None:
-                    graph_collection = get_graph_collection_name(name)
                     try:
+                        graph_collection = get_graph_collection_name(name)
                         cli.delete_collection(collection_name=graph_collection)
                         out["graph_collection_deleted"] = True
                     except Exception as graph_err:
@@ -238,7 +238,7 @@ def delete_collection_everywhere(
                         out["graph_collection_deleted"] = False
                         logger.warning(
                             "[collection_admin] Failed to delete graph collection %s (best-effort): %s",
-                            graph_collection,
+                            name if "graph_collection" not in locals() else graph_collection,
                             graph_err,
                         )
     except Exception as delete_exc:

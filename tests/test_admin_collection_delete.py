@@ -328,7 +328,6 @@ def test_delete_collection_succeeds_without_graph_collection(monkeypatch, tmp_pa
             deleted_collections.append(collection_name)
             # Simulate that the main collection exists but graph doesn't
             if "_graph" in collection_name:
-                from qdrant_client.http.exceptions import UnexpectedResponse
                 raise UnexpectedResponse(
                     status_code=404,
                     reason_phrase="Not Found",

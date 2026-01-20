@@ -191,6 +191,14 @@ def process_delta_bundle(workspace_path: str, bundle_path: Path, manifest: Dict[
             except Exception as e:
                 logger.debug(f"Suppressed exception: {e}")
 
+        if not slug_order:
+            fallback_leaf = Path(workspace_path).name or "workspace"
+            if _SLUGGED_REPO_RE.match(fallback_leaf):
+                slug_order.append(fallback_leaf)
+            else:
+                workspace_key = get_workspace_key(workspace_path)
+                slug_order.append(f"{fallback_leaf}-{workspace_key}")
+
         replica_roots: Dict[str, Path] = {}
         for slug in slug_order:
             path = Path(WORK_DIR) / slug
