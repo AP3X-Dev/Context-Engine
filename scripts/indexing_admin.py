@@ -6,9 +6,10 @@ import subprocess
 import shutil
 import traceback
 import json
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 try:
     from qdrant_client import QdrantClient
@@ -71,6 +72,21 @@ except Exception:
     promote_pending_indexing_config = None  # type: ignore
     persist_indexing_config = None  # type: ignore
 
+logger = logging.getLogger(__name__)
+
+try:
+    from scripts.ingest.graph_edges import get_graph_collection_name
+except Exception:
+    get_graph_collection_name = None  # type: ignore
+
+if not callable(get_graph_collection_name):
+    logger.warning(
+        "Graph edge helpers unavailable; graph collections will not be cloned or cleaned up during staging"
+    )
+get_graph_collection_name_t: Optional[Callable[[str], str]] = (
+    get_graph_collection_name if callable(get_graph_collection_name) else None
+)
+
 
 def _staging_enabled() -> bool:
     return bool(is_staging_enabled() if callable(is_staging_enabled) else False)
@@ -132,7 +148,7 @@ def _copy_repo_state_for_clone(
             with cache_path.open("w", encoding="utf-8") as fh:
                 json.dump(cache, fh, ensure_ascii=False, indent=2, sort_keys=True)
     except Exception as exc:
-        print(f"[staging] Warning: failed to retarget cache.json for {clone_repo_name}: {exc}")
+        logger.warning("[staging] failed to retarget cache.json for %s: %s", clone_repo_name, exc)
 
 
 _COLLECTION_SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -328,12 +344,7 @@ def _auto_refresh_snapshot_if_needed(
                 pending=True,
             )
         except Exception as exc:
-            try:
-                print(
-                    f"[snapshot_refresh] Failed to capture pending config for {collection}: {exc}"
-                )
-            except Exception:
-                pass
+            logger.warning("[snapshot_refresh] Failed to capture pending config for %s: %s", collection, exc)
             return False
 
     dry_run = str(os.environ.get("CTXCE_SNAPSHOT_REFRESH_DRY_RUN", "0")).strip().lower() in {
@@ -345,30 +356,26 @@ def _auto_refresh_snapshot_if_needed(
 
     try:
         if dry_run:
-            print(
-                f"[snapshot_refresh] DRY RUN: would promote pending config for {collection} "
-                f"(workspace={ws}, repo={repo_name or 'default'}) after validating schema: "
-                f"{', '.join(snapshot_only_keys)}"
+            logger.info(
+                "[snapshot_refresh] DRY RUN: would promote pending config for %s (workspace=%s, repo=%s) after validating schema: %s",
+                collection,
+                ws,
+                repo_name or "default",
+                ", ".join(snapshot_only_keys),
             )
             return True
         promote_pending_indexing_config(workspace_path=ws, repo_name=repo_name)
         _SNAPSHOT_REFRESHED.add(cache_key)
-        try:
-            print(
-                f"[snapshot_refresh] promoted pending indexing config for {collection} "
-                f"(workspace={ws}, repo={repo_name or 'default'}) after validating schema: "
-                f"{', '.join(snapshot_only_keys)}"
-            )
-        except Exception:
-            pass
+        logger.info(
+            "[snapshot_refresh] promoted pending indexing config for %s (workspace=%s, repo=%s) after validating schema: %s",
+            collection,
+            ws,
+            repo_name or "default",
+            ", ".join(snapshot_only_keys),
+        )
         return True
     except Exception as exc:
-        try:
-            print(
-                f"[snapshot_refresh] Failed to promote indexing config for {collection}: {exc}"
-            )
-        except Exception:
-            pass
+        logger.warning("[snapshot_refresh] Failed to promote indexing config for %s: %s", collection, exc)
         return False
 
 
@@ -406,6 +413,41 @@ def _delete_path_tree(p: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _delete_collection_and_graph(collection_name: str) -> None:
+    if QdrantClient is None:
+        return
+    name = (collection_name or "").strip()
+    if not name:
+        return
+    qdrant_url = os.environ.get("QDRANT_URL", "http://qdrant:6333")
+    api_key = os.environ.get("QDRANT_API_KEY") or None
+    try:
+        client = QdrantClient(url=qdrant_url, api_key=api_key)
+    except Exception:
+        return
+    try:
+        try:
+            client.delete_collection(collection_name=name)
+        except Exception:
+            pass
+
+        if get_graph_collection_name_t is not None:
+            graph_name = get_graph_collection_name_t(name)
+            try:
+                client.delete_collection(collection_name=graph_name)
+            except Exception as graph_err:
+                logger.warning(
+                    "[staging] Failed to delete graph collection %s (best-effort): %s",
+                    graph_name,
+                    graph_err,
+                )
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 def _resolve_codebase_root(work_root: Path) -> Path:
@@ -447,14 +489,7 @@ def _cleanup_old_clone(
 
     old_collection = f"{collection}_old"
     if delete_collection:
-        try:
-            delete_collection_qdrant(
-                qdrant_url=os.environ.get("QDRANT_URL", "http://qdrant:6333"),
-                api_key=os.environ.get("QDRANT_API_KEY") or None,
-                collection=old_collection,
-            )
-        except Exception:
-            pass
+        _delete_collection_and_graph(old_collection)
 
     if not repo_name:
         return
@@ -486,12 +521,11 @@ def _cleanup_old_clone(
                 return resolved_candidate
         except Exception:
             pass
-        try:
-            print(
-                f"[staging] refusing to treat {resolved_candidate} as work root; falling back to {resolved_base}"
-            )
-        except Exception:
-            pass
+        logger.warning(
+            "[staging] refusing to treat %s as work root; falling back to %s",
+            resolved_candidate,
+            resolved_base,
+        )
         return resolved_base
 
     work_root: Optional[Path] = None
@@ -529,7 +563,11 @@ def _cleanup_old_clone(
             if resolved_base == resolved_target or resolved_base in resolved_target.parents:
                 _delete_path_tree(resolved_target)
             else:
-                print(f"[staging] refusing to delete {resolved_target}: outside work root {resolved_base}")
+                logger.warning(
+                    "[staging] refusing to delete %s: outside work root %s",
+                    resolved_target,
+                    resolved_base,
+                )
         except Exception:
             pass
 
@@ -561,6 +599,7 @@ CONFIG_DRIFT_RULES: Dict[str, str] = {
     "qwen3_embedding_enabled": "recreate",
     "mini_vec_dim": "recreate",
     "lex_sparse_mode": "recreate",
+    "index_graph_edges": "recreate",
     # Chunking / AST changes
     "index_semantic_chunks": "reindex",
     "index_chunk_lines": "reindex",
@@ -589,6 +628,7 @@ _INDEXING_CONFIG_DEFAULTS: Dict[str, Any] = {
     "index_use_enhanced_ast": False,
     "mini_vec_dim": None,
     "lex_sparse_mode": False,
+    "index_graph_edges": True,
 }
 
 
@@ -823,6 +863,8 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
         staging_status = "none"
         staging_collection = ""
         staging_state = ""
+        graph_clone_name = ""
+        graph_clone_copied = False
         if st:
             try:
                 staging_info = st.get("staging") or {}
@@ -832,10 +874,25 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
                     staging_status_info = staging_info.get("status") or {}
                     if isinstance(staging_status_info, dict):
                         staging_state = str(staging_status_info.get("state") or "")
+                    graph_clone_info = staging_info.get("graph_clone") or {}
+                    if isinstance(graph_clone_info, dict):
+                        graph_clone_name = str(graph_clone_info.get("name") or "")
+                        graph_clone_copied = bool(graph_clone_info.get("copied"))
                 else:
                     staging_status = "none"
             except Exception:
                 staging_status = "none"
+
+        index_graph_edges_enabled: Optional[bool] = None
+        if applied_config:
+            try:
+                val = applied_config.get("index_graph_edges")
+                if isinstance(val, bool):
+                    index_graph_edges_enabled = val
+                elif isinstance(val, str):
+                    index_graph_edges_enabled = val.lower() in {"1", "true", "yes", "on"}
+            except Exception:
+                index_graph_edges_enabled = None
 
         # "maintenance needed" should reflect actual config drift requiring a maintenance reindex.
         # Pending hashes can exist during staging / queued rebuild flows; keep them visible in the UI
@@ -909,6 +966,9 @@ def build_admin_collections_view(*, collections: Any, work_dir: str) -> List[Dic
                 "staging_status": staging_status,
                 "staging_collection": staging_collection,
                 "staging_state": staging_state,
+                "graph_clone_name": graph_clone_name,
+                "graph_clone_copied": graph_clone_copied,
+                "index_graph_edges_enabled": index_graph_edges_enabled,
             }
         )
 
@@ -951,6 +1011,21 @@ def recreate_collection_qdrant(*, qdrant_url: str, api_key: Optional[str], colle
             cli.delete_collection(collection_name=name)
         except Exception as delete_error:
             raise RuntimeError(f"Failed to delete existing collection '{name}' in Qdrant: {delete_error}") from delete_error
+
+        # Also delete the graph collection if it exists
+        # Graph collections are tightly coupled to their main collection
+        # The decision to recreate happens during ingest (based on INDEX_GRAPH_EDGES)
+        if get_graph_collection_name_t is not None:
+            graph_name = get_graph_collection_name_t(name)
+            try:
+                cli.delete_collection(collection_name=graph_name)
+            except Exception as graph_error:
+                # Best-effort: don't fail main recreation if graph deletion fails
+                logger.warning(
+                    "Failed to delete graph collection '%s' (non-critical): %s",
+                    graph_name,
+                    graph_error,
+                )
     finally:
         try:
             cli.close()
@@ -1061,10 +1136,7 @@ def _normalize_cloned_collection_schema(*, collection_name: str, qdrant_url: str
         if ensure_payload_indexes is not None:
             ensure_payload_indexes(client, collection_name)
     except Exception as exc:
-        try:
-            print(f"[staging] Warning: failed to normalize cloned collection {collection_name}: {exc}")
-        except Exception:
-            pass
+        logger.warning("[staging] failed to normalize cloned collection %s: %s", collection_name, exc)
     finally:
         try:
             client.close()
@@ -1121,13 +1193,12 @@ def _wait_for_clone_points(
                 clone_count = 0
 
             if clone_count >= expected_count:
-                try:
-                    print(
-                        f"[staging] Clone verification succeeded: {cloned_collection} has "
-                        f"{clone_count} points (expected >= {expected_count})."
-                    )
-                except Exception:
-                    pass
+                logger.info(
+                    "[staging] Clone verification succeeded: %s has %s points (expected >= %s)",
+                    cloned_collection,
+                    clone_count,
+                    expected_count,
+                )
                 return
 
             if time.time() > deadline:
@@ -1178,28 +1249,64 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
         raise RuntimeError("copy_collection_qdrant unavailable (import failed)")
 
     try:
-        print(f"[staging] Copying collection {collection} -> {old_collection} (overwrite=True)")
-        try:
-            print(
-                f"[staging] copy_collection_qdrant callable={callable(_copy_fn)} type={type(_copy_fn)} module={getattr(_copy_fn, '__module__', '?')}"
-            )
-        except Exception:
-            pass
+        logger.info("[staging] Copying collection %s -> %s (overwrite=True)", collection, old_collection)
+        logger.debug(
+            "[staging] copy_collection_qdrant callable=%s type=%s module=%s",
+            callable(_copy_fn),
+            type(_copy_fn),
+            getattr(_copy_fn, "__module__", "?"),
+        )
         _copy_fn(
             source=collection,
             target=old_collection,
             qdrant_url=qdrant_url,
             overwrite=True,
         )
-        print(f"[staging] Copy completed for {old_collection}")
+        logger.info("[staging] Copy completed for %s", old_collection)
     except Exception as exc:
-        print(f"[staging] ERROR copying {collection} -> {old_collection}: {exc!r}")
-        try:
-            print("[staging] TRACEBACK (copy)")
-            print(traceback.format_exc())
-        except Exception:
-            pass
+        logger.error("[staging] ERROR copying %s -> %s: %s", collection, old_collection, exc)
+        logger.debug("[staging] TRACEBACK (copy)\n%s", traceback.format_exc())
         raise
+
+    graph_clone_details: Dict[str, Any] = {"copied": False, "name": None}
+    # Copy graph collection if it exists (best-effort)
+    try:
+        if get_graph_collection_name_t is not None:
+            graph_collection = get_graph_collection_name_t(collection)
+            old_graph_collection = get_graph_collection_name_t(old_collection)
+            graph_clone_details["name"] = old_graph_collection
+            logger.info(
+                "[staging] Copying graph collection %s -> %s (best-effort)",
+                graph_collection,
+                old_graph_collection,
+            )
+            try:
+                _copy_fn(
+                    source=graph_collection,
+                    target=old_graph_collection,
+                    qdrant_url=qdrant_url,
+                    overwrite=True,
+                )
+                graph_clone_details["copied"] = True
+                logger.info("[staging] Graph collection copy completed for %s", old_graph_collection)
+            except Exception as graph_exc:
+                # Graph collection copy is best-effort - log warning but don't fail staging
+                err_str = str(graph_exc).lower()
+                if "404" in err_str or "doesn't exist" in err_str or "not found" in err_str:
+                    logger.info(
+                        "[staging] Graph collection %s not found while copying: %s",
+                        graph_collection,
+                        graph_exc,
+                    )
+                else:
+                    logger.warning(
+                        "[staging] Failed to copy graph collection %s -> %s: %s",
+                        graph_collection,
+                        old_graph_collection,
+                        graph_exc,
+                    )
+    except Exception as exc:
+        logger.warning("[staging] Graph collection copy skipped: %s", exc)
 
     try:
         _wait_for_clone_points(
@@ -1210,13 +1317,13 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
             timeout_seconds=90,
         )
     except Exception as exc:
-        print(f"[staging] ERROR verifying clone {old_collection}: {exc}")
+        logger.error("[staging] ERROR verifying clone %s: %s", old_collection, exc)
         raise
 
     # IMPORTANT: switch serving to *_old as soon as the clone is verified.
     # Large repos can make the filesystem copy below slow; don't block the traffic cutover.
     try:
-        print(f"[staging] Switching serving to clone {old_collection}")
+        logger.info("[staging] Switching serving to clone %s", old_collection)
         update_workspace_state(
             workspace_path=root,
             repo_name=repo_name,
@@ -1228,14 +1335,14 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
             },
         )
     except Exception as exc:
-        print(f"[staging] ERROR updating serving state to {old_collection}: {exc}")
+        logger.error("[staging] ERROR updating serving state to %s: %s", old_collection, exc)
         raise
 
     # Best-effort: ensure payload indexes on the clone. Failures here must not break cutover.
     try:
         _normalize_cloned_collection_schema(collection_name=old_collection, qdrant_url=qdrant_url)
     except Exception as exc:
-        print(f"[staging] Warning: failed to normalize cloned collection {old_collection}: {exc}")
+        logger.warning("[staging] failed to normalize cloned collection %s: %s", old_collection, exc)
 
     # Duplicate workspace slug/state to <slug>_old so watcher/indexer can serve reads from the clone.
     # This can be slow for large repos; treat as best-effort and do not block staging cutover.
@@ -1246,11 +1353,11 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
         try:
             if canonical_dir.exists():
                 t0 = time.time()
-                print(f"[staging] Copying workspace tree {canonical_dir} -> {old_dir}")
+                logger.info("[staging] Copying workspace tree %s -> %s", canonical_dir, old_dir)
                 shutil.copytree(canonical_dir, old_dir, dirs_exist_ok=True)
-                print(f"[staging] Workspace copy completed in {time.time() - t0:.1f}s")
+                logger.info("[staging] Workspace copy completed in %.1fs", time.time() - t0)
         except Exception as exc:
-            print(f"[staging] Warning: failed to copy workspace tree for {repo_name}: {exc}")
+            logger.warning("[staging] failed to copy workspace tree for %s: %s", repo_name, exc)
 
         try:
             _copy_repo_state_for_clone(
@@ -1260,7 +1367,7 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
                 clone_workspace=str(old_dir),
             )
         except Exception as exc:
-            print(f"[staging] Warning: failed to copy repo state for {repo_name}: {exc}")
+            logger.warning("[staging] failed to copy repo state for %s: %s", repo_name, exc)
 
         try:
             old_state = state.copy()
@@ -1283,7 +1390,7 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
                 updates=old_state,
             )
         except Exception as exc:
-            print(f"[staging] Warning: failed to write *_old state for {repo_name}: {exc}")
+            logger.warning("[staging] failed to write *_old state for %s: %s", repo_name, exc)
 
     # Prepare canonical slug for rebuild (pending env)
     pending_cfg = state.get("indexing_config_pending") or state.get("indexing_config")
@@ -1309,6 +1416,11 @@ def start_staging_rebuild(*, collection: str, work_dir: str) -> str:
             "workspace_path": root,
             "repo_name": repo_name,
         }
+        if graph_clone_details["name"]:
+            staging_info["graph_clone"] = {
+                "name": graph_clone_details["name"],
+                "copied": graph_clone_details["copied"],
+            }
         set_staging_state(workspace_path=root, repo_name=repo_name, staging=staging_info)
 
     if update_staging_status:

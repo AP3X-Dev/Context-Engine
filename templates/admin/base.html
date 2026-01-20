@@ -12,6 +12,10 @@
       .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 12px; }
       .error { color: #b00; }
       .warning { color: #8a6d3b; }
+      .flash { border-radius: 6px; padding: 10px 14px; margin: 12px 0; font-size: 14px; }
+      .flash.success { background: #e6f4ea; color: #1e7b34; border: 1px solid #b8e0c3; }
+      .flash.warning { background: #fff7e6; color: #8a6d3b; border: 1px solid #f2d6a0; }
+      .flash.error { background: #fdecea; color: #b3261e; border: 1px solid #f5a29a; }
       table { border-collapse: collapse; width: 100%; }
       th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
       th { background: #f7f7f7; }
@@ -33,6 +37,10 @@
         </form>
       </nav>
     </header>
+
+    {% if flash and flash.message %}
+      <div class="flash {{ flash.level or '' }}">{{ flash.message }}</div>
+    {% endif %}
 
     {% block content %}{% endblock %}
 

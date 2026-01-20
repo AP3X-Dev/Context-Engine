@@ -51,6 +51,7 @@ def render_admin_acl(
     deletion_enabled: bool = False,
     work_dir: str = "/work",
     refresh_ms: int = 5000,
+    flash: Optional[Dict[str, str]] = None,
     status_code: int = 200,
 ) -> Any:
     return _templates.TemplateResponse(
@@ -65,6 +66,7 @@ def render_admin_acl(
             "work_dir": work_dir,
             "staging_enabled": bool(is_staging_enabled() if callable(is_staging_enabled) else False),
             "refresh_ms": int(refresh_ms) if refresh_ms is not None else 5000,
+            "flash": flash,
         },
         status_code=status_code,
     )

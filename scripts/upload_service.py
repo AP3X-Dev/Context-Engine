@@ -44,6 +44,7 @@ import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlencode
 
 from scripts.upload_delta_bundle import get_workspace_key, process_delta_bundle
 
@@ -711,6 +712,21 @@ async def admin_acl_page(request: Request):
         build_admin_collections_view, collections=collections, work_dir=WORK_DIR
     )
 
+    flash: Optional[Dict[str, str]] = None
+    deleted = request.query_params.get("deleted")
+    if deleted:
+        graph_flag = request.query_params.get("graph_deleted")
+        if graph_flag == "1":
+            message = f"Collection {deleted} and its graph clone were deleted."
+            level = "success"
+        elif graph_flag == "0":
+            message = f"Collection {deleted} was deleted. Graph clone was not found or could not be deleted."
+            level = "warning"
+        else:
+            message = f"Collection {deleted} was deleted."
+            level = "success"
+        flash = {"message": message, "level": level}
+
     resp = render_admin_acl(
         request,
         users=users,
@@ -719,6 +735,7 @@ async def admin_acl_page(request: Request):
         deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
         work_dir=WORK_DIR,
         refresh_ms=ADMIN_COLLECTION_REFRESH_MS,
+        flash=flash,
     )
     candidate = _get_session_candidate_from_request(request)
     if candidate.get("source") and candidate.get("source") != "cookie":
@@ -935,7 +952,7 @@ async def admin_delete_collection(
         cleanup_fs = False
 
     try:
-        delete_collection_everywhere(
+        delete_result = delete_collection_everywhere(
             collection=name,
             work_dir=WORK_DIR,
             qdrant_url=QDRANT_URL,
@@ -949,7 +966,21 @@ async def admin_delete_collection(
             back_href="/admin/acl",
         )
 
-    return RedirectResponse(url="/admin/acl", status_code=302)
+    query_params = {"deleted": name}
+    graph_deleted = None
+    if isinstance(delete_result, dict):
+        value = delete_result.get("graph_collection_deleted")
+        if value is True:
+            graph_deleted = "1"
+        elif value is False:
+            graph_deleted = "0"
+    if graph_deleted is not None:
+        query_params["graph_deleted"] = graph_deleted
+
+    redirect_url = "/admin/acl"
+    if query_params:
+        redirect_url = f"{redirect_url}?{urlencode(query_params)}"
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @app.post("/admin/staging/start")
