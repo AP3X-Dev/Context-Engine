@@ -598,10 +598,32 @@ function log(message) {
 }
 
 function deactivate() {
-  // All manager disposals are handled via context.subscriptions.
-  // VS Code automatically calls dispose() on all subscriptions when deactivating.
-  return Promise.resolve();
+  if (pendingProfileRestartTimer) {
+    clearTimeout(pendingProfileRestartTimer);
+    pendingProfileRestartTimer = undefined;
+  }
+  try {
+    if (processManager && typeof processManager.disposeIndexedWatcher === 'function') {
+      processManager.disposeIndexedWatcher();
+    }
+  } catch (_) {
+  }
+  // Stop active uploads/watchers and any bridge processes.
+  const stopPromises = [];
+  if (processManager && typeof processManager.stopProcesses === 'function') {
+    stopPromises.push(processManager.stopProcesses());
+  }
+  if (bridgeManager && typeof bridgeManager.stop === 'function') {
+    stopPromises.push(bridgeManager.stop());
+  }
+  if (stopPromises.length === 0) {
+    // All manager disposals are handled via context.subscriptions.
+    // VS Code automatically calls dispose() on all subscriptions when deactivating.
+    return Promise.resolve();
+  }
+  return Promise.all(stopPromises).then(() => undefined);
 }
+
 module.exports = {
   activate,
   deactivate

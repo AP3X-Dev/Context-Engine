@@ -6,6 +6,7 @@ Implements TRM-style iterative refinement:
 2. For each iteration: score, refine z, check early stopping
 3. Return final ranking
 """
+import logging
 import os
 import threading
 import time
@@ -14,6 +15,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 # Safe ONNX imports
+
+logger = logging.getLogger(__name__)
 try:
     import onnxruntime as ort
     from tokenizers import Tokenizer
@@ -370,9 +373,15 @@ class ONNXRecursiveReranker(RecursiveReranker):
                 tok = Tokenizer.from_file(self.tokenizer_path)
                 try:
                     tok.enable_truncation(max_length=512)
-                except Exception:
-                    pass
-                sess = ort.InferenceSession(self.onnx_path, providers=["CPUExecutionProvider"])
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+                # Default to CPU for production. Set ONNX_PROVIDERS for local GPU.
+                providers_env = os.environ.get("ONNX_PROVIDERS", "").strip()
+                if providers_env:
+                    providers = [p.strip() for p in providers_env.split(",") if p.strip()]
+                else:
+                    providers = ["CPUExecutionProvider"]
+                sess = ort.InferenceSession(self.onnx_path, providers=providers)
                 self._session, self._tokenizer = sess, tok
             except Exception:
                 self._session, self._tokenizer = None, None
@@ -881,8 +890,8 @@ def rerank_with_learning(
                 collection=collection,
                 metadata={"teacher_inline": bool(teacher_scores is not None)},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     reranked = reranker.rerank(query, candidates, initial_scores)
     return reranked[:limit]

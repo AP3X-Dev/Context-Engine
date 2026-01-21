@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
+import logging
 import os
 import argparse
 import subprocess
@@ -13,6 +17,8 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
+
+logger = logging.getLogger(__name__)
 COLLECTION = os.environ.get("COLLECTION_NAME", "codebase")
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
@@ -114,8 +120,8 @@ def _cleanup_manifest_files(manifest_path: str) -> None:
     if delete_self:
         try:
             p.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         raw = str(os.environ.get("GIT_HISTORY_MANIFEST_MAX_FILES", "0")).strip()
@@ -132,14 +138,16 @@ def _cleanup_manifest_files(manifest_path: str) -> None:
         for cand in parent.glob("git_history_*.json"):
             try:
                 files.append((cand.stat().st_mtime, cand))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
         files.sort(key=lambda t: t[0])
         excess = files[:-max_keep] if len(files) > max_keep else []
         for _ts, fp in excess:
             try:
                 fp.unlink()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
     except Exception:
         return
@@ -339,8 +347,8 @@ def generate_commit_summary(md: Dict[str, Any], diff_text: str) -> tuple[str, li
                     symbols = [str(x).strip() for x in s if str(x).strip()][:6]
                 if isinstance(t, list):
                     tags = [str(x).strip() for x in t if str(x).strip()][:6]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     except Exception:
         return "", [], []
     return goal, symbols, tags
@@ -406,7 +414,8 @@ def _ingest_from_manifest(
             text = build_text(md, include_body=include_body)
             try:
                 vec = next(model.embed([text])).tolist()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
             goal: str = ""
@@ -455,19 +464,20 @@ def _ingest_from_manifest(
             if len(points) >= per_batch:
                 client.upsert(collection_name=COLLECTION, points=points)
                 points.clear()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     if points:
         client.upsert(collection_name=COLLECTION, points=points)
     try:
         _prune_old_commit_points(client, run_id, mode=mode)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         _cleanup_manifest_files(manifest_path)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     print(f"Ingested {count} commits into {COLLECTION} from manifest {manifest_path}.")
     return count
 
@@ -545,8 +555,8 @@ def main():
         try:
             diff = run(f"git show --stat --patch --unified=3 {sha}")
             goal, sym, tgs = generate_commit_summary(md, diff)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         md_payload: Dict[str, Any] = {
             "language": "git",

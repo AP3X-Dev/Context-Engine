@@ -15,6 +15,7 @@ Key features:
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,7 +27,14 @@ from qdrant_client import QdrantClient, models
 
 # Import production pipeline components
 from scripts.ingest.chunking import chunk_by_tokens, chunk_lines, chunk_semantic
-from scripts.ingest.pipeline import build_information, _select_dense_text
+from scripts.ingest.pipeline import (
+    build_information,
+    _select_dense_text,
+    _select_entity_text,
+    _select_relation_text,
+)
+
+logger = logging.getLogger(__name__)
 from scripts.ingest.vectors import project_mini, extract_pattern_vector
 from scripts.ingest.qdrant import (
     hash_id,
@@ -47,6 +55,12 @@ from scripts.ingest.config import (
     MINI_VEC_DIM,
     LEX_SPARSE_NAME,
     LEX_SPARSE_MODE,
+    # Multi-granular vectors
+    MULTI_GRANULAR_VECTORS,
+    ENTITY_DENSE_NAME,
+    ENTITY_DENSE_DIM,
+    RELATION_DENSE_NAME,
+    RELATION_DENSE_DIM,
 )
 
 # Optional AST/symbol extraction
@@ -108,8 +122,8 @@ def _generate_heuristic_tags(symbol_name: str, code_text: str, language: str = "
                 call_lower = call.lower()
                 if len(call_lower) > 2 and call_lower not in tags:
                     tags.append(call_lower)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Dedupe and limit
     seen: set = set()
@@ -204,8 +218,8 @@ def get_collection_fingerprint(client: QdrantClient, collection: str) -> Optiona
         )
         if result[0]:
             return result[0][0].payload.get("fingerprint")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return None
 
 
@@ -214,17 +228,105 @@ def collection_matches_corpus(
     collection: str,
     docs: List[BenchmarkDoc],
 ) -> bool:
-    """Check if collection exists and matches corpus fingerprint."""
+    """Check if collection exists and matches corpus fingerprint.
+
+    Set TRUST_STORED_FINGERPRINT=1 to skip recomputation when a stored
+    fingerprint exists. Useful when env vars may differ between runs
+    but the indexed data is still valid.
+    """
     try:
         info = client.get_collection(collection)
         if info.points_count == 0:
             return False
         stored_fp = get_collection_fingerprint(client, collection)
         if stored_fp:
-            return stored_fp == compute_corpus_fingerprint(docs)
+            # Trust stored fingerprint without recomputing if env var is set
+            trust_stored = os.environ.get("TRUST_STORED_FINGERPRINT", "0") == "1"
+            if trust_stored:
+                print(f"  TRUST_STORED_FINGERPRINT=1: Using existing collection with fingerprint {stored_fp}")
+                return True
+            computed_fp = compute_corpus_fingerprint(docs)
+            if stored_fp != computed_fp:
+                print(f"  Fingerprint mismatch: stored={stored_fp}, computed={computed_fp}")
+                print(f"  Set TRUST_STORED_FINGERPRINT=1 to skip recomputation")
+            return stored_fp == computed_fp
         return False
     except Exception:
         return False
+
+
+def get_indexed_doc_ids(
+    client: QdrantClient,
+    collection: str,
+    batch_size: int = 1000,
+) -> set[str]:
+    """Get all doc_ids already indexed in the collection.
+    
+    Used for resume functionality to skip already-indexed documents.
+    
+    Args:
+        client: Qdrant client
+        collection: Collection name
+        batch_size: Scroll batch size
+        
+    Returns:
+        Set of doc_ids that are already indexed
+    """
+    indexed_ids: set[str] = set()
+    try:
+        offset = None
+        while True:
+            result, next_offset = client.scroll(
+                collection_name=collection,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["doc_id"],
+                with_vectors=False,
+            )
+            for point in result:
+                doc_id = point.payload.get("doc_id") if point.payload else None
+                if doc_id and doc_id != CORPUS_FINGERPRINT_KEY:
+                    indexed_ids.add(doc_id)
+            
+            if next_offset is None:
+                break
+            offset = next_offset
+            
+        return indexed_ids
+    except (TimeoutError, ConnectionError) as e:
+        # Transient errors - log with details and return empty to allow retry
+        import logging
+        logging.exception("Transient error getting indexed doc_ids: %s", type(e).__name__)
+        return set()
+    except Exception as e:
+        # Critical errors - re-raise after logging (AuthenticationError, PermissionError, etc.)
+        import logging
+        logging.error("Critical error getting indexed doc_ids: %s: %s", type(e).__name__, repr(e))
+        raise
+
+
+def collection_has_partial_index(
+    client: QdrantClient,
+    collection: str,
+) -> tuple[bool, int]:
+    """Check if collection exists with partial data but no fingerprint.
+    
+    Returns:
+        Tuple of (has_partial_data, points_count)
+    """
+    try:
+        info = client.get_collection(collection)
+        if info.points_count == 0:
+            return False, 0
+        # Check if fingerprint exists
+        stored_fp = get_collection_fingerprint(client, collection)
+        if stored_fp:
+            # Complete index exists
+            return False, info.points_count
+        # Has data but no fingerprint = partial index
+        return True, info.points_count
+    except Exception:
+        return False, 0
 
 
 def warn_config_mismatch(
@@ -300,12 +402,33 @@ def create_collection(
             size=PATTERN_VECTOR_DIM, distance=models.Distance.COSINE
         )
 
+    # Multi-granular vectors (entity/relation embeddings)
+    if MULTI_GRANULAR_VECTORS:
+        vectors_config[ENTITY_DENSE_NAME] = models.VectorParams(
+            size=ENTITY_DENSE_DIM, distance=models.Distance.COSINE
+        )
+        vectors_config[RELATION_DENSE_NAME] = models.VectorParams(
+            size=RELATION_DENSE_DIM, distance=models.Distance.COSINE
+        )
+
     sparse_cfg = None
     if LEX_SPARSE_MODE:
+        sparse_params_kwargs = {
+            "index": models.SparseIndexParams(full_scan_threshold=5000)
+        }
+        # Apply IDF modifier for BM25-style term weighting (matches production)
+        try:
+            from scripts.ingest.config import LEX_SPARSE_IDF
+            if LEX_SPARSE_IDF:
+                try:
+                    sparse_params_kwargs["modifier"] = models.Modifier.IDF
+                except AttributeError:
+                    # Older qdrant-client versions may not have Modifier.IDF
+                    pass
+        except ImportError:
+            pass
         sparse_cfg = {
-            LEX_SPARSE_NAME: models.SparseVectorParams(
-                index=models.SparseIndexParams(full_scan_threshold=5000)
-            )
+            LEX_SPARSE_NAME: models.SparseVectorParams(**sparse_params_kwargs)
         }
 
     def _extract_dense_vector_sizes(info: Any) -> dict[str, int]:
@@ -333,8 +456,8 @@ def create_collection(
                 continue
             try:
                 out[str(name)] = int(size)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         return out
 
     # If collection exists but the embedding model/dimension changed, auto-recreate.
@@ -354,8 +477,8 @@ def create_collection(
             try:
                 client.delete_collection(collection)
                 print(f"Deleted existing collection: {collection}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         else:
             print(f"Collection {collection} exists with {info.points_count} points")
             return
@@ -379,8 +502,8 @@ def create_collection(
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def generate_point_id(doc_id: str) -> str:
@@ -438,6 +561,23 @@ def index_benchmark_corpus(
                 "reused": True,
             }
 
+    # Check for partial index (data exists but no fingerprint = interrupted indexing)
+    # This enables resume functionality
+    skipped_count = 0
+    original_doc_count = len(docs)
+    # Save original unfiltered docs for fingerprint computation
+    original_docs = docs
+    has_partial, partial_count = collection_has_partial_index(client, collection)
+    if has_partial and not recreate:
+        print(f"Collection {collection} has {partial_count} points but no fingerprint (interrupted indexing)")
+        print(f"  Attempting to resume... fetching indexed doc_ids...")
+        indexed_ids = get_indexed_doc_ids(client, collection)
+        if indexed_ids:
+            # Filter out already-indexed documents
+            docs = [d for d in docs if d.doc_id not in indexed_ids]
+            skipped_count = original_doc_count - len(docs)
+            print(f"  Found {len(indexed_ids)} indexed doc_ids, skipping {skipped_count}, {len(docs)} remaining")
+
     # Get model dimension
     try:
         from scripts.embedder import get_model_dimension
@@ -456,7 +596,9 @@ def index_benchmark_corpus(
     # Get vector names
     model_name = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
     vector_name = sanitize_vector_name(model_name)
-    available_vectors = get_collection_vector_names(client, collection)
+    dense_vectors, sparse_vectors = get_collection_vector_names(client, collection)
+    available_dense = dense_vectors or set()
+    available_sparse = sparse_vectors or set()
 
     # Phase 1: Prepare all chunk metadata (CPU-bound, can parallelize)
     print(f"Indexing {len(docs)} documents into {collection}...")
@@ -470,12 +612,16 @@ def index_benchmark_corpus(
         dense_text: str
         payload: Dict[str, Any]
         language: str
+        # Multi-granular vector texts
+        entity_text: str = ""
+        relation_text: str = ""
 
     chunk_metas: List[ChunkMeta] = []
 
     use_semantic = os.environ.get("INDEX_SEMANTIC_CHUNKS", "1") == "1"
     chunk_lines_val = int(os.environ.get("INDEX_CHUNK_LINES", "120"))
     chunk_overlap = int(os.environ.get("INDEX_CHUNK_OVERLAP", "20"))
+    use_multi_granular = MULTI_GRANULAR_VECTORS
 
     def prepare_doc_chunks(doc: BenchmarkDoc) -> List[ChunkMeta]:
         """Prepare chunk metadata for a single document."""
@@ -485,8 +631,8 @@ def index_benchmark_corpus(
             if _AST_AVAILABLE:
                 try:
                     symbols = _extract_symbols(doc.language, doc.text)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             if use_semantic:
                 try:
@@ -544,6 +690,15 @@ def index_benchmark_corpus(
                 )
 
                 synthetic_path = doc.metadata.get("path", f"bench/{doc.doc_id}.py")
+                # Extract imports/calls for relation text
+                imports_list = []
+                calls_list = []
+                if _AST_AVAILABLE:
+                    try:
+                        imports_list, calls_list = _get_imports_calls(doc.language, chunk_text)
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+
                 payload = {
                     "doc_id": doc.doc_id,
                     "text": chunk_text,
@@ -566,8 +721,28 @@ def index_benchmark_corpus(
                         "end_line": end_line,
                         "text": chunk_text,
                         "code": chunk_text,
+                        "imports": imports_list,
+                        "calls": calls_list,
                     },
                 }
+
+                # Generate multi-granular vector texts
+                entity_text = ""
+                relation_text = ""
+                if use_multi_granular:
+                    entity_text = _select_entity_text(
+                        symbol=symbol_name,
+                        symbol_path=symbol_name,
+                        kind=symbol_kind,
+                        signature=doc.metadata.get("signature", ""),
+                        docstring=doc.metadata.get("docstring", "") or pseudo,
+                        parent="",
+                    )
+                    relation_text = _select_relation_text(
+                        symbol=symbol_name,
+                        calls=calls_list,
+                        imports=imports_list,
+                    )
 
                 results.append(ChunkMeta(
                     doc_id=doc.doc_id,
@@ -576,6 +751,8 @@ def index_benchmark_corpus(
                     dense_text=dense_text,
                     payload=payload,
                     language=doc.language,
+                    entity_text=entity_text,
+                    relation_text=relation_text,
                 ))
         except Exception as e:
             print(f"  Warning: Failed to prepare doc {doc.doc_id}: {e}")
@@ -593,94 +770,140 @@ def index_benchmark_corpus(
 
     print(f"  Prepared {len(chunk_metas)} chunks from {len(docs)} documents")
 
-    # Phase 2: Batch embedding (GPU/CPU intensive, batch for efficiency)
-    print(f"  Phase 2: Batch embedding {len(chunk_metas)} chunks...", flush=True)
+    # Phase 2: Stream embed + upsert in mega-batches (memory efficient)
+    # Instead of embedding ALL chunks then upserting, we process in mega-batches
+    # to keep memory usage low (especially for large corpora like 280K+ docs)
+    mega_batch_size = int(os.environ.get("MEGA_BATCH_SIZE", "1000"))
     embed_batch_size = int(os.environ.get("EMBED_BATCH_SIZE", "64"))
-
-    dense_texts = [cm.dense_text for cm in chunk_metas]
-    all_dense_vecs: List[List[float]] = []
-    total_chunks = len(dense_texts)
-    last_progress = 0
-
-    for i in range(0, total_chunks, embed_batch_size):
-        batch_texts = dense_texts[i:i + embed_batch_size]
-        batch_vecs = list(model.embed(batch_texts))
-        all_dense_vecs.extend([v.tolist() for v in batch_vecs])
-
-        # Progress update every ~10% or 1000 chunks
-        progress = min(i + embed_batch_size, total_chunks)
-        progress_pct = int(progress * 100 / total_chunks)
-        if progress_pct >= last_progress + 10 or progress - (i - embed_batch_size + embed_batch_size) >= 1000:
-            print(f"    Embedded {progress}/{total_chunks} ({progress_pct}%)", flush=True)
-            last_progress = progress_pct
-
-    # Phase 3: Build points and upsert
-    print(f"  Phase 3: Building and upserting points...", flush=True)
-    points = []
+    
+    total_chunks = len(chunk_metas)
     indexed_count = 0
-    total_points = len(chunk_metas)
-    last_upsert_progress = 0
+    last_progress_pct = 0
+    
+    print(f"  Phase 2: Streaming embed + upsert ({total_chunks} chunks, mega-batch={mega_batch_size})...", flush=True)
+    
+    # Check if multi-granular vectors are supported in the collection
+    allow_entity = ENTITY_DENSE_NAME in available_dense
+    allow_relation = RELATION_DENSE_NAME in available_dense
+    use_mg_in_collection = use_multi_granular and allow_entity and allow_relation
 
-    for idx, cm in enumerate(chunk_metas):
-        dense_vec = all_dense_vecs[idx]
-        lex_vec = create_lexical_vector(cm.chunk_text)
+    for mega_start in range(0, total_chunks, mega_batch_size):
+        mega_end = min(mega_start + mega_batch_size, total_chunks)
+        mega_batch = chunk_metas[mega_start:mega_end]
 
-        vectors_dict = {
-            vector_name: dense_vec,
-            LEX_VECTOR_NAME: lex_vec,
-        }
+        # Step 1: Embed this mega-batch (dense embeddings)
+        dense_texts = [cm.dense_text for cm in mega_batch]
+        mega_vecs: List[List[float]] = []
 
-        if MINI_VECTOR_NAME in available_vectors:
-            try:
-                mini_vec = project_mini(dense_vec)
-                vectors_dict[MINI_VECTOR_NAME] = mini_vec
-            except Exception:
-                pass
+        for i in range(0, len(dense_texts), embed_batch_size):
+            batch_texts = dense_texts[i:i + embed_batch_size]
+            batch_vecs = list(model.embed(batch_texts))
+            mega_vecs.extend([v.tolist() for v in batch_vecs])
 
-        if PATTERN_VECTOR_NAME in available_vectors:
-            try:
-                pattern_vec = extract_pattern_vector(cm.chunk_text, cm.language)
-                if pattern_vec:
-                    vectors_dict[PATTERN_VECTOR_NAME] = pattern_vec
-            except Exception:
-                pass
+        # Step 1b: Embed multi-granular vectors if enabled
+        entity_vecs: List[Optional[List[float]]] = [None] * len(mega_batch)
+        relation_vecs: List[Optional[List[float]]] = [None] * len(mega_batch)
 
-        sparse_dict = None
-        if LEX_SPARSE_MODE and LEX_SPARSE_NAME in (available_vectors.get("sparse") or set()):
-            try:
-                sparse_dict = {LEX_SPARSE_NAME: _lex_sparse_vector_text(cm.chunk_text)}
-            except Exception:
-                pass
+        if use_mg_in_collection:
+            # Collect non-empty entity texts
+            entity_to_embed = [(i, cm.entity_text) for i, cm in enumerate(mega_batch) if cm.entity_text.strip()]
+            relation_to_embed = [(i, cm.relation_text) for i, cm in enumerate(mega_batch) if cm.relation_text.strip()]
 
-        point_id = generate_point_id(f"{cm.doc_id}:{cm.chunk_idx}")
-        point = models.PointStruct(
-            id=point_id,
-            vector=vectors_dict,
-            payload=cm.payload,
-        )
-        if sparse_dict:
-            point.vector.update(sparse_dict)  # type: ignore
+            # Embed entity texts
+            if entity_to_embed:
+                for batch_start in range(0, len(entity_to_embed), embed_batch_size):
+                    batch_items = entity_to_embed[batch_start:batch_start + embed_batch_size]
+                    batch_texts = [t for _, t in batch_items]
+                    try:
+                        batch_vecs = list(model.embed(batch_texts))
+                        for (orig_idx, _), vec in zip(batch_items, batch_vecs):
+                            entity_vecs[orig_idx] = vec.tolist()
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
-        points.append(point)
+            # Embed relation texts
+            if relation_to_embed:
+                for batch_start in range(0, len(relation_to_embed), embed_batch_size):
+                    batch_items = relation_to_embed[batch_start:batch_start + embed_batch_size]
+                    batch_texts = [t for _, t in batch_items]
+                    try:
+                        batch_vecs = list(model.embed(batch_texts))
+                        for (orig_idx, _), vec in zip(batch_items, batch_vecs):
+                            relation_vecs[orig_idx] = vec.tolist()
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
-        if len(points) >= batch_size:
-            _upsert_points_with_retry(client, collection, points)
-            indexed_count += len(points)
-            points = []
+        # Step 2: Build points for this mega-batch
+        points = []
+        for idx, cm in enumerate(mega_batch):
+            dense_vec = mega_vecs[idx]
+            lex_vec = create_lexical_vector(cm.chunk_text)
 
-            # Progress update every ~10%
-            progress_pct = int(indexed_count * 100 / total_points)
-            if progress_pct >= last_upsert_progress + 10:
-                print(f"    Upserted {indexed_count}/{total_points} ({progress_pct}%)", flush=True)
-                last_upsert_progress = progress_pct
+            vectors_dict = {
+                vector_name: dense_vec,
+                LEX_VECTOR_NAME: lex_vec,
+            }
 
-    # Final batch
-    if points:
-        _upsert_points_with_retry(client, collection, points)
-        indexed_count += len(points)
+            if MINI_VECTOR_NAME in available_dense:
+                try:
+                    mini_vec = project_mini(dense_vec)
+                    vectors_dict[MINI_VECTOR_NAME] = mini_vec
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+
+            if PATTERN_VECTOR_NAME in available_dense:
+                try:
+                    pattern_vec = extract_pattern_vector(cm.chunk_text, cm.language)
+                    if pattern_vec:
+                        vectors_dict[PATTERN_VECTOR_NAME] = pattern_vec
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+
+            # Add multi-granular vectors
+            if use_mg_in_collection:
+                if entity_vecs[idx] is not None:
+                    vectors_dict[ENTITY_DENSE_NAME] = entity_vecs[idx]
+                if relation_vecs[idx] is not None:
+                    vectors_dict[RELATION_DENSE_NAME] = relation_vecs[idx]
+
+            sparse_dict = None
+            if LEX_SPARSE_MODE and LEX_SPARSE_NAME in available_sparse:
+                try:
+                    sparse_vec = _lex_sparse_vector_text(cm.chunk_text)
+                    if sparse_vec.get("indices"):
+                        sparse_dict = {LEX_SPARSE_NAME: models.SparseVector(**sparse_vec)}
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+
+            point_id = generate_point_id(f"{cm.doc_id}:{cm.chunk_idx}")
+            point = models.PointStruct(
+                id=point_id,
+                vector=vectors_dict,
+                payload=cm.payload,
+            )
+            if sparse_dict:
+                point.vector.update(sparse_dict)  # type: ignore
+
+            points.append(point)
+        
+        # Step 3: Upsert this mega-batch in smaller batches
+        for i in range(0, len(points), batch_size):
+            upsert_batch = points[i:i + batch_size]
+            _upsert_points_with_retry(client, collection, upsert_batch)
+            indexed_count += len(upsert_batch)
+        
+        # Progress update
+        progress_pct = int(indexed_count * 100 / total_chunks)
+        if progress_pct >= last_progress_pct + 5 or mega_end == total_chunks:
+            print(f"    Processed {indexed_count}/{total_chunks} ({progress_pct}%)", flush=True)
+            last_progress_pct = progress_pct
+        
+        # Clear references to free memory
+        del mega_vecs, points, dense_texts
+        mega_batch = None
 
     # Store fingerprint
-    fingerprint = compute_corpus_fingerprint(docs)
+    fingerprint = compute_corpus_fingerprint(original_docs)
     fp_point = models.PointStruct(
         id=generate_point_id(CORPUS_FINGERPRINT_KEY),
         vector={vector_name: [0.0] * dim, LEX_VECTOR_NAME: [0.0] * LEX_VECTOR_DIM},
@@ -693,7 +916,7 @@ def index_benchmark_corpus(
 
     return {
         "indexed_count": indexed_count,
-        "skipped_count": 0,
+        "skipped_count": skipped_count,
         "duration_sec": duration,
         "reused": False,
     }

@@ -574,10 +574,23 @@ async function createBridgeServer(options) {
     }
 
     if (forceRecreate) {
-      try {
-        debugLog("[ctxce] Reinitializing remote MCP clients after session error.");
-      } catch {
-        // ignore logging failures
+      debugLog("[ctxce] Reinitializing remote MCP clients after session error.");
+      
+      if (indexerClient) {
+        try {
+          await indexerClient.close();
+        } catch {
+          // ignore close errors
+        }
+        indexerClient = null;
+      }
+      if (memoryClient) {
+        try {
+          await memoryClient.close();
+        } catch {
+          // ignore close errors
+        }
+        memoryClient = null;
       }
     }
 
@@ -920,11 +933,28 @@ export async function runHttpMcpServer(options) {
           return;
         }
 
+        const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
         let body = "";
+        let bodyLimitExceeded = false;
         req.on("data", (chunk) => {
+          if (bodyLimitExceeded) return;
           body += chunk;
+          if (body.length > MAX_BODY_SIZE) {
+            bodyLimitExceeded = true;
+            req.destroy();
+            res.statusCode = 413;
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: { code: -32000, message: "Request body too large" },
+                id: null,
+              }),
+            );
+          }
         });
         req.on("end", async () => {
+          if (bodyLimitExceeded) return;
           let parsed;
           try {
             parsed = body ? JSON.parse(body) : {};
@@ -992,6 +1022,25 @@ export async function runHttpMcpServer(options) {
   httpServer.listen(port, '127.0.0.1', () => {
     debugLog(`[ctxce] HTTP MCP bridge listening on 127.0.0.1:${port}`);
   });
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    debugLog(`[ctxce] Received ${signal}; closing HTTP server (waiting for in-flight requests).`);
+    httpServer.close(() => {
+      debugLog("[ctxce] HTTP server closed.");
+      process.exit(0);
+    });
+    const SHUTDOWN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for long MCP calls
+    setTimeout(() => {
+      debugLog("[ctxce] Forcing exit after shutdown timeout.");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 function loadConfig(startDir) {

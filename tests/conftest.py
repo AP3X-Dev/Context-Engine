@@ -3,6 +3,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any, Dict, List, Union
 
 import pytest
 
@@ -13,6 +14,53 @@ if str(ROOT) not in sys.path:
 
 # Enable pattern vectors for pattern search tests
 os.environ.setdefault("PATTERN_VECTORS", "1")
+
+# CRITICAL: Ensure real embedding model for pattern detection tests
+# Some tests set EMBEDDING_MODEL=fake which leaks into subsequent tests
+# Force a real model at conftest load time (before any test runs)
+os.environ.setdefault("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+
+
+# -----------------------------------------------------------------------------
+# TOON/JSON result normalization helper
+# -----------------------------------------------------------------------------
+
+def get_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract results from response, decoding TOON if needed.
+
+    Works regardless of whether TOON_ENABLED is set or not.
+
+    Args:
+        response: API response dict with 'results' key
+
+    Returns:
+        List of result dicts
+    """
+    results = response.get("results", [])
+
+    # If results is already a list, return as-is
+    if isinstance(results, list):
+        return results
+
+    # If results is a string, it's TOON-encoded - decode it
+    if isinstance(results, str):
+        from toon import decode as toon_decode
+        try:
+            decoded = toon_decode(results)
+        except Exception as e:
+            # Debug: print the problematic TOON string
+            import sys
+            print(f"\n[get_results] TOON decode error: {e}", file=sys.stderr)
+            print(f"[get_results] TOON string (first 500 chars): {results[:500]!r}", file=sys.stderr)
+            raise
+        # TOON decode returns dict with 'results' key containing the list
+        if isinstance(decoded, dict):
+            return decoded.get("results", [])
+        elif isinstance(decoded, list):
+            return decoded
+        return []
+
+    return []
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -26,6 +74,51 @@ def _ensure_mcp_imported():
         import mcp.types  # noqa: F401
     except ImportError:
         pass  # mcp package not available, tests will skip if needed
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_module_pollution():
+    """Clean up module pollution after each test.
+
+    Tests that monkeypatch sys.modules (e.g., test_reranker_verification)
+    can leave stale module references that pollute subsequent tests.
+    This fixture removes potentially-polluted modules after each test.
+    """
+    yield
+    # After test completes, remove polluted modules so next test gets fresh imports
+    modules_to_remove = [
+        "scripts.mcp_indexer_server",
+        "scripts.hybrid_search",
+        "scripts.rerank_local",
+    ]
+    for mod in modules_to_remove:
+        sys.modules.pop(mod, None)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _preload_real_embedding_model():
+    """Pre-load the real embedding model to prevent fake model pollution.
+
+    Some tests set EMBEDDING_MODEL=fake. This fixture ensures the real model
+    is loaded first and cached, so pattern detection tests work correctly.
+    """
+    # Force real model
+    os.environ["EMBEDDING_MODEL"] = "BAAI/bge-base-en-v1.5"
+    try:
+        from scripts.hybrid.embed import get_embedding_model
+        model = get_embedding_model()
+        # Warm up the model
+        list(model.embed(["test"]))
+
+        # Pre-warm the NL exemplar embeddings for pattern detection
+        try:
+            from scripts.mcp_impl.pattern_search import _get_nl_exemplar_embeddings
+            _get_nl_exemplar_embeddings()
+        except Exception:
+            pass
+    except Exception:
+        pass  # Model loading may fail in some environments
     yield
 
 

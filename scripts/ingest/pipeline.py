@@ -7,12 +7,17 @@ process_file_with_smart_reindexing, and related orchestration logic.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import hashlib
 import time
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from qdrant_client import QdrantClient, models
 
@@ -26,6 +31,12 @@ from scripts.ingest.config import (
     LEX_SPARSE_MODE,
     MINI_VECTOR_NAME,
     MINI_VEC_DIM,
+    # Multi-granular vectors
+    MULTI_GRANULAR_VECTORS,
+    ENTITY_DENSE_NAME,
+    ENTITY_DENSE_DIM,
+    RELATION_DENSE_NAME,
+    RELATION_DENSE_DIM,
     _env_truthy,
     is_multi_repo_mode,
     get_collection_name,
@@ -50,6 +61,7 @@ from scripts.ingest.symbols import (
     _extract_symbols,
     _choose_symbol_for_chunk,
     extract_symbols_with_tree_sitter,
+    _Sym,
 )
 from scripts.ingest.pseudo import (
     generate_pseudo_tags,
@@ -58,6 +70,7 @@ from scripts.ingest.pseudo import (
 from scripts.ingest.metadata import (
     _git_metadata,
     _get_imports_calls,
+    _get_inheritance,
     _compute_host_and_container_paths,
 )
 from scripts.ingest.vectors import project_mini, extract_pattern_vector
@@ -74,6 +87,70 @@ from scripts.ingest.qdrant import (
     embed_batch,
     PATTERN_VECTOR_NAME,
 )
+# Graph edges - route through backend adapter when Neo4j is enabled
+from scripts.graph_backends import is_neo4j_enabled
+
+_NEO4J_GRAPH_ENABLED = is_neo4j_enabled()
+
+if _NEO4J_GRAPH_ENABLED:
+    # Use backend abstraction layer for Neo4j support
+    from scripts.graph_backends.ingest_adapter import (
+        ensure_graph_store as ensure_graph_collection,
+        extract_call_edges as _extract_call_edges_adapter,
+        extract_import_edges as _extract_import_edges_adapter,
+        extract_inheritance_edges as _extract_inheritance_edges_adapter,
+        upsert_edges as _upsert_edges_adapter,
+        delete_edges_by_path,
+        GRAPH_COLLECTION_SUFFIX,
+    )
+
+    def get_graph_collection_name(base: str) -> str:
+        return f"{base}{GRAPH_COLLECTION_SUFFIX}"
+
+    # Adapters convert GraphEdge objects to dicts for existing code
+    def extract_call_edges(**kwargs):
+        edges = _extract_call_edges_adapter(**kwargs)
+        return [{"id": e.id, "payload": e.to_dict()} for e in edges]
+
+    def extract_import_edges(**kwargs):
+        edges = _extract_import_edges_adapter(**kwargs)
+        return [{"id": e.id, "payload": e.to_dict()} for e in edges]
+
+    def extract_inheritance_edges(**kwargs):
+        edges = _extract_inheritance_edges_adapter(**kwargs)
+        return [{"id": e.id, "payload": e.to_dict()} for e in edges]
+
+    def upsert_edges(client, graph_coll, edges, batch_size=100):
+        # Convert dict edges back to GraphEdge objects
+        from scripts.graph_backends.base import GraphEdge
+        graph_edges = []
+        for e in edges:
+            payload = e.get("payload", {})
+            graph_edges.append(GraphEdge(
+                id=e.get("id", ""),
+                caller_symbol=payload.get("caller_symbol", ""),
+                callee_symbol=payload.get("callee_symbol", ""),
+                caller_path=payload.get("caller_path", ""),
+                callee_path=payload.get("callee_path"),  # Resolved callee path
+                edge_type=payload.get("edge_type", ""),
+                repo=payload.get("repo", ""),
+                start_line=payload.get("start_line"),
+                end_line=payload.get("end_line"),
+                language=payload.get("language"),
+                caller_point_id=payload.get("caller_point_id"),
+            ))
+        return _upsert_edges_adapter(client, graph_coll, graph_edges, batch_size)
+else:
+    # Default: use existing Qdrant-native graph_edges
+    from scripts.ingest.graph_edges import (
+        ensure_graph_collection,
+        extract_call_edges,
+        extract_import_edges,
+        extract_inheritance_edges,
+        upsert_edges,
+        delete_edges_by_path,
+        get_graph_collection_name,
+    )
 
 # Import utility functions
 from scripts.utils import sanitize_vector_name as _sanitize_vector_name
@@ -82,6 +159,12 @@ from scripts.utils import lex_sparse_vector_text as _lex_sparse_vector_text
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
+
+try:
+    from scripts.ast_analyzer import get_ast_analyzer
+    _AST_ANALYZER_AVAILABLE = True
+except ImportError:
+    _AST_ANALYZER_AVAILABLE = False
 
 
 def _detect_repo_name_from_path(path: Path) -> str:
@@ -113,6 +196,111 @@ def _is_text_like_language(language: str) -> bool:
     return str(language or "").strip().lower() in _TEXT_LIKE_LANGS
 
 
+def _dedupe_preserve(items: List[str]) -> List[str]:
+    """Deduplicate while preserving order."""
+    out: List[str] = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        out.append(item)
+        seen.add(item)
+    return out
+
+
+def _slice_calls_for_range(calls: List[Any], start: int, end: int) -> List[str]:
+    """Extract call names whose line is within the chunk range."""
+    matched: List[str] = []
+    for call in calls:
+        try:
+            line = int(getattr(call, "line", 0) or 0)
+        except Exception:
+            line = 0
+        if line < start or line > end:
+            continue
+        callee = str(getattr(call, "callee", "") or "")
+        if callee:
+            matched.append(callee)
+    return _dedupe_preserve(matched)
+
+
+def _slice_imports_for_range(imports: List[Any], start: int, end: int) -> List[str]:
+    """Extract import modules whose line is within the chunk range."""
+    matched: List[str] = []
+    for imp in imports:
+        try:
+            line = int(getattr(imp, "line", 0) or 0)
+        except Exception:
+            line = 0
+        if line < start or line > end:
+            continue
+        module = str(getattr(imp, "module", "") or "")
+        if module:
+            matched.append(module)
+    return _dedupe_preserve(matched)
+
+
+def _ast_analyze_file(file_path: Path, language: str, text: str) -> Dict[str, Any]:
+    """Run AST analyzer for richer symbol/call/import metadata when available."""
+    if not _AST_ANALYZER_AVAILABLE:
+        return {}
+    try:
+        analyzer = get_ast_analyzer()
+        analysis = analyzer.analyze_file(str(file_path), language, text)
+    except Exception:
+        return {}
+
+    symbols = analysis.get("symbols", []) or []
+    imports = analysis.get("imports", []) or []
+    calls = analysis.get("calls", []) or []
+
+    symbol_spans: List[Dict[str, Any]] = []
+    symbol_meta_by_path: Dict[str, Any] = {}
+    symbol_meta_by_name: Dict[str, Any] = {}
+    for sym in symbols:
+        name = str(getattr(sym, "name", "") or "")
+        kind = str(getattr(sym, "kind", "") or "")
+        start = int(getattr(sym, "start_line", 0) or 0)
+        end = int(getattr(sym, "end_line", 0) or 0)
+        path = str(getattr(sym, "path", "") or "") or name
+        if not name or not start or not end:
+            continue
+        symbol_spans.append(
+            _Sym(name=name, kind=kind, start=start, end=end, path=path)
+        )
+        symbol_meta_by_path[path] = sym
+        symbol_meta_by_name.setdefault(name, sym)
+
+    import_modules = _dedupe_preserve(
+        [str(getattr(imp, "module", "") or "") for imp in imports if getattr(imp, "module", None)]
+    )
+    call_names = _dedupe_preserve(
+        [str(getattr(call, "callee", "") or "") for call in calls if getattr(call, "callee", None)]
+    )
+
+    symbol_calls: Dict[str, List[str]] = {}
+    for call in calls:
+        caller = str(getattr(call, "caller", "") or "")
+        callee = str(getattr(call, "callee", "") or "")
+        if not caller or not callee:
+            continue
+        symbol_calls.setdefault(caller, [])
+        symbol_calls[caller].append(callee)
+    for caller, callees in list(symbol_calls.items()):
+        symbol_calls[caller] = _dedupe_preserve(callees)
+
+    return {
+        "symbol_spans": symbol_spans,
+        "symbol_meta_by_path": symbol_meta_by_path,
+        "symbol_meta_by_name": symbol_meta_by_name,
+        "imports": import_modules,
+        "calls": call_names,
+        "import_refs": imports,
+        "call_refs": calls,
+        "symbol_calls": symbol_calls,
+    }
+
+
 def _select_dense_text(
     *,
     info: str,
@@ -123,16 +311,16 @@ def _select_dense_text(
 ) -> str:
     """Choose the text used for dense embedding.
 
-    Default is code+info for semantic context plus a code snippet.
-    - info = "{language} code from {path} lines {start}-{end}. {first_line}" (baseline that worked)
+    Default is info+pseudo+tags to emphasize intent-rich context:
+    - info = "{language} code from {path} lines {start}-{end}. {first_line}"
     - pseudo/tags = semantic enrichment from LLM
     Dense captures the "what" (intent), lexical handles the "how" (code body).
     """
-    mode = (
-        (str(mode) if mode is not None else str(os.environ.get("INDEX_DENSE_MODE", "info+pseudo+tags") or ""))
-        .strip()
-        .lower()
-    )
+    if mode is None:
+        env_mode = str(os.environ.get("INDEX_DENSE_MODE", "") or "").strip().lower()
+        mode = env_mode or "info+pseudo+tags"
+    else:
+        mode = str(mode).strip().lower()
     # Default dense cap depends on embedding model context window.
     # bge-m3 supports ~8k tokens, so we allow a larger character budget to preserve code context.
     max_chars_env = os.environ.get("INDEX_DENSE_MAX_CHARS")
@@ -180,8 +368,8 @@ def _select_dense_text(
             # Strip unstable line-range numbers: "lines 12-34" → keeps path/language stable.
             s = _re.sub(r"\s+lines\s+\d+\s*-\s*\d+\.?", ".", s, flags=_re.IGNORECASE)
             s = _re.sub(r"\s+\.\s+", ". ", s)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return s.strip()
 
     header: list[str] = []
@@ -226,6 +414,98 @@ def _select_dense_text(
     return text
 
 
+def _select_entity_text(
+    *,
+    symbol: str = "",
+    symbol_path: str = "",
+    kind: str = "",
+    signature: str = "",
+    docstring: str = "",
+    parent: str = "",
+) -> str:
+    """Build text for entity_dense embedding (symbol signatures).
+
+    This embeds the "what" of the code: function/class names, signatures, types.
+    Format: "{kind} {name}: {signature}. {docstring_first_line}"
+    """
+    parts = []
+
+    # Kind and name
+    kind_str = (kind or "code").strip()
+    name = (symbol or "").strip()
+    if symbol_path and symbol_path != name:
+        name = symbol_path.strip()
+
+    if name:
+        parts.append(f"{kind_str} {name}")
+
+    # Signature (function definition, class inheritance)
+    sig = (signature or "").strip()
+    if sig:
+        # Truncate long signatures
+        if len(sig) > 200:
+            sig = sig[:200] + "..."
+        parts.append(sig)
+
+    # First line of docstring (intent summary)
+    doc = (docstring or "").strip()
+    if doc:
+        first_line = doc.split("\n")[0].strip()
+        if len(first_line) > 150:
+            first_line = first_line[:150] + "..."
+        if first_line:
+            parts.append(first_line)
+
+    # Parent context (e.g., "in class UserService")
+    if parent:
+        parts.append(f"in {parent}")
+
+    text = ". ".join(parts) if parts else ""
+    return text[:1000] if text else ""  # Cap at 1000 chars
+
+
+def _select_relation_text(
+    *,
+    symbol: str = "",
+    calls: list[str] | None = None,
+    imports: list[str] | None = None,
+) -> str:
+    """Build text for relation_dense embedding (call/import relationships).
+
+    This embeds the "how" code connects: what it calls, what it imports.
+    Format: "{symbol} calls {callees}; imports {modules}"
+
+    Relation embeddings enable graph-aware retrieval.
+    """
+    parts = []
+
+    # Symbol context
+    sym = (symbol or "").strip()
+    if sym:
+        parts.append(sym)
+
+    # Calls (what this code invokes)
+    call_list = [str(c).strip() for c in (calls or []) if str(c).strip()]
+    if call_list:
+        # Limit to first 20 calls to keep embedding focused
+        calls_str = ", ".join(call_list[:20])
+        if len(call_list) > 20:
+            calls_str += f" (+{len(call_list) - 20} more)"
+        parts.append(f"calls {calls_str}")
+
+    # Imports (dependencies)
+    import_list = [str(i).strip() for i in (imports or []) if str(i).strip()]
+    if import_list:
+        # Limit to first 15 imports
+        imports_str = ", ".join(import_list[:15])
+        if len(import_list) > 15:
+            imports_str += f" (+{len(import_list) - 15} more)"
+        parts.append(f"imports {imports_str}")
+
+    text = "; ".join(parts) if parts else ""
+    return text[:800] if text else ""  # Cap at 800 chars
+
+
 def build_information(
     language: str, path: Path, start: int, end: int, first_line: str
 ) -> str:
@@ -256,8 +536,8 @@ def index_single_file(
         if _should_skip_explicit_file_by_excluder(file_path):
             try:
                 delete_points_by_path(client, collection, str(file_path))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             print(f"Skipping excluded file: {file_path}")
             return False
     except Exception:
@@ -271,8 +551,8 @@ def index_single_file(
         except FileExistsError:
             print(f"[FILE_LOCKED] Skipping {file_path} - another process is indexing it")
             return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         return _index_single_file_inner(
@@ -287,8 +567,8 @@ def index_single_file(
         if _file_lock_ctx is not None:
             try:
                 _file_lock_ctx.__exit__(None, None, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
 
 def _index_single_file_inner(
@@ -329,8 +609,8 @@ def _index_single_file_inner(
                 ) == int(mtime):
                     print(f"Skipping unchanged file (fs-meta): {file_path}")
                     return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         text = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -391,12 +671,12 @@ def _index_single_file_inner(
                     if fast_fs and set_cached_file_hash:
                         try:
                             set_cached_file_hash(str(file_path), file_hash, repo_tag)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     print(f"Skipping unchanged file (cache): {file_path}")
                     return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         if not trust_cache:
             prev = get_indexed_file_hash(
@@ -407,16 +687,33 @@ def _index_single_file_inner(
                 if fast_fs and set_cached_file_hash:
                     try:
                         set_cached_file_hash(str(file_path), file_hash, repo_tag)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 print(f"Skipping unchanged file: {file_path}")
                 return False
 
     if dedupe:
         delete_points_by_path(client, collection, str(file_path))
 
-    symbols = _extract_symbols(language, text)
-    imports, calls = _get_imports_calls(language, text)
+    ast_info = _ast_analyze_file(file_path, language, text)
+    symbols = ast_info.get("symbol_spans") or _extract_symbols(language, text)
+    imports = ast_info.get("imports")
+    calls = ast_info.get("calls")
+    # Always get import_map for callee resolution (ast_info doesn't provide it)
+    _, _, import_map = _get_imports_calls(language, text)
+    # Get class inheritance relationships
+    inheritance_map = _get_inheritance(language, text)
+    if "imports" not in ast_info or "calls" not in ast_info:
+        base_imports, base_calls, _ = _get_imports_calls(language, text)
+        if "imports" not in ast_info:
+            imports = base_imports
+        if "calls" not in ast_info:
+            calls = base_calls
+    symbol_meta_by_path = ast_info.get("symbol_meta_by_path", {})
+    symbol_meta_by_name = ast_info.get("symbol_meta_by_name", {})
+    ast_call_refs = ast_info.get("call_refs", [])
+    ast_import_refs = ast_info.get("import_refs", [])
+    symbol_calls = ast_info.get("symbol_calls", {})
     last_mod, churn_count, author_count = _git_metadata(file_path)
 
     CHUNK_LINES = int(os.environ.get("INDEX_CHUNK_LINES", "120") or 120)
@@ -441,8 +738,8 @@ def _index_single_file_inner(
                         f"[ingest] micro-chunks resized path={file_path} count={_before}->{len(chunks)} "
                         f"tokens={_base_tokens}->{_new_tokens} stride={_base_stride}->{_new_stride}"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
         except Exception:
             chunks = chunk_by_tokens(text)
     elif use_semantic:
@@ -456,6 +753,9 @@ def _index_single_file_inner(
     batch_lex: List[list[float]] = []
     batch_lex_text: List[str] = []
     batch_code: List[str] = []  # Raw code for pattern vectors
+    # Multi-granular vector batches
+    batch_entity_texts: List[str] = []  # For entity_dense vectors
+    batch_relation_texts: List[str] = []  # For relation_dense vectors
 
     if allowed_vectors is None and allowed_sparse is None:
         allowed_vectors, allowed_sparse = get_collection_vector_names(client, collection)
@@ -464,6 +764,9 @@ def _index_single_file_inner(
     allow_mini = allowed_vectors is None or MINI_VECTOR_NAME in allowed_vectors
     allow_pattern = allowed_vectors is None or PATTERN_VECTOR_NAME in allowed_vectors
     allow_sparse = allowed_sparse is None or LEX_SPARSE_NAME in allowed_sparse
+    # Multi-granular vector support: only enable if collection actually has these vectors
+    allow_entity = allowed_vectors is None or ENTITY_DENSE_NAME in allowed_vectors
+    allow_relation = allowed_vectors is None or RELATION_DENSE_NAME in allowed_vectors
 
     # Check if pattern vectors are enabled
     pattern_vectors_on = os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -472,7 +775,14 @@ def _index_single_file_inner(
     use_mini = refrag_on and allow_mini
     use_sparse = LEX_SPARSE_MODE and allow_sparse
 
-    def make_point(pid, dense_vec, lex_vec, payload, lex_text: str = "", code_text: str = ""):
+    # Check if multi-granular vectors are enabled AND collection supports them
+    # This gates writes on allowed_vectors to avoid upsert failures on unknown vector names
+    use_multi_granular = MULTI_GRANULAR_VECTORS and allow_entity and allow_relation
+
+    def make_point(
+        pid, dense_vec, lex_vec, payload, lex_text: str = "", code_text: str = "",
+        entity_dense_vec: list | None = None, relation_dense_vec: list | None = None,
+    ):
         if vector_name:
             vecs = {vector_name: dense_vec}
             if allow_lex:
@@ -480,20 +790,26 @@ def _index_single_file_inner(
             try:
                 if use_mini:
                     vecs[MINI_VECTOR_NAME] = project_mini(list(dense_vec), MINI_VEC_DIM)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             # Add pattern vector for structural similarity search
             if pattern_vectors_on and code_text:
                 try:
                     pv = extract_pattern_vector(code_text, language)
                     if pv:
                         vecs[PATTERN_VECTOR_NAME] = pv
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             if use_sparse and lex_text:
                 sparse_vec = _lex_sparse_vector_text(lex_text)
                 if sparse_vec.get("indices"):
                     vecs[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
+            # Add multi-granular vectors
+            if use_multi_granular:
+                if entity_dense_vec is not None:
+                    vecs[ENTITY_DENSE_NAME] = entity_dense_vec
+                if relation_dense_vec is not None:
+                    vecs[RELATION_DENSE_NAME] = relation_dense_vec
             return models.PointStruct(id=pid, vector=vecs, payload=payload)
         else:
             return models.PointStruct(id=pid, vector=dense_vec, payload=payload)
@@ -502,6 +818,8 @@ def _index_single_file_inner(
     use_batch_pseudo = pseudo_batch_concurrency > 1 and pseudo_mode == "full"
 
     chunk_data: list[dict] = []
+    # Mapping from symbol_path to point_id for graph edge extraction
+    symbol_path_to_point_id: dict[str, str] = {}
     for ch in chunks:
         info = build_information(
             language, file_path, ch["start"], ch["end"],
@@ -520,6 +838,29 @@ def _index_single_file_inner(
             ch["symbol"] = sym
         if not ch.get("symbol_path") and sym_path:
             ch["symbol_path"] = sym_path
+
+        if not ch.get("calls") and ast_call_refs:
+            ch["calls"] = _slice_calls_for_range(ast_call_refs, ch["start"], ch["end"])
+        if not ch.get("imports") and ast_import_refs:
+            ch["imports"] = _slice_imports_for_range(ast_import_refs, ch["start"], ch["end"])
+
+        symbol_info = None
+        if sym_path:
+            symbol_info = symbol_meta_by_path.get(sym_path)
+        if symbol_info is None and sym:
+            symbol_info = symbol_meta_by_name.get(sym)
+        if symbol_info is not None:
+            ch["symbol_start_line"] = int(getattr(symbol_info, "start_line", 0) or 0)
+            ch["symbol_end_line"] = int(getattr(symbol_info, "end_line", 0) or 0)
+            signature = str(getattr(symbol_info, "signature", "") or "")
+            docstring = str(getattr(symbol_info, "docstring", "") or "")
+            parent = str(getattr(symbol_info, "parent", "") or "")
+            if signature:
+                ch["symbol_signature"] = signature
+            if docstring:
+                ch["symbol_docstring"] = docstring
+            if parent:
+                ch["symbol_parent"] = parent
 
         _cur_path = str(file_path)
         _host_path, _container_path = _compute_host_and_container_paths(_cur_path)
@@ -540,8 +881,18 @@ def _index_single_file_inner(
                 "end_line": ch["end"],
                 "code": ch["text"],
                 "file_hash": file_hash,
-                "imports": imports,
-                "calls": calls,
+                # Use chunk-specific calls/imports when available (semantic chunks),
+                # otherwise fall back to file-level calls/imports
+                "imports": ch.get("imports") if ch.get("imports") else imports,
+                "calls": ch.get("calls") if ch.get("calls") else calls,
+                # Import map for callee resolution: local_name -> qualified_path
+                "import_map": import_map if import_map else None,
+                "inheritance_map": inheritance_map if inheritance_map else None,
+                "symbol_start_line": ch.get("symbol_start_line"),
+                "symbol_end_line": ch.get("symbol_end_line"),
+                "symbol_signature": ch.get("symbol_signature"),
+                "symbol_docstring": ch.get("symbol_docstring"),
+                "symbol_parent": ch.get("symbol_parent"),
                 "ingested_at": int(time.time()),
                 "last_modified_at": int(last_mod),
                 "churn_count": int(churn_count),
@@ -611,8 +962,8 @@ def _index_single_file_inner(
                         symbol_id = f"{kind}_{symbol_name}_{start_line}"
                         if set_cached_pseudo:
                             set_cached_pseudo(str(file_path), symbol_id, pseudo, tags, file_hash)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         if pseudo:
             payload["pseudo"] = pseudo
@@ -634,31 +985,202 @@ def _index_single_file_inner(
         )
         batch_texts.append(dense_text)
         batch_meta.append(payload)
-        batch_ids.append(hash_id(ch["text"], str(file_path), ch["start"], ch["end"]))
+        point_id = hash_id(ch["text"], str(file_path), ch["start"], ch["end"])
+        batch_ids.append(point_id)
+        # Track symbol_path -> point_id for graph edge extraction
+        chunk_symbol_path = ch.get("symbol_path") or ""
+        if chunk_symbol_path:
+            symbol_path_to_point_id[chunk_symbol_path] = str(point_id)
         aug_lex_text = (ch.get("text") or "") + (" " + pseudo if pseudo else "") + (" " + " ".join(tags) if tags else "")
         batch_lex.append(_lex_hash_vector_text(aug_lex_text))
         batch_lex_text.append(aug_lex_text)
         batch_code.append(ch.get("text") or "")
 
+        # Generate multi-granular vector texts
+        if use_multi_granular:
+            entity_text = _select_entity_text(
+                symbol=ch.get("symbol") or "",
+                symbol_path=ch.get("symbol_path") or "",
+                kind=ch.get("kind") or "",
+                signature=ch.get("symbol_signature") or "",
+                docstring=ch.get("symbol_docstring") or "",
+                parent=ch.get("symbol_parent") or "",
+            )
+            relation_text = _select_relation_text(
+                symbol=ch.get("symbol") or "",
+                calls=ch.get("calls") or payload.get("metadata", {}).get("calls") or [],
+                imports=ch.get("imports") or payload.get("metadata", {}).get("imports") or [],
+            )
+            batch_entity_texts.append(entity_text)
+            batch_relation_texts.append(relation_text)
+        else:
+            batch_entity_texts.append("")
+            batch_relation_texts.append("")
+
     if batch_texts:
         vectors = embed_batch(model, batch_texts)
+
+        # Embed multi-granular vectors if enabled
+        entity_vectors: List[list] = []
+        relation_vectors: List[list] = []
+        if use_multi_granular and batch_entity_texts:
+            # Filter non-empty texts to embed, track indices
+            entity_to_embed = [(i, t) for i, t in enumerate(batch_entity_texts) if t.strip()]
+            relation_to_embed = [(i, t) for i, t in enumerate(batch_relation_texts) if t.strip()]
+
+            # Initialize with None for all positions
+            entity_vectors = [None] * len(batch_entity_texts)
+            relation_vectors = [None] * len(batch_relation_texts)
+
+            # Embed entity texts
+            if entity_to_embed:
+                try:
+                    entity_texts_only = [t for _, t in entity_to_embed]
+                    entity_vecs = embed_batch(model, entity_texts_only)
+                    for (orig_idx, _), vec in zip(entity_to_embed, entity_vecs):
+                        entity_vectors[orig_idx] = vec
+                except Exception as e:
+                    logger.warning(f"[MULTI_GRANULAR] Entity embedding failed: {e}")
+
+            # Embed relation texts
+            if relation_to_embed:
+                try:
+                    relation_texts_only = [t for _, t in relation_to_embed]
+                    relation_vecs = embed_batch(model, relation_texts_only)
+                    for (orig_idx, _), vec in zip(relation_to_embed, relation_vecs):
+                        relation_vectors[orig_idx] = vec
+                except Exception as e:
+                    logger.warning(f"[MULTI_GRANULAR] Relation embedding failed: {e}")
+        else:
+            # Pad with None if not using multi-granular
+            entity_vectors = [None] * len(batch_texts)
+            relation_vectors = [None] * len(batch_texts)
+
         for _idx, _m in enumerate(batch_meta):
             try:
                 _m["pid_str"] = str(batch_ids[_idx])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         points = [
-            make_point(i, v, lx, m, lt, ct)
-            for i, v, lx, m, lt, ct in zip(batch_ids, vectors, batch_lex, batch_meta, batch_lex_text, batch_code)
+            make_point(i, v, lx, m, lt, ct, entity_dense_vec=ev, relation_dense_vec=rv)
+            for i, v, lx, m, lt, ct, ev, rv in zip(
+                batch_ids, vectors, batch_lex, batch_meta, batch_lex_text, batch_code,
+                entity_vectors, relation_vectors
+            )
         ]
         upsert_points(client, collection, points)
+
+        # Emit graph edges for symbol relationships
+        # Always try symbol-level edges first, fall back to file-level if no symbol_calls
+        try:
+            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+                graph_coll = ensure_graph_collection(client, collection)
+                # Delete old edges for this file before upserting new ones
+                delete_edges_by_path(client, graph_coll, str(file_path), repo=repo_tag)
+
+                all_edges = []
+                if symbol_calls:
+                    # Symbol-level edges: use AST-extracted caller→callee relationships
+                    for caller, callees in symbol_calls.items():
+                        if not caller or not callees:
+                            continue
+                        start_line = None
+                        end_line = None
+                        sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
+                        if sym_info is not None:
+                            try:
+                                start_line = int(getattr(sym_info, "start_line", 0) or 0)
+                                end_line = int(getattr(sym_info, "end_line", 0) or 0)
+                            except Exception:
+                                start_line = None
+                                end_line = None
+                        # Get caller_point_id from symbol_path mapping
+                        caller_pid = symbol_path_to_point_id.get(caller)
+                        all_edges.extend(
+                            extract_call_edges(
+                                symbol_path=caller,
+                                calls=callees,
+                                path=str(file_path),
+                                repo=repo_tag,
+                                start_line=start_line,
+                                end_line=end_line,
+                                language=language,
+                                caller_point_id=caller_pid,
+                                import_paths=import_map,
+                                collection=collection,
+                                qdrant_client=client,
+                            )
+                        )
+                    if imports:
+                        # For file-level imports, use first point ID if available
+                        file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
+                        all_edges.extend(
+                            extract_import_edges(
+                                symbol_path=str(file_path),
+                                imports=imports,
+                                path=str(file_path),
+                                repo=repo_tag,
+                                language=language,
+                                caller_point_id=file_pid,
+                                collection=collection,
+                                qdrant_client=client,
+                            )
+                        )
+                else:
+                    # File-level fallback: emit file→symbol edges
+                    source_file_path = str(file_path)
+                    # Use first point ID for file-level edges
+                    file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
+                    if calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=source_file_path,
+                            calls=calls,
+                            path=source_file_path,
+                            repo=repo_tag,
+                            caller_point_id=file_pid,
+                            import_paths=import_map,
+                            collection=collection,
+                            qdrant_client=client,
+                        ))
+                    if imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=source_file_path,
+                            imports=imports,
+                            path=source_file_path,
+                            repo=repo_tag,
+                            caller_point_id=file_pid,
+                            collection=collection,
+                            qdrant_client=client,
+                        ))
+
+                # Extract inheritance edges (INHERITS_FROM) for all classes
+                if inheritance_map:
+                    for class_name, base_classes in inheritance_map.items():
+                        if class_name and base_classes:
+                            all_edges.extend(extract_inheritance_edges(
+                                class_name=class_name,
+                                base_classes=base_classes,
+                                path=str(file_path),
+                                repo=repo_tag,
+                                language=language,
+                                import_paths=import_map,
+                                collection=collection,
+                                qdrant_client=client,
+                            ))
+
+                if all_edges:
+                    upsert_edges(client, graph_coll, all_edges)
+        except Exception as e:
+            # Don't fail indexing if graph edges fail
+            logger.warning(f"Failed to emit graph edges for {file_path}: {e}")
+
         try:
             ws = os.environ.get("WATCH_ROOT") or os.environ.get("WORKSPACE_PATH") or "/work"
             if set_cached_file_hash:
                 file_repo_tag = repo_tag
                 set_cached_file_hash(str(file_path), file_hash, file_repo_tag)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return True
     return False
 
@@ -710,11 +1232,11 @@ def index_repo(
             if all_unchanged:
                 try:
                     print("[fast_index] No changes detected via fs metadata; skipping model and Qdrant setup")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         from scripts.embedder import get_embedding_model, get_model_dimension
@@ -749,8 +1271,8 @@ def index_repo(
                         if name != LEX_VECTOR_NAME:
                             vector_name = name
                             break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         if vector_name is None:
             vector_name = _sanitize_vector_name(model_name)
 
@@ -842,10 +1364,22 @@ def index_repo(
     if log_progress:
         print(f"[index] Found {total_files} files to process under {root}")
 
-    files_processed = 0
-    for file_path in iterator:
-        files_processed += 1
-        per_file_repo_for_cache = (
+    # Parallel file processing configuration
+    # INDEX_WORKERS=0 or 1 means sequential (default for safety)
+    # INDEX_WORKERS=N uses N threads (recommended: 4-8 for I/O-bound indexing)
+    # INDEX_WORKERS=-1 uses CPU count
+    try:
+        index_workers = int(os.environ.get("INDEX_WORKERS", "1") or "1")
+    except (ValueError, TypeError):
+        index_workers = 1
+    if index_workers == -1:
+        index_workers = multiprocessing.cpu_count()
+    # Cap at reasonable max to avoid overwhelming Qdrant
+    max_workers = min(index_workers, 16) if index_workers > 1 else 1
+
+    def _index_file_task(file_path: Path) -> tuple[Path, Optional[Exception]]:
+        """Task for parallel file indexing. Returns (path, error_or_none)."""
+        per_file_repo = (
             root_repo_for_cache
             if root_repo_for_cache is not None
             else (
@@ -859,15 +1393,44 @@ def index_repo(
                 client, model, collection, vector_name, file_path,
                 dedupe=dedupe, skip_unchanged=skip_unchanged,
                 pseudo_mode=pseudo_mode,
-                repo_name_for_cache=per_file_repo_for_cache,
+                repo_name_for_cache=per_file_repo,
                 allowed_vectors=allowed_vectors,
                 allowed_sparse=allowed_sparse,
             )
+            return (file_path, None)
         except Exception as e:
-            print(f"Error indexing {file_path}: {e}")
+            return (file_path, e)
 
-        if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
-            print(f"[index] {files_processed}/{total_files} files processed")
+    files_processed = 0
+    errors = []
+
+    if max_workers > 1:
+        # Parallel processing with ThreadPoolExecutor
+        if log_progress:
+            print(f"[index] Using {max_workers} parallel workers")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_index_file_task, fp): fp for fp in files}
+            for future in as_completed(futures):
+                files_processed += 1
+                file_path, error = future.result()
+                if error:
+                    errors.append((file_path, error))
+                    print(f"Error indexing {file_path}: {error}")
+                if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
+                    print(f"[index] {files_processed}/{total_files} files processed")
+    else:
+        # Sequential processing (original behavior)
+        for file_path in iterator:
+            files_processed += 1
+            file_path, error = _index_file_task(file_path)
+            if error:
+                errors.append((file_path, error))
+                print(f"Error indexing {file_path}: {error}")
+            if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
+                print(f"[index] {files_processed}/{total_files} files processed")
+
+    if errors and log_progress:
+        print(f"[index] Completed with {len(errors)} errors out of {total_files} files")
 
 
 def process_file_with_smart_reindexing(
@@ -907,8 +1470,8 @@ def process_file_with_smart_reindexing(
         if _should_skip_explicit_file_by_excluder(p):
             try:
                 _delete_points_fn(client, current_collection, str(p))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             print(f"[SMART_REINDEX] Skipping excluded file: {file_path}")
             return "skipped"
     except Exception:
@@ -928,6 +1491,17 @@ def process_file_with_smart_reindexing(
 
     file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
+    # FAST PATH: Check if file hash is unchanged - skip entire processing if so
+    # This avoids AST parsing for unchanged files (P1 optimization)
+    if get_cached_file_hash:
+        try:
+            cached_file_hash = get_cached_file_hash(fp, per_file_repo)
+            if cached_file_hash and cached_file_hash == file_hash:
+                print(f"[SMART_REINDEX] {file_path}: file hash unchanged, skipping (fast path)")
+                return "skipped"
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Fall through to normal processing
+
     if allowed_vectors is None and allowed_sparse is None:
         allowed_vectors, allowed_sparse = get_collection_vector_names(client, current_collection)
 
@@ -935,12 +1509,16 @@ def process_file_with_smart_reindexing(
     allow_mini = allowed_vectors is None or MINI_VECTOR_NAME in allowed_vectors
     allow_pattern = allowed_vectors is None or PATTERN_VECTOR_NAME in allowed_vectors
     allow_sparse = allowed_sparse is None or LEX_SPARSE_NAME in allowed_sparse
+    # Multi-granular vector support: only enable if collection actually has these vectors
+    allow_entity = allowed_vectors is None or ENTITY_DENSE_NAME in allowed_vectors
+    allow_relation = allowed_vectors is None or RELATION_DENSE_NAME in allowed_vectors
 
     pattern_vectors_on = os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}
     pattern_vectors_on = pattern_vectors_on and allow_pattern
     refrag_on = os.environ.get("REFRAG_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
     use_mini = refrag_on and allow_mini
     use_sparse = LEX_SPARSE_MODE and allow_sparse
+    use_multi_granular = MULTI_GRANULAR_VECTORS and allow_entity and allow_relation
 
     repo_id: str | None = None
     repo_rel_path: str | None = None
@@ -1075,8 +1653,8 @@ def process_file_with_smart_reindexing(
                         f"[SMART_REINDEX] micro-chunks resized path={file_path} count={_before}->{len(chunks)} "
                         f"tokens={_base_tokens}->{_new_tokens} stride={_base_stride}->{_new_stride}"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
         except Exception:
             chunks = chunk_by_tokens(text)
     elif use_semantic:
@@ -1085,7 +1663,13 @@ def process_file_with_smart_reindexing(
         chunks = chunk_lines(text, CHUNK_LINES, CHUNK_OVERLAP)
 
     is_text_like = _is_text_like_language(language)
-    symbol_spans = _extract_symbols(language, text)
+    ast_info = _ast_analyze_file(file_path, language, text)
+    symbol_spans = ast_info.get("symbol_spans") or _extract_symbols(language, text)
+    symbol_meta_by_path = ast_info.get("symbol_meta_by_path", {})
+    symbol_meta_by_name = ast_info.get("symbol_meta_by_name", {})
+    ast_call_refs = ast_info.get("call_refs", [])
+    ast_import_refs = ast_info.get("import_refs", [])
+    symbol_calls = ast_info.get("symbol_calls", {})
 
     reused_points: list[models.PointStruct] = []
     embed_texts: list[str] = []
@@ -1094,14 +1678,30 @@ def process_file_with_smart_reindexing(
     embed_lex: list[list[float]] = []
     embed_lex_text: list[str] = []
     embed_code: list[str] = []  # Raw code for pattern vectors
+    # Multi-granular vector batches
+    embed_entity_texts: list[str] = []  # For entity_dense vectors
+    embed_relation_texts: list[str] = []  # For relation_dense vectors
 
-    imports, calls = _get_imports_calls(language, text)
+    imports = ast_info.get("imports")
+    calls = ast_info.get("calls")
+    # Always get import_map for callee resolution (ast_info doesn't provide it)
+    _, _, import_map = _get_imports_calls(language, text)
+    # Get class inheritance relationships
+    inheritance_map = _get_inheritance(language, text)
+    if "imports" not in ast_info or "calls" not in ast_info:
+        base_imports, base_calls, _ = _get_imports_calls(language, text)
+        if "imports" not in ast_info:
+            imports = base_imports
+        if "calls" not in ast_info:
+            calls = base_calls
     last_mod, churn_count, author_count = _git_metadata(file_path)
 
     pseudo_batch_concurrency = int(os.environ.get("PSEUDO_BATCH_CONCURRENCY", "1") or 1)
     use_batch_pseudo = pseudo_batch_concurrency > 1
 
     chunk_data_sr: list[dict] = []
+    # Mapping from symbol_path to point_id for graph edge extraction
+    symbol_path_to_point_id_sr: dict[str, str] = {}
     for ch in chunks:
         info = build_information(
             language, file_path, ch["start"], ch["end"],
@@ -1120,6 +1720,31 @@ def process_file_with_smart_reindexing(
             ch["symbol"] = sym
         if not ch.get("symbol_path") and sym_path:
             ch["symbol_path"] = sym_path
+
+        # Slice chunk-specific calls/imports from AST refs
+        if not ch.get("calls") and ast_call_refs:
+            ch["calls"] = _slice_calls_for_range(ast_call_refs, ch["start"], ch["end"])
+        if not ch.get("imports") and ast_import_refs:
+            ch["imports"] = _slice_imports_for_range(ast_import_refs, ch["start"], ch["end"])
+
+        # Enrich chunk with symbol metadata
+        symbol_info = None
+        if sym_path:
+            symbol_info = symbol_meta_by_path.get(sym_path)
+        if symbol_info is None and sym:
+            symbol_info = symbol_meta_by_name.get(sym)
+        if symbol_info is not None:
+            ch["symbol_start_line"] = int(getattr(symbol_info, "start_line", 0) or 0)
+            ch["symbol_end_line"] = int(getattr(symbol_info, "end_line", 0) or 0)
+            signature = str(getattr(symbol_info, "signature", "") or "")
+            docstring = str(getattr(symbol_info, "docstring", "") or "")
+            parent = str(getattr(symbol_info, "parent", "") or "")
+            if signature:
+                ch["symbol_signature"] = signature
+            if docstring:
+                ch["symbol_docstring"] = docstring
+            if parent:
+                ch["symbol_parent"] = parent
 
         _cur_path = str(file_path)
         _host_path, _container_path = _compute_host_and_container_paths(_cur_path)
@@ -1140,8 +1765,19 @@ def process_file_with_smart_reindexing(
                 "end_line": ch["end"],
                 "code": ch["text"],
                 "file_hash": file_hash,
-                "imports": imports,
-                "calls": calls,
+                # Use chunk-specific calls/imports when available (semantic chunks),
+                # otherwise fall back to file-level calls/imports
+                "imports": ch.get("imports") if ch.get("imports") else imports,
+                "calls": ch.get("calls") if ch.get("calls") else calls,
+                # Import map for callee resolution: local_name -> qualified_path
+                "import_map": import_map if import_map else None,
+                # Inheritance map for class hierarchy: class_name -> [base_classes]
+                "inheritance_map": inheritance_map if inheritance_map else None,
+                "symbol_start_line": ch.get("symbol_start_line"),
+                "symbol_end_line": ch.get("symbol_end_line"),
+                "symbol_signature": ch.get("symbol_signature"),
+                "symbol_docstring": ch.get("symbol_docstring"),
+                "symbol_parent": ch.get("symbol_parent"),
                 "ingested_at": int(time.time()),
                 "last_modified_at": int(last_mod),
                 "churn_count": int(churn_count),
@@ -1210,8 +1846,8 @@ def process_file_with_smart_reindexing(
                         sid = f"{k}_{symbol_name}_{start_line}"
                         if set_cached_pseudo:
                             set_cached_pseudo(fp, sid, pseudo, tags, file_hash)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         if pseudo:
             payload["pseudo"] = pseudo
@@ -1221,8 +1857,13 @@ def process_file_with_smart_reindexing(
         info = cd["info"]
         kind = cd["kind"]
         sym = cd["sym"]
+        sym_path = cd.get("sym_path") or ""
 
         code_text = ch.get("text") or ""
+        # Compute point ID early for symbol_path mapping
+        chunk_point_id = hash_id(code_text, fp, ch["start"], ch["end"])
+        if sym_path:
+            symbol_path_to_point_id_sr[sym_path] = str(chunk_point_id)
         dense_mode = (
             str(os.environ.get("INDEX_DENSE_MODE", "info+pseudo+tags") or "")
             .strip()
@@ -1280,8 +1921,8 @@ def process_file_with_smart_reindexing(
                                 sparse_vec = _lex_sparse_vector_text(aug_lex_text)
                                 if sparse_vec.get("indices"):
                                     vec[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                     else:
                         vecs = {vector_name: vec}
                         if allow_lex:
@@ -1289,15 +1930,15 @@ def process_file_with_smart_reindexing(
                         try:
                             if use_mini:
                                 vecs[MINI_VECTOR_NAME] = project_mini(list(vec), MINI_VEC_DIM)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                         if use_sparse and aug_lex_text:
                             try:
                                 sparse_vec = _lex_sparse_vector_text(aug_lex_text)
                                 if sparse_vec.get("indices"):
                                     vecs[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Suppressed exception: {e}")
                         vec = vecs
                 else:
                     if isinstance(vec, dict):
@@ -1312,26 +1953,83 @@ def process_file_with_smart_reindexing(
                         if dense is None:
                             raise ValueError("reused vector has no dense component")
                         vec = dense
-                pid = hash_id(code_text, fp, ch["start"], ch["end"])
                 reused_points.append(
-                    models.PointStruct(id=pid, vector=vec, payload=payload)
+                    models.PointStruct(id=chunk_point_id, vector=vec, payload=payload)
                 )
                 continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         embed_texts.append(dense_text)
         embed_payloads.append(payload)
-        embed_ids.append(hash_id(code_text, fp, ch["start"], ch["end"]))
+        embed_ids.append(chunk_point_id)
         aug_lex_text = (code_text or "") + (" " + pseudo if pseudo else "") + (" " + " ".join(tags) if tags else "")
         embed_lex.append(_lex_hash_vector_text(aug_lex_text))
         embed_lex_text.append(aug_lex_text)
         embed_code.append(code_text or "")
 
+        # Generate multi-granular vector texts
+        if use_multi_granular:
+            entity_text = _select_entity_text(
+                symbol=ch.get("symbol") or sym or "",
+                symbol_path=ch.get("symbol_path") or sym_path or "",
+                signature=ch.get("symbol_signature") or "",
+                docstring=ch.get("symbol_docstring") or "",
+                parent=ch.get("symbol_parent") or "",
+            )
+            relation_text = _select_relation_text(
+                calls=ch.get("calls") if ch.get("calls") else calls,
+                imports=ch.get("imports") if ch.get("imports") else imports,
+            )
+            embed_entity_texts.append(entity_text)
+            embed_relation_texts.append(relation_text)
+        else:
+            embed_entity_texts.append("")
+            embed_relation_texts.append("")
+
     new_points: list[models.PointStruct] = []
     if embed_texts:
         vectors = _embed_batch(model, embed_texts)
-        for pid, v, lx, pl, lt, ct in zip(embed_ids, vectors, embed_lex, embed_payloads, embed_lex_text, embed_code):
+
+        # Embed multi-granular vectors if enabled
+        entity_vectors: list[list] = []
+        relation_vectors: list[list] = []
+        if use_multi_granular and embed_entity_texts:
+            # Filter non-empty texts to embed, track indices
+            entity_to_embed = [(i, t) for i, t in enumerate(embed_entity_texts) if t.strip()]
+            relation_to_embed = [(i, t) for i, t in enumerate(embed_relation_texts) if t.strip()]
+
+            # Initialize with empty lists
+            entity_vectors = [[] for _ in embed_entity_texts]
+            relation_vectors = [[] for _ in embed_relation_texts]
+
+            # Batch embed entity texts
+            if entity_to_embed:
+                try:
+                    ent_indices, ent_texts = zip(*entity_to_embed)
+                    ent_vecs = _embed_batch(model, list(ent_texts))
+                    for idx, evec in zip(ent_indices, ent_vecs):
+                        entity_vectors[idx] = evec
+                except Exception as e:
+                    logger.warning(f"Failed to embed {len(entity_to_embed)} entity texts: {e}")
+
+            # Batch embed relation texts
+            if relation_to_embed:
+                try:
+                    rel_indices, rel_texts = zip(*relation_to_embed)
+                    rel_vecs = _embed_batch(model, list(rel_texts))
+                    for idx, rvec in zip(rel_indices, rel_vecs):
+                        relation_vectors[idx] = rvec
+                except Exception as e:
+                    logger.warning(f"Failed to embed {len(relation_to_embed)} relation texts: {e}")
+        else:
+            entity_vectors = [[] for _ in embed_texts]
+            relation_vectors = [[] for _ in embed_texts]
+
+        for pid, v, lx, pl, lt, ct, ev, rv in zip(
+            embed_ids, vectors, embed_lex, embed_payloads, embed_lex_text, embed_code,
+            entity_vectors, relation_vectors
+        ):
             if vector_name:
                 vecs = {vector_name: v}
                 if allow_lex:
@@ -1339,20 +2037,26 @@ def process_file_with_smart_reindexing(
                 try:
                     if use_mini:
                         vecs[MINI_VECTOR_NAME] = project_mini(list(v), MINI_VEC_DIM)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 # Add pattern vector for structural similarity search
                 if pattern_vectors_on and ct:
                     try:
                         pv = extract_pattern_vector(ct, language)
                         if pv:
                             vecs[PATTERN_VECTOR_NAME] = pv
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 if use_sparse and lt:
                     sparse_vec = _lex_sparse_vector_text(lt)
                     if sparse_vec.get("indices"):
                         vecs[LEX_SPARSE_NAME] = models.SparseVector(**sparse_vec)
+                # Add multi-granular vectors
+                if use_multi_granular:
+                    if ev:
+                        vecs[ENTITY_DENSE_NAME] = ev
+                    if rv:
+                        vecs[RELATION_DENSE_NAME] = rv
                 new_points.append(models.PointStruct(id=pid, vector=vecs, payload=pl))
             else:
                 new_points.append(models.PointStruct(id=pid, vector=v, payload=pl))
@@ -1367,16 +2071,112 @@ def process_file_with_smart_reindexing(
     if all_points:
         _upsert_points_fn(client, current_collection, all_points)
 
+        # Emit graph edges for symbol relationships
+        # Always try symbol-level edges first, fall back to file-level if no symbol_calls
+        try:
+            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
+                graph_coll = ensure_graph_collection(client, current_collection)
+                delete_edges_by_path(client, graph_coll, fp, repo=per_file_repo)
+
+                all_edges = []
+                if symbol_calls:
+                    # Symbol-level edges: use AST-extracted caller→callee relationships
+                    for caller, callees in symbol_calls.items():
+                        if not caller or not callees:
+                            continue
+                        start_line = None
+                        sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
+                        if sym_info is not None:
+                            try:
+                                start_line = int(getattr(sym_info, "start_line", 0) or 0)
+                            except Exception:
+                                start_line = None
+                        # Get caller_point_id from symbol_path mapping
+                        caller_pid = symbol_path_to_point_id_sr.get(caller)
+                        all_edges.extend(
+                            extract_call_edges(
+                                symbol_path=caller,
+                                calls=callees,
+                                path=fp,
+                                repo=per_file_repo,
+                                start_line=start_line,
+                                language=language,
+                                caller_point_id=caller_pid,
+                                import_paths=import_map,
+                            )
+                        )
+                    if imports:
+                        # For file-level imports, use first point ID if available
+                        file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
+                        all_edges.extend(
+                            extract_import_edges(
+                                symbol_path=fp,
+                                imports=imports,
+                                path=fp,
+                                repo=per_file_repo,
+                                language=language,
+                                caller_point_id=file_pid,
+                            )
+                        )
+                else:
+                    # File-level fallback: emit file→symbol edges
+                    meta0 = {}
+                    try:
+                        if all_points and hasattr(all_points[0], "payload"):
+                            meta0 = all_points[0].payload.get("metadata", {}) or {}
+                    except Exception:
+                        meta0 = {}
+                    file_calls = meta0.get("calls", []) or []
+                    file_imports = meta0.get("imports", []) or []
+                    file_import_map = meta0.get("import_map", {}) or {}
+                    # Use first point ID for file-level edges
+                    file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
+                    if file_calls:
+                        all_edges.extend(extract_call_edges(
+                            symbol_path=fp,
+                            calls=file_calls,
+                            path=fp,
+                            repo=per_file_repo,
+                            caller_point_id=file_pid,
+                            import_paths=file_import_map,
+                        ))
+                    if file_imports:
+                        all_edges.extend(extract_import_edges(
+                            symbol_path=fp,
+                            imports=file_imports,
+                            path=fp,
+                            repo=per_file_repo,
+                            caller_point_id=file_pid,
+                        ))
+
+                # Extract inheritance edges (INHERITS_FROM) for all classes
+                if inheritance_map:
+                    for class_name, base_classes in inheritance_map.items():
+                        if class_name and base_classes:
+                            all_edges.extend(extract_inheritance_edges(
+                                class_name=class_name,
+                                base_classes=base_classes,
+                                path=fp,
+                                repo=per_file_repo,
+                                language=language,
+                                import_paths=import_map,
+                            ))
+
+                if all_edges:
+                    upsert_edges(client, graph_coll, all_edges)
+        except Exception as e:
+            logger.warning(f"Failed to emit graph edges for {fp}: {e}")
+
     try:
         if set_cached_symbols:
             set_cached_symbols(fp, symbol_meta, file_hash)
     except Exception as e:
-        print(f"[SMART_REINDEX] Failed to update symbol cache for {file_path}: {e}")
+        logger.warning(f"Failed to update symbol cache for {file_path}: {e}")
     try:
         if set_cached_file_hash:
             set_cached_file_hash(fp, file_hash, per_file_repo)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     print(
         f"[SMART_REINDEX] Completed {file_path}: chunks={len(chunks)}, reused_points={len(reused_points)}, embedded_points={len(new_points)}"
@@ -1417,8 +2217,8 @@ def pseudo_backfill_tick(
                     match=_models.MatchValue(value=repo_name),
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     flt = None
     try:
@@ -1428,17 +2228,17 @@ def pseudo_backfill_tick(
             should_conditions = []
             try:
                 should_conditions.append(null_cond(is_null="pseudo"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             try:
                 should_conditions.append(null_cond(is_null="tags"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             if empty_cond is not None:
                 try:
                     should_conditions.append(empty_cond(is_empty="tags"))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             flt = _models.Filter(
                 must=must_conditions or None,
                 should=should_conditions or None,
@@ -1555,22 +2355,236 @@ def pseudo_backfill_tick(
                     )
                 )
                 processed += 1
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         if new_points:
             try:
                 upsert_points(client, collection, new_points)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Upsert failed for {len(new_points)} points, retrying after ensure_collection: {e}")
                 if _maybe_ensure_collection():
                     try:
                         upsert_points(client, collection, new_points)
-                    except Exception:
+                    except Exception as e2:
+                        logger.error(f"Upsert retry failed for {len(new_points)} points: {e2}")
                         break
                 else:
+                    logger.error(f"Upsert failed and collection ensure failed; aborting backfill")
                     break
 
         if next_offset is None:
             break
+
+    return processed
+
+
+def graph_backfill_tick(
+    client: QdrantClient,
+    collection: str,
+    repo_name: str | None = None,
+    *,
+    max_points: int = 256,
+) -> int:
+    """Backfill graph edges from existing indexed points that have calls/imports metadata.
+
+    This enables seamless graph collection population for legacy collections that were
+    indexed before graph edges were introduced. Runs incrementally, processing points
+    that have calls/imports but haven't been added to the graph collection yet.
+
+    Args:
+        client: Qdrant client
+        collection: Main collection name (graph collection is derived)
+        repo_name: Optional repo filter
+        max_points: Maximum points to process per tick
+
+    Returns:
+        Number of points processed
+    """
+    from qdrant_client import models as _models
+    # Use module-level imports for graph_edges functions (already imported at top)
+
+    if not collection or max_points <= 0:
+        return 0
+
+    # Ensure graph collection exists
+    graph_coll = ensure_graph_collection(client, collection)
+    if not graph_coll:
+        return 0
+
+    # Track which paths we've already backfilled in this session
+    # to avoid re-processing on subsequent ticks
+    backfill_marker_key = "metadata._graph_backfilled"
+
+    # Build filter: points with calls OR imports that haven't been backfilled
+    must_conditions: list[Any] = []
+    if repo_name:
+        must_conditions.append(
+            _models.FieldCondition(
+                key="metadata.repo",
+                match=_models.MatchValue(value=repo_name),
+            )
+        )
+
+    # Note: Qdrant doesn't have a simple "array not empty" filter, so we scroll
+    # all points and check calls/imports presence in code.
+
+    # Check if we should skip already-backfilled points
+    null_cond = getattr(_models, "IsNullCondition", None)
+    if null_cond:
+        try:
+            must_conditions.append(null_cond(is_null=backfill_marker_key))
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+
+    flt = _models.Filter(must=must_conditions or None) if must_conditions else None
+
+    processed = 0
+    next_offset = None
+    edges_created = 0
+    paths_cleaned: set[str] = set()  # Track paths where we've deleted old edges
+
+    while processed < max_points:
+        batch_limit = min(64, max_points - processed)
+        try:
+            points, next_offset = client.scroll(
+                collection_name=collection,
+                scroll_filter=flt,
+                limit=batch_limit,
+                with_payload=True,
+                with_vectors=False,
+                offset=next_offset,
+            )
+        except Exception as e:
+            print(f"[graph_backfill] Scroll error: {e}")
+            break
+
+        if not points:
+            break
+
+        all_edges: list[dict] = []
+        points_to_mark: list[Any] = []
+
+        for pt in points:
+            try:
+                payload = pt.payload or {}
+                md = payload.get("metadata", {})
+
+                path = md.get("path") or md.get("file_path") or ""
+                if not path:
+                    continue
+
+                calls = md.get("calls") or []
+                imports = md.get("imports") or []
+                import_map = md.get("import_map") or {}
+                inheritance_map = md.get("inheritance_map") or {}
+
+                repo = md.get("repo") or repo_name or ""
+                language = md.get("language")
+                symbol_path = md.get("symbol_path")  # No fallback to path - only use true symbol identifiers
+
+                # NOTE: During backfill, we do NOT delete edges - we only upsert.
+                # Deletion would cause data loss since paths_cleaned resets on each call
+                # and multiple chunks can exist per path.
+                # Edge upsert uses MERGE on edge_id which handles updates correctly.
+                paths_cleaned.add(path)  # Track for logging only
+
+                # Skip if no relationship data (but still mark as processed)
+                if not calls and not imports and not inheritance_map:
+                    pass  # Still mark point below
+                else:
+                    # Extract edges - only if we have a true symbol identifier
+                    # Use point ID as caller_point_id for graph edge linking
+                    caller_pid = str(pt.id) if pt.id is not None else None
+                    if symbol_path:
+                        if calls:
+                            all_edges.extend(extract_call_edges(
+                                symbol_path=symbol_path,
+                                calls=calls,
+                                path=path,
+                                repo=repo,
+                                language=language,
+                                caller_point_id=caller_pid,
+                                import_paths=import_map,
+                            ))
+
+                        if imports:
+                            all_edges.extend(extract_import_edges(
+                                symbol_path=symbol_path,
+                                imports=imports,
+                                path=path,
+                                repo=repo,
+                                language=language,
+                                caller_point_id=caller_pid,
+                            ))
+
+                    # Extract inheritance edges (INHERITS_FROM) for all classes
+                    if inheritance_map:
+                        for class_name, base_classes in inheritance_map.items():
+                            if class_name and base_classes:
+                                all_edges.extend(extract_inheritance_edges(
+                                    class_name=class_name,
+                                    base_classes=base_classes,
+                                    path=path,
+                                    repo=repo,
+                                    language=language,
+                                    import_paths=import_map,
+                                ))
+                points_to_mark.append(pt)
+                processed += 1
+
+            except Exception as e:
+                print(f"[graph_backfill] Point processing error: {e}")
+                continue
+
+        # Upsert edges in batch - use dynamic backend detection
+        if all_edges:
+            try:
+                # Check if Neo4j is enabled at runtime (not just import time)
+                if is_neo4j_enabled():
+                    from scripts.graph_backends.base import GraphEdge
+                    from scripts.graph_backends.ingest_adapter import upsert_edges as neo4j_upsert
+                    graph_edges = []
+                    for e in all_edges:
+                        payload = e.get("payload", {})
+                        graph_edges.append(GraphEdge(
+                            id=e.get("id", ""),
+                            caller_symbol=payload.get("caller_symbol", ""),
+                            callee_symbol=payload.get("callee_symbol", ""),
+                            caller_path=payload.get("caller_path", ""),
+                            callee_path=payload.get("callee_path"),
+                            edge_type=payload.get("edge_type", ""),
+                            repo=payload.get("repo", ""),
+                            start_line=payload.get("start_line"),
+                            end_line=payload.get("end_line"),
+                            language=payload.get("language"),
+                            caller_point_id=payload.get("caller_point_id"),
+                        ))
+                    count = neo4j_upsert(client, graph_coll, graph_edges)
+                else:
+                    count = upsert_edges(client, graph_coll, all_edges)
+                edges_created += count
+            except Exception as e:
+                print(f"[graph_backfill] Edge upsert error: {e}")
+
+        # Mark points as backfilled (optional - adds a marker to prevent re-processing)
+        # This is a lightweight update that just sets a flag
+        if points_to_mark and os.environ.get("GRAPH_BACKFILL_MARK", "0").lower() in {"1", "true"}:
+            for pt in points_to_mark:
+                try:
+                    client.set_payload(
+                        collection_name=collection,
+                        payload={"metadata": {"_graph_backfilled": True}},
+                        points=[pt.id],
+                    )
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+
+        if next_offset is None:
+            break
+
+    if processed > 0:
+        print(f"[graph_backfill] Processed {processed} points, created {edges_created} edges for {len(paths_cleaned)} paths")
 
     return processed

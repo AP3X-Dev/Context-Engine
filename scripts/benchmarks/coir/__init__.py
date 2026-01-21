@@ -55,8 +55,8 @@ COIR_TASKS = [
     "codetrans-contest",
 ]
 
-# Default tasks for quick evaluation
-DEFAULT_TASKS = ["cosqa", "codesearchnet-python"]
+# Default tasks for quick evaluation (3 CodeSearchNet languages)
+DEFAULT_TASKS = ["codesearchnet-python", "codesearchnet-go", "codesearchnet-javascript"]
 
 __all__ = [
     "COIR_TASKS",

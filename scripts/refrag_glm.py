@@ -443,7 +443,8 @@ class GLMRefragClient:
         gen_kwargs["max_tokens"] = max_tokens
 
         async def run_one(prompt: str) -> str:
-            loop = asyncio.get_event_loop()
+            # Use asyncio.get_running_loop() instead of deprecated get_event_loop()
+            loop = asyncio.get_running_loop()
             try:
                 return await loop.run_in_executor(
                     executor,

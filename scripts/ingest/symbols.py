@@ -1199,19 +1199,31 @@ def _choose_symbol_for_chunk(start: int, end: int, symbols: List[_Sym]):
     """Choose the most relevant symbol for a given chunk range."""
     if not symbols:
         return "", "", ""
-    overlaps = [s for s in symbols if s.start <= end and s.end >= start]
+
+    # Helper to get start/end from symbol (handle both _Sym and plain dict)
+    def _get_start(s):
+        if hasattr(s, "start") and callable(getattr(type(s), "start", None)) is False:
+            return s.start
+        return s.get("start") or s.get("start_line") or 0
+
+    def _get_end(s):
+        if hasattr(s, "end") and callable(getattr(type(s), "end", None)) is False:
+            return s.end
+        return s.get("end") or s.get("end_line") or 0
+
+    overlaps = [s for s in symbols if _get_start(s) <= end and _get_end(s) >= start]
 
     def pick(sym):
         name = sym.get("name") or ""
         path = sym.get("path") or name
-        return sym.get("kind") or "", name, path
+        return sym.get("kind") or sym.get("type") or "", name, path
 
     if overlaps:
-        overlaps.sort(key=lambda s: (-(s.start), (s.end - s.start)))
+        overlaps.sort(key=lambda s: (-(_get_start(s)), (_get_end(s) - _get_start(s))))
         return pick(overlaps[0])
-    preceding = [s for s in symbols if s.start <= end]
+    preceding = [s for s in symbols if _get_start(s) <= end]
     if preceding:
-        s = max(preceding, key=lambda x: x.start)
+        s = max(preceding, key=lambda x: _get_start(x))
         return pick(s)
     return "", "", ""
 

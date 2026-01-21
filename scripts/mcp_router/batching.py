@@ -4,6 +4,7 @@ mcp_router/batching.py - Context answer batching client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -15,6 +16,8 @@ from .config import HTTP_URL_INDEXER
 from .client import call_tool_http
 
 
+
+logger = logging.getLogger(__name__)
 class BatchingContextAnswerClient:
     """Lightweight in-memory batching for context_answer calls.
 
@@ -52,16 +55,16 @@ class BatchingContextAnswerClient:
                 v = args.get("immediate")
                 if v is not None and str(v).strip().lower() in {"1", "true", "yes", "on"}:
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         if str(os.environ.get("ROUTER_BATCH_BYPASS", "0")).strip().lower() in {"1", "true", "yes", "on"}:
             return True
         try:
             q = str((args or {}).get("query") or "")
             if "immediate answer" in q.lower():
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return False
 
     def _norm_query(self, q: str) -> str:
@@ -128,8 +131,8 @@ class BatchingContextAnswerClient:
                 if t:
                     try:
                         t.cancel()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                     g["timer"] = None
                 threading.Thread(target=self._flush, args=(key,), daemon=True).start()
 
@@ -148,22 +151,22 @@ class BatchingContextAnswerClient:
                             if slot in lst:
                                 try:
                                     lst.remove(slot)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Suppressed exception: {e}")
                             if not lst:
                                 t2 = gg.get("timer")
                                 if t2:
                                     try:
                                         t2.cancel()
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.debug(f"Suppressed exception: {e}")
                                 self._groups.pop(key, None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 try:
                     print(json.dumps({"router": {"batch_fallback": True, "elapsed_ms": int((time.time()-start_ts)*1000)}}), file=sys.stderr)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return res
             except Exception as e:
                 slot["error"] = e
@@ -256,8 +259,8 @@ class BatchingContextAnswerClient:
                                 per_body["answer"] = ans_i
                                 per_body["citations"] = cits_i
                                 per_body["query"] = [entry_key]
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                         _map[str(entry_key)] = per
                     for uq in unique_q:
                         if str(uq) in _map:
@@ -300,8 +303,8 @@ class BatchingContextAnswerClient:
                     "ok": (len(errors_by_q) == 0),
                 }
             }), file=sys.stderr)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         for it in items:
             q = it.get("query") or ""
@@ -311,8 +314,8 @@ class BatchingContextAnswerClient:
             try:
                 if hasattr(ev, "set"):
                     ev.set()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         with self._lock:
             gg = self._groups.get(key)
             if gg and not gg.get("items"):

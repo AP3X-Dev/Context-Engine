@@ -201,7 +201,10 @@ def _extract_repo_name_from_path(workspace_path: str) -> str:
 
 # Simple file-based hash cache (simplified from workspace_state.py)
 class SimpleHashCache:
-    """Simple file-based hash cache for tracking file changes."""
+    """Simple file-based hash cache for tracking file changes.
+    
+    Thread-safe via internal lock for concurrent watch mode access.
+    """
 
     def __init__(self, workspace_path: str, repo_name: str):
         self.workspace_path = Path(workspace_path).resolve()
@@ -213,43 +216,44 @@ class SimpleHashCache:
         self._cache_loaded = False
         self._cache: Dict[str, str] = {}
         self._stale_checked = False
+        self._lock = threading.Lock()
         self._load_cache()  # Load once on init
 
     def _load_cache(self) -> Dict[str, str]:
-        """Load cache from disk."""
-        if self._cache_loaded:
-            return self._cache
+        """Load cache from disk. Thread-safe."""
+        with self._lock:
+            if self._cache_loaded:
+                return self._cache.copy()
 
-        if not self.cache_file.exists():
-            self._cache = {}
+            if not self.cache_file.exists():
+                self._cache = {}
+                self._cache_loaded = True
+                return self._cache.copy()
+
+            try:
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    file_hashes = data.get("file_hashes", {})
+                    # Run stale check only once per process to avoid O(N^2) scans
+                    if not self._stale_checked and self._cache_seems_stale(file_hashes):
+                        self._stale_checked = True
+                        logger.warning(
+                            "[hash_cache] Detected stale cache with missing paths; resetting %s",
+                            self.cache_file,
+                        )
+                        self._save_cache_internal({})
+                        self._cache = {}
+                    else:
+                        self._stale_checked = True
+                        self._cache = file_hashes if isinstance(file_hashes, dict) else {}
+            except Exception:
+                self._cache = {}
+
             self._cache_loaded = True
-            return self._cache
+            return self._cache.copy()
 
-        try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                file_hashes = data.get("file_hashes", {})
-                # Run stale check only once per process to avoid O(N^2) scans
-                if not self._stale_checked and self._cache_seems_stale(file_hashes):
-                    self._stale_checked = True
-                    logger.warning(
-                        "[hash_cache] Detected stale cache with missing paths; resetting %s",
-                        self.cache_file,
-                    )
-                    self._save_cache({})
-                    self._cache = {}
-                else:
-                    self._stale_checked = True
-                    self._cache = file_hashes if isinstance(file_hashes, dict) else {}
-        except Exception:
-            self._cache = {}
-
-        self._cache_loaded = True
-        return self._cache
-
-    def _save_cache(self, file_hashes: Dict[str, str]):
-        """Save cache to disk."""
-        # Keep in-memory view in sync
+    def _save_cache_internal(self, file_hashes: Dict[str, str]):
+        """Save cache to disk. Must be called with lock held."""
         self._cache = file_hashes
         self._cache_loaded = True
         try:
@@ -259,36 +263,44 @@ class SimpleHashCache:
             }
             with open(self.cache_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+
+    def _save_cache(self, file_hashes: Dict[str, str]):
+        """Save cache to disk. Thread-safe."""
+        with self._lock:
+            self._save_cache_internal(file_hashes)
 
     def get_hash(self, file_path: str) -> str:
-        """Get cached file hash."""
-        file_hashes = self._load_cache()
+        """Get cached file hash. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        return file_hashes.get(abs_path, "")
+        with self._lock:
+            if not self._cache_loaded:
+                # Trigger load without lock held for file I/O
+                pass
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            return self._cache.get(abs_path, "")
 
     def set_hash(self, file_path: str, file_hash: str):
-        """Set cached file hash."""
-        file_hashes = self._load_cache()
+        """Set cached file hash. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        file_hashes[abs_path] = file_hash
-        self._cache = file_hashes
-        self._cache_loaded = True
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            self._cache[abs_path] = file_hash
 
     def all_paths(self) -> List[str]:
-        """Return all cached absolute file paths."""
-        file_hashes = self._load_cache()
-        return list(file_hashes.keys())
+        """Return all cached absolute file paths. Thread-safe."""
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            return list(self._cache.keys())
 
     def remove_hash(self, file_path: str) -> None:
-        """Remove a cached file hash if present."""
-        file_hashes = self._load_cache()
+        """Remove a cached file hash if present. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        if abs_path in file_hashes:
-            file_hashes.pop(abs_path, None)
-            self._cache = file_hashes
-            self._cache_loaded = True
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            self._cache.pop(abs_path, None)
 
     def _cache_seems_stale(self, file_hashes: Dict[str, str]) -> bool:
         """Return True if a large portion of cached paths no longer exist on disk."""
@@ -356,7 +368,8 @@ def _find_git_root(start: Path) -> Optional[Path]:
             try:
                 if (p / ".git").exists():
                     return p
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
     except Exception:
         return None
@@ -364,6 +377,23 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 def _compute_logical_repo_id(workspace_path: str) -> str:
+    """Compute a stable logical repo ID for git worktrees and multi-repo setups.
+
+    IMPORTANT: Logical repo reuse is OPT-IN only (MULTI_REPO_MODE=1 required).
+
+    Risks when enabled:
+    - Mutates every workspace state file (.codebase/repos/*/state.json)
+    - Reroutes watchers/uploads through reuse logic
+    - Missing or stale logical_repo_id can route events to the WRONG Qdrant collection
+    - Walks and rewrites state files on lookup (storage/performance impact)
+
+    Operators should only enable after validating their multi-repo topology
+    and understanding that env COLLECTION_NAME takes precedence and can
+    collapse multiple uploads into a single collection if set globally.
+
+    Returns:
+        A stable ID like "git:<hash>" for git repos or "fs:<hash>" for non-git paths.
+    """
     try:
         p = Path(workspace_path).resolve()
     except Exception:
@@ -490,8 +520,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
             if anc.returncode != 0:
                 snapshot_mode = True
                 base_head = ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Build git rev-list command (simple HEAD-based history)
     cmd: List[str] = ["git", "rev-list", "--no-merges"]
@@ -588,7 +618,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
                     "diff": diff_text,
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     if not records:
@@ -623,8 +654,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
         }
         with git_cache_path.open("w", encoding="utf-8") as f:
             json.dump(cache_out, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return manifest
 
@@ -645,11 +676,17 @@ class RemoteUploadClient:
                 container = PurePosixPath(container_root)
                 if relative.parts:
                     container = container.joinpath(*relative.parts)
+                else:
+                    # When host_path == host_root, relative is empty
+                    # Use the repo name (last component of host_path) as container subdirectory
+                    repo_name = host_path_obj.name
+                    if repo_name:
+                        container = container.joinpath(repo_name)
                 return str(container)
             except ValueError:
                 pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         # Fallback: strip drive/anchor and map to /work/<repo-name>
         try:
@@ -658,8 +695,8 @@ class RemoteUploadClient:
             if usable_parts:
                 repo_name = usable_parts[-1]
                 return str(container.joinpath(repo_name))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         return host_path.replace('\\', '/').replace(':', '')
 
@@ -773,8 +810,8 @@ class RemoteUploadClient:
                 try:
                     if abs_path in self._stat_cache:
                         self._stat_cache.pop(abs_path, None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 continue
 
             # File exists - use stat to avoid unnecessary re-hashing when possible
@@ -817,8 +854,8 @@ class RemoteUploadClient:
             # Update caches
             try:
                 self._stat_cache[abs_path] = (getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)), stat.st_size)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             set_cached_file_hash(abs_path, current_hash, self.repo_name)
 
         # Detect moves by looking for files with same content hash
@@ -856,7 +893,8 @@ class RemoteUploadClient:
                         content = f.read()
                     file_hash = hashlib.sha1(content).hexdigest()
                     deleted_hashes[file_hash] = deleted_path
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         # Match created files with deleted files by hash
@@ -871,7 +909,8 @@ class RemoteUploadClient:
                     moves.append((source_path, created_path))
                     # Remove from consideration
                     del deleted_hashes[file_hash]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         return moves
@@ -1104,8 +1143,8 @@ class RemoteUploadClient:
                     (metadata_dir / "git_history.json").write_text(
                         json.dumps(git_history, indent=2)
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
             # Create tarball in temporary directory
             temp_bundle_dir = self._get_temp_bundle_dir()
@@ -1142,33 +1181,38 @@ class RemoteUploadClient:
                 # Check bundle size (server-side enforcement)
                 bundle_size = os.path.getsize(bundle_path)
 
-                files = {
-                    "bundle": open(bundle_path, "rb"),
-                }
-                data = {
-                    "workspace_path": self._translate_to_container_path(self.workspace_path),
-                    "collection_name": self.collection_name,
-                    "sequence_number": manifest.get("sequence_number"),
-                    "force": False,
-                    "source_path": self.workspace_path,
-                    "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
-                }
+                # Use context manager to ensure file handle is closed
+                bundle_file = open(bundle_path, "rb")
+                try:
+                    files = {
+                        "bundle": bundle_file,
+                    }
+                    data = {
+                        "workspace_path": self._translate_to_container_path(self.workspace_path),
+                        "collection_name": self.collection_name,
+                        "sequence_number": manifest.get("sequence_number"),
+                        "force": False,
+                        "source_path": self.workspace_path,
+                        "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
+                    }
 
-                sess = get_auth_session(self.upload_endpoint)
-                if sess:
-                    data["session"] = sess
+                    sess = get_auth_session(self.upload_endpoint)
+                    if sess:
+                        data["session"] = sess
 
-                if getattr(self, "logical_repo_id", None):
-                    data['logical_repo_id'] = self.logical_repo_id
+                    if getattr(self, "logical_repo_id", None):
+                        data['logical_repo_id'] = self.logical_repo_id
 
-                logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
+                    logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
 
-                response = self.session.post(
-                    f"{self.upload_endpoint}/api/v1/delta/upload",
-                    files=files,
-                    data=data,
-                    timeout=(10, self.timeout)
-                )
+                    response = self.session.post(
+                        f"{self.upload_endpoint}/api/v1/delta/upload",
+                        files=files,
+                        data=data,
+                        timeout=(10, self.timeout)
+                    )
+                finally:
+                    bundle_file.close()
 
                 result = None
                 try:
@@ -1182,8 +1226,8 @@ class RemoteUploadClient:
                     if seq is not None:
                         try:
                             manifest["sequence"] = seq
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     return result
 
                 # Handle error
@@ -1404,8 +1448,8 @@ class RemoteUploadClient:
                     if os.path.exists(bundle_path):
                         os.remove(bundle_path)
                     self.cleanup()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return True
             return False
         except Exception as e:
@@ -1650,7 +1694,8 @@ class RemoteUploadClient:
                     for p in fs_files:
                         try:
                             resolved = p.resolve()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                         path_map[resolved] = p
 
@@ -1659,7 +1704,8 @@ class RemoteUploadClient:
                         try:
                             cached_path = Path(cached_abs)
                             resolved = cached_path.resolve()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                         if resolved not in path_map:
                             path_map[resolved] = cached_path
@@ -1870,12 +1916,24 @@ def get_remote_config(cli_path: Optional[str] = None) -> Dict[str, str]:
 
     logical_repo_id = _compute_logical_repo_id(workspace_path)
 
-    # Use auto-generated collection name based on repo name
-    repo_name = _extract_repo_name_from_path(workspace_path)
-    # Fallback to directory name if repo detection fails
-    if not repo_name:
-        repo_name = Path(workspace_path).name
-    collection_name = get_collection_name(repo_name)
+    # COLLECTION_NAME precedence (important for multi-repo mode):
+    #
+    # 1. If COLLECTION_NAME env is set, it ALWAYS wins - all uploads go to that collection.
+    #    This is intentional for single-collection deployments but can collapse multiple
+    #    repos into one collection if set globally with MULTI_REPO_MODE=1.
+    #
+    # 2. If COLLECTION_NAME is not set, auto-generate from repo name via get_collection_name().
+    #    This respects multi-repo topology when MULTI_REPO_MODE=1.
+    #
+    # Operators using MULTI_REPO_MODE=1 with logical repo reuse should NOT set a global
+    # COLLECTION_NAME, or they risk routing all uploads to a single collection.
+    collection_name = os.environ.get("COLLECTION_NAME", "").strip()
+    if not collection_name:
+        repo_name = _extract_repo_name_from_path(workspace_path)
+        # Fallback to directory name if repo detection fails
+        if not repo_name:
+            repo_name = Path(workspace_path).name
+        collection_name = get_collection_name(repo_name)
 
     return {
         "upload_endpoint": os.environ.get("REMOTE_UPLOAD_ENDPOINT", "http://localhost:8080"),

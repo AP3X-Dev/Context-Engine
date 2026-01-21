@@ -2,6 +2,8 @@ import importlib
 import json
 import pytest
 
+from conftest import get_results
+
 srv = importlib.import_module("scripts.mcp_indexer_server")
 
 
@@ -70,7 +72,7 @@ async def test_context_search_blend_compact(monkeypatch):
 
     assert "results" in res
     # Compact shape: code entries have path+lines; memory entries have content only
-    for it in res["results"]:
+    for it in get_results(res):
         if it.get("source") == "code":
             assert "path" in it and "start_line" in it and "end_line" in it
         else:
@@ -137,8 +139,9 @@ async def test_context_search_weight_scaling(monkeypatch):
         compact=False,
     )
 
-    mem_scores = [r["score"] for r in res["results"] if r.get("source") == "memory"]
-    code_scores = [r["score"] for r in res["results"] if r.get("source") == "code"]
+    results = get_results(res)
+    mem_scores = [r["score"] for r in results if r.get("source") == "memory"]
+    code_scores = [r["score"] for r in results if r.get("source") == "code"]
     assert mem_scores, "expected at least one memory result"
     assert code_scores, "expected at least one code result"
     assert max(mem_scores) > max(code_scores)
@@ -207,7 +210,7 @@ async def test_context_search_per_source_limits(monkeypatch):
         compact=True,
     )
 
-    kinds = [r.get("source") for r in res.get("results", [])]
+    kinds = [r.get("source") for r in get_results(res)]
     assert kinds.count("code") <= 1
     assert kinds.count("memory") <= 2
     # Ensure at least one of each (since both sources available)

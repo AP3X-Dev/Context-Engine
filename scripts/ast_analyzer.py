@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
 """
 Advanced AST-Based Code Understanding
 
@@ -14,6 +17,7 @@ import os
 import re
 import ast
 import hashlib
+import importlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
@@ -54,7 +58,8 @@ try:
             try:
                 raw_lang = fn()
                 return raw_lang if isinstance(raw_lang, Language) else Language(raw_lang)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
         return None
 
@@ -92,8 +97,8 @@ try:
                     tsx_lang = _load_ts_language(mod, preferred=["language_tsx"])
                     if tsx_lang is not None:
                         _TS_LANGUAGES["tsx"] = tsx_lang
-        except Exception:
-            pass  # Language package not installed
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Language package not installed
 
     # Add aliases
     if "javascript" in _TS_LANGUAGES:
@@ -414,48 +419,101 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
-        # Extract symbols
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                symbol = self._extract_python_function(node, content)
-                symbols.append(symbol)
-            elif isinstance(node, ast.ClassDef):
-                symbol = self._extract_python_class(node, content)
-                symbols.append(symbol)
-        
-        # Extract imports
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
+
+        class _PyAnalyzer(ast.NodeVisitor):
+            def __init__(self, outer: "ASTAnalyzer"):
+                self.outer = outer
+                self.class_stack: list[str] = []
+                self.func_stack: list[str] = []
+
+            def _current_func_path(self) -> str:
+                if not self.func_stack:
+                    return ""
+                parts: list[str] = []
+                if self.class_stack:
+                    parts.extend(self.class_stack)
+                parts.extend(self.func_stack)
+                return ".".join(parts)
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                class_name = node.name
+                class_path = ".".join(self.class_stack + [class_name])
+                symbols.append(
+                    self.outer._extract_python_class(
+                        node, content, path=class_path
+                    )
+                )
+                self.class_stack.append(class_name)
+                self.generic_visit(node)
+                self.class_stack.pop()
+
+            def _visit_function(self, node: ast.AST) -> None:
+                name = getattr(node, "name", "")
+                prefix = self.class_stack + self.func_stack
+                path = ".".join(prefix + ([name] if name else []))
+                parent = None
+                if self.func_stack:
+                    parent = self.func_stack[-1]
+                elif self.class_stack:
+                    parent = self.class_stack[-1]
+
+                kind = "method" if self.class_stack else "function"
+                symbols.append(
+                    self.outer._extract_python_function(
+                        node, content, kind=kind, path=path, parent=parent
+                    )
+                )
+                if name:
+                    self.func_stack.append(name)
+                    self.generic_visit(node)
+                    self.func_stack.pop()
+                else:
+                    self.generic_visit(node)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._visit_function(node)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self._visit_function(node)
+
+            def visit_Import(self, node: ast.Import) -> None:
                 for alias in node.names:
-                    imports.append(ImportReference(
-                        module=alias.name,
-                        names=[],
-                        alias=alias.asname,
-                        line=node.lineno,
-                        is_from=False
-                    ))
-            elif isinstance(node, ast.ImportFrom):
+                    imports.append(
+                        ImportReference(
+                            module=alias.name,
+                            names=[],
+                            alias=alias.asname,
+                            line=node.lineno,
+                            is_from=False,
+                        )
+                    )
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 names = [alias.name for alias in node.names]
-                imports.append(ImportReference(
-                    module=node.module or "",
-                    names=names,
-                    alias=None,
-                    line=node.lineno,
-                    is_from=True
-                ))
-        
-        # Extract calls (simplified)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                callee = self._get_call_name(node.func)
-                if callee:
-                    calls.append(CallReference(
-                        caller="",  # Would need parent context
-                        callee=callee,
+                imports.append(
+                    ImportReference(
+                        module=node.module or "",
+                        names=names,
+                        alias=None,
                         line=node.lineno,
-                        context="call"
-                    ))
+                        is_from=True,
+                    )
+                )
+
+            def visit_Call(self, node: ast.Call) -> None:
+                callee = self.outer._get_call_name(node.func)
+                if callee:
+                    calls.append(
+                        CallReference(
+                            caller=self._current_func_path(),
+                            callee=callee,
+                            line=getattr(node, "lineno", 0),
+                            context="call",
+                        )
+                    )
+                self.generic_visit(node)
+
+        _PyAnalyzer(self).visit(tree)
         
         return {
             "symbols": symbols,
@@ -464,7 +522,15 @@ class ASTAnalyzer:
             "language": "python"
         }
     
-    def _extract_python_function(self, node: ast.FunctionDef, content: str) -> CodeSymbol:
+    def _extract_python_function(
+        self,
+        node: ast.AST,
+        content: str,
+        *,
+        kind: str,
+        path: str,
+        parent: Optional[str],
+    ) -> CodeSymbol:
         """Extract detailed function information from AST node."""
         # Get docstring
         docstring = ast.get_docstring(node)
@@ -491,18 +557,22 @@ class ASTAnalyzer:
             content_hash = None
         
         return CodeSymbol(
-            name=node.name,
-            kind="function",
-            start_line=node.lineno,
-            end_line=node.end_lineno or node.lineno,
+            name=getattr(node, "name", ""),
+            kind=kind,
+            start_line=getattr(node, "lineno", 0),
+            end_line=getattr(node, "end_lineno", getattr(node, "lineno", 0)) or 0,
             docstring=docstring,
             signature=signature,
             decorators=decorators,
             complexity=complexity,
-            content_hash=content_hash
+            content_hash=content_hash,
+            path=path,
+            parent=parent,
         )
     
-    def _extract_python_class(self, node: ast.ClassDef, content: str) -> CodeSymbol:
+    def _extract_python_class(
+        self, node: ast.ClassDef, content: str, *, path: Optional[str] = None
+    ) -> CodeSymbol:
         """Extract detailed class information from AST node."""
         docstring = ast.get_docstring(node)
         decorators = [self._get_decorator_name(d) for d in node.decorator_list]
@@ -525,7 +595,8 @@ class ASTAnalyzer:
             docstring=docstring,
             signature=signature,
             decorators=decorators,
-            complexity=methods
+            complexity=methods,
+            path=path or node.name,
         )
     
     def _get_decorator_name(self, node: ast.expr) -> str:
@@ -592,13 +663,21 @@ class ASTAnalyzer:
                     break
             return None
 
-        def walk(node, parent_class=None):
+        def walk(node, parent_class=None, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
 
             # Function definitions
             if node_type == "function_definition":
                 name_node = node.child_by_field_name("name")
                 func_name = node_text(name_node) if name_node else ""
+                prefix = ([parent_class] if parent_class else []) + func_stack
+                func_path = ".".join(prefix + ([func_name] if func_name else []))
+                parent = None
+                if func_stack:
+                    parent = func_stack[-1]
+                elif parent_class:
+                    parent = parent_class
 
                 # Get parameters
                 params_node = node.child_by_field_name("parameters")
@@ -626,17 +705,25 @@ class ASTAnalyzer:
                 body = node.child_by_field_name("body")
                 docstring = extract_docstring(body)
 
-                symbols.append(CodeSymbol(
-                    name=func_name,
-                    kind="method" if parent_class else "function",
-                    start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1,
-                    parent=parent_class,
-                    path=f"{parent_class}.{func_name}" if parent_class else func_name,
-                    signature=signature,
-                    decorators=decorators,
-                    docstring=docstring,
-                ))
+                symbols.append(
+                    CodeSymbol(
+                        name=func_name,
+                        kind="method" if parent_class else "function",
+                        start_line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        parent=parent,
+                        path=func_path or func_name,
+                        signature=signature,
+                        decorators=decorators,
+                        docstring=docstring,
+                    )
+                )
+
+                # Walk function body with updated stack
+                new_stack = func_stack + ([func_name] if func_name else [])
+                for child in node.children:
+                    walk(child, parent_class=parent_class, func_stack=new_stack)
+                return
 
             # Class definitions
             elif node_type == "class_definition":
@@ -657,18 +744,21 @@ class ASTAnalyzer:
                 body = node.child_by_field_name("body")
                 docstring = extract_docstring(body)
 
-                symbols.append(CodeSymbol(
-                    name=class_name,
-                    kind="class",
-                    start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1,
-                    signature=signature,
-                    docstring=docstring,
-                ))
+                symbols.append(
+                    CodeSymbol(
+                        name=class_name,
+                        kind="class",
+                        start_line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        signature=signature,
+                        docstring=docstring,
+                        path=class_name,
+                    )
+                )
 
                 # Recurse into class body
                 for child in node.children:
-                    walk(child, class_name)
+                    walk(child, class_name, func_stack=func_stack)
                 return
 
             # Import statements
@@ -725,16 +815,20 @@ class ASTAnalyzer:
                         if attr:
                             callee = node_text(attr)
                     if callee:
-                        calls.append(CallReference(
-                            caller="",
-                            callee=callee,
-                            line=node.start_point[0] + 1,
-                            context="call",
-                        ))
+                        caller_parts = ([parent_class] if parent_class else []) + func_stack
+                        caller = ".".join(caller_parts) if caller_parts else ""
+                        calls.append(
+                            CallReference(
+                                caller=caller,
+                                callee=callee,
+                                line=node.start_point[0] + 1,
+                                context="call",
+                            )
+                        )
 
             # Recurse
             for child in node.children:
-                walk(child, parent_class)
+                walk(child, parent_class, func_stack=func_stack)
 
         walk(root)
 
@@ -766,57 +860,71 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
+
         def node_text(n):
             return content.encode("utf-8")[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
-        
-        def walk(node, parent_class=None):
+
+        def walk(node, parent_class=None, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
-            
+
             # Classes
             if node_type == "class_declaration":
                 name_node = node.child_by_field_name("name")
                 class_name = node_text(name_node) if name_node else ""
-                
+
                 symbols.append(CodeSymbol(
                     name=class_name,
                     kind="class",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1
                 ))
-                
+
                 # Walk class body
                 for child in node.children:
-                    walk(child, parent_class=class_name)
+                    walk(child, parent_class=class_name, func_stack=func_stack)
                 return
-            
+
             # Functions
             if node_type in ("function_declaration", "arrow_function", "function_expression"):
                 name_node = node.child_by_field_name("name")
                 func_name = node_text(name_node) if name_node else "<anonymous>"
-                
+                func_path = f"{parent_class}.{func_name}" if parent_class else func_name
+
                 symbols.append(CodeSymbol(
                     name=func_name,
                     kind="function",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
-                    parent=parent_class
+                    parent=parent_class,
+                    path=func_path
                 ))
-            
+                # Walk body with updated stack (skip anonymous)
+                if func_name and func_name != "<anonymous>":
+                    for child in node.children:
+                        walk(child, parent_class=parent_class, func_stack=func_stack + [func_path])
+                    return
+
             # Methods
             if node_type == "method_definition":
                 name_node = node.child_by_field_name("name")
                 method_name = node_text(name_node) if name_node else ""
-                
+                method_path = f"{parent_class}.{method_name}" if parent_class else method_name
+
                 symbols.append(CodeSymbol(
                     name=method_name,
                     kind="method",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                     parent=parent_class,
-                    path=f"{parent_class}.{method_name}" if parent_class else method_name
+                    path=method_path
                 ))
-            
+                # Walk body with updated stack
+                if method_path:
+                    for child in node.children:
+                        walk(child, parent_class=parent_class, func_stack=func_stack + [method_path])
+                    return
+
             # Imports
             if node_type == "import_statement":
                 source = node.child_by_field_name("source")
@@ -828,11 +936,32 @@ class ASTAnalyzer:
                         line=node.start_point[0] + 1,
                         is_from=True
                     ))
-            
+
+            # Call expressions - now with caller context
+            if node_type == "call_expression":
+                func = node.child_by_field_name("function")
+                if func:
+                    # Extract function name from AST node types
+                    callee = ""
+                    if func.type == "identifier":
+                        callee = node_text(func)
+                    elif func.type == "member_expression":
+                        prop = func.child_by_field_name("property")
+                        if prop and prop.type == "property_identifier":
+                            callee = node_text(prop)
+                    if callee:
+                        caller = func_stack[-1] if func_stack else ""
+                        calls.append(CallReference(
+                            caller=caller,
+                            callee=callee,
+                            line=node.start_point[0] + 1,
+                            context="call"
+                        ))
+
             # Recurse
             for child in node.children:
-                walk(child, parent_class)
-        
+                walk(child, parent_class=parent_class, func_stack=func_stack)
+
         walk(root)
         
         return {
@@ -860,13 +989,14 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
+
         def node_text(n):
             return content.encode("utf-8")[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
-        
-        def walk(node, parent_type=None):
+
+        def walk(node, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
-            
+
             # Functions
             if node_type == "function_declaration":
                 name_node = node.child_by_field_name("name")
@@ -875,9 +1005,15 @@ class ASTAnalyzer:
                     name=func_name,
                     kind="function",
                     start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1
+                    end_line=node.end_point[0] + 1,
+                    path=func_name
                 ))
-            
+                # Walk body with updated stack
+                if func_name:
+                    for child in node.children:
+                        walk(child, func_stack=func_stack + [func_name])
+                    return
+
             # Methods
             elif node_type == "method_declaration":
                 name_node = node.child_by_field_name("name")
@@ -889,15 +1025,21 @@ class ASTAnalyzer:
                         if child.type == "type_identifier":
                             receiver_type = node_text(child)
                             break
+                func_path = f"{receiver_type}.{method_name}" if receiver_type else method_name
                 symbols.append(CodeSymbol(
                     name=method_name,
                     kind="method",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                     parent=receiver_type,
-                    path=f"{receiver_type}.{method_name}" if receiver_type else method_name
+                    path=func_path
                 ))
-            
+                # Walk body with updated stack
+                if func_path:
+                    for child in node.children:
+                        walk(child, func_stack=func_stack + [func_path])
+                    return
+
             # Types (struct, interface)
             elif node_type == "type_declaration":
                 for child in node.children:
@@ -914,7 +1056,7 @@ class ASTAnalyzer:
                             start_line=child.start_point[0] + 1,
                             end_line=child.end_point[0] + 1
                         ))
-            
+
             # Imports
             elif node_type == "import_declaration":
                 for child in node.children:
@@ -940,24 +1082,25 @@ class ASTAnalyzer:
                                         line=spec.start_point[0] + 1,
                                         is_from=True
                                     ))
-            
-            # Calls
+
+            # Calls - now with caller context
             elif node_type == "call_expression":
                 func = node.child_by_field_name("function")
                 if func:
                     name = node_text(func)
                     base = name.split(".")[-1] if "." in name else name
                     if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", base):
+                        caller = ".".join(func_stack) if func_stack else ""
                         calls.append(CallReference(
-                            caller="",
+                            caller=caller,
                             callee=base,
                             line=node.start_point[0] + 1,
                             context="call"
                         ))
-            
+
             for child in node.children:
-                walk(child, node_type)
-        
+                walk(child, func_stack=func_stack)
+
         walk(root)
         
         return {
@@ -985,25 +1128,33 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
+
         def node_text(n):
             return content.encode("utf-8")[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
-        
-        def walk(node, parent_struct=None):
+
+        def walk(node, parent_struct=None, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
-            
+
             # Functions
             if node_type == "function_item":
                 name_node = node.child_by_field_name("name")
                 func_name = node_text(name_node) if name_node else ""
+                func_path = f"{parent_struct}.{func_name}" if parent_struct else func_name
                 symbols.append(CodeSymbol(
                     name=func_name,
                     kind="function",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
-                    parent=parent_struct
+                    parent=parent_struct,
+                    path=func_path
                 ))
-            
+                # Walk body with updated stack
+                if func_path:
+                    for child in node.children:
+                        walk(child, parent_struct=parent_struct, func_stack=func_stack + [func_path])
+                    return
+
             # Structs
             elif node_type == "struct_item":
                 name_node = node.child_by_field_name("name")
@@ -1014,7 +1165,7 @@ class ASTAnalyzer:
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1
                 ))
-            
+
             # Enums
             elif node_type == "enum_item":
                 name_node = node.child_by_field_name("name")
@@ -1025,7 +1176,7 @@ class ASTAnalyzer:
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1
                 ))
-            
+
             # Traits
             elif node_type == "trait_item":
                 name_node = node.child_by_field_name("name")
@@ -1036,15 +1187,15 @@ class ASTAnalyzer:
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1
                 ))
-            
+
             # Impl blocks
             elif node_type == "impl_item":
                 type_node = node.child_by_field_name("type")
                 impl_type = node_text(type_node).split("<")[0].strip() if type_node else ""
                 for child in node.children:
-                    walk(child, impl_type)
+                    walk(child, parent_struct=impl_type, func_stack=func_stack)
                 return
-            
+
             # Use statements
             elif node_type == "use_declaration":
                 arg = node.child_by_field_name("argument")
@@ -1055,24 +1206,25 @@ class ASTAnalyzer:
                         line=node.start_point[0] + 1,
                         is_from=True
                     ))
-            
-            # Calls and macros
+
+            # Calls and macros - now with caller context
             elif node_type in ("call_expression", "macro_invocation"):
                 func = node.child_by_field_name("function") or node.child_by_field_name("macro")
                 if func:
                     name = node_text(func)
                     base = name.split("::")[-1].rstrip("!") if "::" in name else name.rstrip("!")
                     if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", base):
+                        caller = func_stack[-1] if func_stack else ""
                         calls.append(CallReference(
-                            caller="",
+                            caller=caller,
                             callee=base,
                             line=node.start_point[0] + 1,
                             context="call"
                         ))
-            
+
             for child in node.children:
-                walk(child, parent_struct)
-        
+                walk(child, parent_struct=parent_struct, func_stack=func_stack)
+
         walk(root)
         
         return {
@@ -1100,13 +1252,14 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
+
         def node_text(n):
             return content.encode("utf-8")[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
-        
-        def walk(node, parent_class=None):
+
+        def walk(node, parent_class=None, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
-            
+
             # Classes
             if node_type == "class_declaration":
                 name_node = node.child_by_field_name("name")
@@ -1118,9 +1271,9 @@ class ASTAnalyzer:
                     end_line=node.end_point[0] + 1
                 ))
                 for child in node.children:
-                    walk(child, class_name)
+                    walk(child, parent_class=class_name, func_stack=func_stack)
                 return
-            
+
             # Interfaces
             elif node_type == "interface_declaration":
                 name_node = node.child_by_field_name("name")
@@ -1132,34 +1285,47 @@ class ASTAnalyzer:
                     end_line=node.end_point[0] + 1
                 ))
                 for child in node.children:
-                    walk(child, iface_name)
+                    walk(child, parent_class=iface_name, func_stack=func_stack)
                 return
-            
+
             # Methods
             elif node_type == "method_declaration":
                 name_node = node.child_by_field_name("name")
                 method_name = node_text(name_node) if name_node else ""
+                method_path = f"{parent_class}.{method_name}" if parent_class else method_name
                 symbols.append(CodeSymbol(
                     name=method_name,
                     kind="method",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                     parent=parent_class,
-                    path=f"{parent_class}.{method_name}" if parent_class else method_name
+                    path=method_path
                 ))
-            
+                # Walk body with updated stack
+                if method_path:
+                    for child in node.children:
+                        walk(child, parent_class=parent_class, func_stack=func_stack + [method_path])
+                    return
+
             # Constructors
             elif node_type == "constructor_declaration":
                 name_node = node.child_by_field_name("name")
                 ctor_name = node_text(name_node) if name_node else ""
+                ctor_path = f"{parent_class}.{ctor_name}" if parent_class else ctor_name
                 symbols.append(CodeSymbol(
                     name=ctor_name,
                     kind="constructor",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
-                    parent=parent_class
+                    parent=parent_class,
+                    path=ctor_path
                 ))
-            
+                # Walk body with updated stack
+                if ctor_path:
+                    for child in node.children:
+                        walk(child, parent_class=parent_class, func_stack=func_stack + [ctor_path])
+                    return
+
             # Imports
             elif node_type == "import_declaration":
                 for child in node.children:
@@ -1171,21 +1337,22 @@ class ASTAnalyzer:
                             is_from=True
                         ))
                         break
-            
-            # Method calls
+
+            # Method calls - now with caller context
             elif node_type == "method_invocation":
                 name_node = node.child_by_field_name("name")
                 if name_node:
+                    caller = func_stack[-1] if func_stack else ""
                     calls.append(CallReference(
-                        caller="",
+                        caller=caller,
                         callee=node_text(name_node),
                         line=node.start_point[0] + 1,
                         context="call"
                     ))
-            
+
             for child in node.children:
-                walk(child, parent_class)
-        
+                walk(child, parent_class=parent_class, func_stack=func_stack)
+
         walk(root)
         
         return {
@@ -1213,13 +1380,14 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
+
         def node_text(n):
             return content.encode("utf-8")[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
-        
-        def walk(node, parent_class=None):
+
+        def walk(node, parent_class=None, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
-            
+
             # Functions
             if node_type == "function_definition":
                 decl = node.child_by_field_name("declarator")
@@ -1235,14 +1403,20 @@ class ASTAnalyzer:
                                     func_name = node_text(subchild)
                                     break
                 if func_name:
+                    func_path = f"{parent_class}::{func_name}" if parent_class else func_name
                     symbols.append(CodeSymbol(
                         name=func_name,
                         kind="function",
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
-                        parent=parent_class
+                        parent=parent_class,
+                        path=func_path
                     ))
-            
+                    # Walk body with updated stack
+                    for child in node.children:
+                        walk(child, parent_class=parent_class, func_stack=func_stack + [func_path])
+                    return
+
             # Classes (C++)
             elif node_type == "class_specifier":
                 name_node = node.child_by_field_name("name")
@@ -1255,9 +1429,9 @@ class ASTAnalyzer:
                         end_line=node.end_point[0] + 1
                     ))
                     for child in node.children:
-                        walk(child, class_name)
+                        walk(child, parent_class=class_name, func_stack=func_stack)
                     return
-            
+
             # Structs
             elif node_type == "struct_specifier":
                 name_node = node.child_by_field_name("name")
@@ -1269,7 +1443,7 @@ class ASTAnalyzer:
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1
                     ))
-            
+
             # Includes
             elif node_type == "preproc_include":
                 path_node = node.child_by_field_name("path")
@@ -1281,25 +1455,35 @@ class ASTAnalyzer:
                         line=node.start_point[0] + 1,
                         is_from=False
                     ))
-            
-            # Calls
+
+            # Calls - now with caller context
             elif node_type == "call_expression":
                 func = node.child_by_field_name("function")
                 if func:
-                    name = node_text(func)
-                    # Handle namespaced calls like std::cout
-                    base = name.split("::")[-1] if "::" in name else name
-                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", base):
+                    # Extract callee from AST - handle identifier or qualified_identifier
+                    callee = ""
+                    if func.type == "identifier":
+                        callee = node_text(func)
+                    elif func.type == "qualified_identifier":
+                        # Get last component: std::vector -> vector
+                        callee = node_text(func).split("::")[-1]
+                    elif func.type == "field_expression":
+                        # obj.method() -> method
+                        field = func.child_by_field_name("field")
+                        if field and field.type == "field_identifier":
+                            callee = node_text(field)
+                    if callee:
+                        caller = func_stack[-1] if func_stack else ""
                         calls.append(CallReference(
-                            caller="",
-                            callee=base,
+                            caller=caller,
+                            callee=callee,
                             line=node.start_point[0] + 1,
                             context="call"
                         ))
-            
+
             for child in node.children:
-                walk(child, parent_class)
-        
+                walk(child, parent_class=parent_class, func_stack=func_stack)
+
         walk(root)
         
         return {
@@ -1327,13 +1511,14 @@ class ASTAnalyzer:
         symbols = []
         imports = []
         calls = []
-        
+
         def node_text(n):
             return content.encode("utf-8")[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
-        
-        def walk(node, parent_class=None):
+
+        def walk(node, parent_class=None, func_stack=None):
+            func_stack = func_stack or []
             node_type = node.type
-            
+
             # Classes
             if node_type == "class":
                 name_node = node.child_by_field_name("name")
@@ -1345,9 +1530,9 @@ class ASTAnalyzer:
                     end_line=node.end_point[0] + 1
                 ))
                 for child in node.children:
-                    walk(child, class_name)
+                    walk(child, parent_class=class_name, func_stack=func_stack)
                 return
-            
+
             # Modules
             elif node_type == "module":
                 name_node = node.child_by_field_name("name")
@@ -1359,22 +1544,28 @@ class ASTAnalyzer:
                     end_line=node.end_point[0] + 1
                 ))
                 for child in node.children:
-                    walk(child, module_name)
+                    walk(child, parent_class=module_name, func_stack=func_stack)
                 return
-            
+
             # Methods
             elif node_type == "method":
                 name_node = node.child_by_field_name("name")
                 method_name = node_text(name_node) if name_node else ""
+                method_path = f"{parent_class}.{method_name}" if parent_class else method_name
                 symbols.append(CodeSymbol(
                     name=method_name,
                     kind="method",
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                     parent=parent_class,
-                    path=f"{parent_class}.{method_name}" if parent_class else method_name
+                    path=method_path
                 ))
-            
+                # Walk body with updated stack
+                if method_path:
+                    for child in node.children:
+                        walk(child, parent_class=parent_class, func_stack=func_stack + [method_path])
+                    return
+
             # Require statements
             elif node_type == "call":
                 method = node.child_by_field_name("method")
@@ -1394,28 +1585,30 @@ class ASTAnalyzer:
                                     ))
                                     break
                     else:
-                        # Regular method call
+                        # Regular method call - now with caller context
+                        caller = func_stack[-1] if func_stack else ""
                         calls.append(CallReference(
-                            caller="",
+                            caller=caller,
                             callee=method_name,
                             line=node.start_point[0] + 1,
                             context="call"
                         ))
-            
-            # Method calls (method_call node type)
+
+            # Method calls (method_call node type) - now with caller context
             elif node_type == "method_call":
                 method = node.child_by_field_name("method")
                 if method:
+                    caller = func_stack[-1] if func_stack else ""
                     calls.append(CallReference(
-                        caller="",
+                        caller=caller,
                         callee=node_text(method),
                         line=node.start_point[0] + 1,
                         context="call"
                     ))
-            
+
             for child in node.children:
-                walk(child, parent_class)
-        
+                walk(child, parent_class=parent_class, func_stack=func_stack)
+
         walk(root)
         
         return {
@@ -1615,12 +1808,340 @@ _analyzer: Optional[ASTAnalyzer] = None
 def get_ast_analyzer(reset: bool = False) -> ASTAnalyzer:
     """Get or create global AST analyzer instance."""
     global _analyzer
-    
+
     if _analyzer is None or reset:
         use_ts = os.environ.get("USE_TREE_SITTER", "1").lower() in {"1", "true", "yes", "on"}
         _analyzer = ASTAnalyzer(use_tree_sitter=use_ts)
-    
+
     return _analyzer
+
+
+# ---------------------------------------------------------------------------
+# Language-Aware Builtin Detection
+# ---------------------------------------------------------------------------
+# Builtins are detected using tree-sitter's query system directly.
+# This is the most scalable approach - we parse code and check if nodes
+# get @*.builtin captures. Works uniformly for ALL languages.
+
+# Cache for query objects and parsers per language
+_TS_QUERY_CACHE: Dict[str, Tuple[Any, Any, Any]] = {}  # lang -> (parser, query, lang_obj)
+
+
+def _get_ts_query_for_language(language: str) -> Optional[Tuple[Any, Any, Any]]:
+    """Get tree-sitter parser and highlights query for a language.
+
+    Returns (parser, query, lang_obj) tuple or None if unavailable.
+    """
+    if not _TS_AVAILABLE:
+        return None
+
+    lang = language.lower().strip()
+
+    # Normalize aliases
+    if lang in ("js", "jsx"):
+        lang = "javascript"
+    elif lang in ("ts", "tsx"):
+        lang = "typescript"
+    elif lang in ("c++", "cxx", "cc"):
+        lang = "cpp"
+    elif lang in ("c#", "cs"):
+        lang = "csharp"
+
+    # Check cache
+    if lang in _TS_QUERY_CACHE:
+        return _TS_QUERY_CACHE[lang]
+
+    # Get language object from already-loaded _TS_LANGUAGES
+    if lang not in _TS_LANGUAGES:
+        _TS_QUERY_CACHE[lang] = None
+        return None
+
+    lang_obj = _TS_LANGUAGES[lang]
+
+    # Find the module and its highlights.scm
+    lang_to_module = {
+        "python": "tree_sitter_python",
+        "javascript": "tree_sitter_javascript",
+        "typescript": "tree_sitter_typescript",
+        "go": "tree_sitter_go",
+        "rust": "tree_sitter_rust",
+        "java": "tree_sitter_java",
+        "c": "tree_sitter_c",
+        "cpp": "tree_sitter_cpp",
+        "ruby": "tree_sitter_ruby",
+        "c_sharp": "tree_sitter_c_sharp",
+        "csharp": "tree_sitter_c_sharp",
+        "bash": "tree_sitter_bash",
+        "shell": "tree_sitter_bash",
+        "sh": "tree_sitter_bash",
+        "json": "tree_sitter_json",
+        "yaml": "tree_sitter_yaml",
+        "html": "tree_sitter_html",
+        "css": "tree_sitter_css",
+        "markdown": "tree_sitter_markdown",
+    }
+
+    module_name = lang_to_module.get(lang)
+    if not module_name:
+        _TS_QUERY_CACHE[lang] = None
+        return None
+
+    try:
+        import importlib
+        from tree_sitter import Query, QueryCursor
+
+        lang_module = importlib.import_module(module_name)
+        mod_path = os.path.dirname(lang_module.__file__)
+        highlights_path = os.path.join(mod_path, 'queries', 'highlights.scm')
+
+        if not os.path.exists(highlights_path):
+            _TS_QUERY_CACHE[lang] = None
+            return None
+
+        with open(highlights_path) as f:
+            query_text = f.read()
+
+        parser = Parser(lang_obj)
+        query = Query(lang_obj, query_text)
+
+        result = (parser, query, lang_obj)
+        _TS_QUERY_CACHE[lang] = result
+        return result
+    except Exception as e:
+        logger.debug(f"Failed to load tree-sitter query for {lang}: {e}")
+        _TS_QUERY_CACHE[lang] = None
+        return None
+
+
+# Cache for parsers without queries
+_TS_PARSER_CACHE: Dict[str, Optional["Parser"]] = {}
+
+
+def _get_parser_for_language(lang: str) -> Optional["Parser"]:
+    """Get just a parser for a language (for tree-walking without queries)."""
+    if lang in _TS_PARSER_CACHE:
+        return _TS_PARSER_CACHE[lang]
+
+    try:
+        from tree_sitter import Parser, Language
+
+        # Map language to module
+        lang_modules = {
+            "python": "tree_sitter_python",
+            "javascript": "tree_sitter_javascript",
+            "typescript": "tree_sitter_typescript",
+            "go": "tree_sitter_go",
+            "rust": "tree_sitter_rust",
+            "java": "tree_sitter_java",
+            "c": "tree_sitter_c",
+            "cpp": "tree_sitter_cpp",
+            "ruby": "tree_sitter_ruby",
+            "csharp": "tree_sitter_c_sharp",
+            "c_sharp": "tree_sitter_c_sharp",
+            "bash": "tree_sitter_bash",
+        }
+
+        mod_name = lang_modules.get(lang)
+        if not mod_name:
+            _TS_PARSER_CACHE[lang] = None
+            return None
+
+        mod = importlib.import_module(mod_name)
+
+        # Get language object
+        if lang in ("typescript",):
+            lang_obj = Language(mod.language_typescript())
+        elif lang in ("csharp", "c_sharp"):
+            lang_func = getattr(mod, "language_c_sharp", None) or getattr(mod, "language", None)
+            if lang_func:
+                lang_obj = Language(lang_func())
+            else:
+                _TS_PARSER_CACHE[lang] = None
+                return None
+        else:
+            lang_obj = Language(mod.language())
+
+        parser = Parser(lang_obj)
+        _TS_PARSER_CACHE[lang] = parser
+        return parser
+    except Exception as e:
+        logger.debug(f"Failed to load parser for {lang}: {e}")
+        _TS_PARSER_CACHE[lang] = None
+        return None
+
+
+def is_builtin_via_query(name: str, language: str) -> bool:
+    """Check if a symbol is a builtin using tree-sitter's query system.
+
+    This is the scalable approach - we create a minimal code snippet,
+    parse it, and check if the identifier gets a @*.builtin capture.
+    Works for ALL languages uniformly.
+    """
+    # Normalize language name
+    lang = language.lower().strip()
+    if lang in ("js", "jsx"):
+        lang = "javascript"
+    elif lang in ("ts", "tsx"):
+        lang = "typescript"
+    elif lang in ("c++", "cxx", "cc"):
+        lang = "cpp"
+    elif lang in ("c#", "cs"):
+        lang = "csharp"
+    elif lang == "c_sharp":
+        lang = "csharp"
+
+    # Try to get query-based detection (preferred)
+    ts_info = _get_ts_query_for_language(language)
+    parser = None
+    query = None
+    if ts_info is not None:
+        parser, query, _ = ts_info
+    else:
+        # Fallback: load just the parser without query for tree-walking
+        parser = _get_parser_for_language(lang)
+
+    # Generate minimal code snippets containing the identifier in multiple contexts
+    # We try multiple syntactic positions to catch builtins used as functions, types, etc.
+    if lang in ("python",):
+        # Python: builtins as function calls
+        code = f"{name}()".encode()
+    elif lang in ("javascript", "jsx"):
+        # JavaScript: builtins can be objects (console, document, window) or constructors
+        code = f"{name}; {name}()".encode()
+    elif lang in ("typescript", "tsx"):
+        # TypeScript: predefined_type captures for string, number, boolean, etc.
+        # Also try as regular identifier
+        code = f"let x: {name}; {name}()".encode()
+    elif lang == "go":
+        code = f"package main\nfunc f() {{ {name}() }}".encode()
+    elif lang == "rust":
+        # Rust: check both function calls and types
+        code = f"fn f() {{ let _: {name} = {name}(); }}".encode()
+    elif lang == "java":
+        # Java: primitive types in declaration, also as method call
+        code = f"class X {{ {name} x; void f() {{ {name}(); }} }}".encode()
+    elif lang in ("c", "cpp"):
+        # C/C++: primitive types in declarations
+        code = f"{name} x; void f() {{ {name}(); }}".encode()
+    elif lang == "csharp":
+        # C#: primitive types and method calls
+        code = f"class X {{ {name} x; void f() {{ {name}(); }} }}".encode()
+    elif lang == "ruby":
+        # Ruby: method calls and keywords
+        code = f"{name}; {name}()".encode()
+    elif lang in ("bash", "shell", "sh"):
+        # Bash: command names
+        code = f"{name}".encode()
+    else:
+        code = f"{name}()".encode()
+
+    # Node types that indicate language primitives/builtins at the grammar level
+    builtin_node_types = frozenset({
+        'primitive_type',           # C, C++, Java: int, char, void, float, double
+        'predefined_type',          # TypeScript: string, number, boolean
+        'sized_type_specifier',     # C: short, long, unsigned
+        'auto',                     # C++: auto keyword
+        'nullptr',                  # C++: nullptr literal
+        'null',                     # C++/Java: null literal
+        'placeholder_type_specifier',  # C++: auto/decltype
+        'true', 'false',            # Boolean literals
+        'nil',                      # Ruby/Go: nil literal
+        'self',                     # Rust/Python/Ruby: self reference
+    })
+
+    if parser is None:
+        return False
+
+    try:
+        tree = parser.parse(code)
+
+        # Strategy 1: Walk tree directly for builtin node types
+        # This works even if highlights.scm doesn't capture them (like C++, C#)
+        def find_builtin_node(node):
+            if node.type in builtin_node_types:
+                node_text = code[node.start_byte:node.end_byte].decode()
+                if node_text == name:
+                    return True
+            for child in node.children:
+                if find_builtin_node(child):
+                    return True
+            return False
+
+        if find_builtin_node(tree.root_node):
+            return True
+
+        # Strategy 2: Check query captures for @*.builtin (if query available)
+        if query is not None:
+            from tree_sitter import QueryCursor
+            cursor = QueryCursor(query)
+            for _, captures_dict in cursor.matches(tree.root_node):
+                for capture_name, nodes in captures_dict.items():
+                    if 'builtin' not in capture_name:
+                        continue
+                    for node in nodes:
+                        node_text = code[node.start_byte:node.end_byte].decode()
+                        if node_text == name:
+                            return True
+        return False
+    except Exception as e:
+        logger.debug(f"Query failed for {name} in {language}: {e}")
+        return False
+
+
+def is_builtin(name: str, language: str) -> bool:
+    """Check if a symbol name is a builtin for the given language.
+
+    Uses tree-sitter's query system to check if the symbol gets a @*.builtin
+    capture. This works uniformly for ALL languages.
+
+    Args:
+        name: Symbol name (may be qualified like "os.path.join")
+        language: Programming language (e.g., "python", "javascript")
+
+    Returns:
+        True if the symbol is a language builtin
+    """
+    # Check base name (handles qualified names like "os.path.join" -> "join")
+    base_name = name.split(".")[-1] if "." in name else name
+    base_name = base_name.split("::")[-1] if "::" in base_name else base_name
+
+    return is_builtin_via_query(base_name, language)
+
+
+def is_stdlib(module: str, language: str) -> bool:
+    """Check if a module is part of the language's standard library.
+
+    NOTE: No hardcoded stdlib lists - we rely on symbol resolution.
+    If a module can't be resolved in the codebase, it's treated as external.
+    This function exists for API compatibility but always returns False.
+
+    Args:
+        module: Module name (may be qualified like "os.path")
+        language: Programming language
+
+    Returns:
+        Always False - stdlib detection removed in favor of tree-sitter queries
+    """
+    # No hardcoded stdlib lists - unresolved imports are <external>
+    return False
+
+
+def categorize_symbol(name: str, language: str) -> str:
+    """Categorize a symbol as builtin or external.
+
+    Uses tree-sitter query system for builtin detection.
+    Everything else is external (resolved by symbol resolver at graph time).
+
+    Args:
+        name: Symbol or module name
+        language: Programming language
+
+    Returns:
+        Category string: "<builtin>" or "<external>"
+    """
+    if is_builtin(name, language):
+        return "<builtin>"
+    return "<external>"
 
 
 # Convenience functions
@@ -1638,13 +2159,14 @@ def chunk_code_semantically(
 ) -> List[Dict[str, Any]]:
     """
     Chunk code semantically, returning simplified dicts for indexing.
-    
+
     Returns list of dicts compatible with existing chunking interface.
+    Now includes chunk-specific calls and imports for accurate callees queries.
     """
     analyzer = get_ast_analyzer()
     contexts = analyzer.chunk_semantic(content, language, max_lines, overlap)
-    
-    # Convert to simple dict format
+
+    # Convert to simple dict format, preserving calls/imports for graph edges
     return [
         {
             "text": ctx.chunk_text,
@@ -1652,7 +2174,10 @@ def chunk_code_semantically(
             "end": ctx.end_line,
             "is_semantic": ctx.is_semantic_unit,
             "symbols": [s.name for s in ctx.symbols],
-            "symbol_types": [s.kind for s in ctx.symbols]
+            "symbol_types": [s.kind for s in ctx.symbols],
+            # Chunk-specific calls and imports (filtered by line range in analyzer)
+            "calls": [c.callee for c in ctx.calls],
+            "imports": [i.module for i in ctx.imports],
         }
         for ctx in contexts
     ]

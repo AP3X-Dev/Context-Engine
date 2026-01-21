@@ -64,6 +64,7 @@ Replace `localhost` with server IP/hostname for remote setups.
 | Kiro | SSE | Uses mcp-remote bridge |
 | Qodo | RMCP | Direct HTTP endpoints |
 | OpenAI Codex | RMCP | TOML config |
+| OpenCode | RMCP | JSON config at `~/.config/opencode/opencode.json` |
 | Augment | SSE | Simple JSON configs |
 | AmpCode | SSE | Simple URL for SSE endpoints |
 | Claude Code CLI | SSE / HTTP (RMCP) | Simple JSON configs via .mcp.json |
@@ -214,6 +215,62 @@ url = "http://127.0.0.1:8002/mcp"
 [mcp_servers.qdrant_indexer_http]
 url = "http://127.0.0.1:8003/mcp"
 ```
+
+### OpenCode
+
+OpenCode is a CLI-based AI coding assistant that supports MCP servers. Configuration file is at `~/.config/opencode/opencode.json`.
+
+**Option 1: MCP Bridge** (recommended - unified server with workspace awareness):
+
+```json
+{
+  "mcp": {
+    "context-engine": {
+      "command": [
+        "npx",
+        "-y",
+        "@context-engine-bridge/context-engine-mcp-bridge",
+        "mcp-serve",
+        "--workspace",
+        "/path/to/your/project",
+        "--indexer-url",
+        "http://localhost:8003/mcp",
+        "--memory-url",
+        "http://localhost:8002/mcp"
+      ],
+      "environment": {
+        "COLLECTION_NAME": "your-collection-name"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+**Option 2: Direct HTTP endpoints** (simpler, no bridge):
+
+```json
+{
+  "mcp": {
+    "memory": {
+      "url": "http://localhost:8002/mcp",
+      "enabled": true
+    },
+    "qdrant-indexer": {
+      "url": "http://localhost:8003/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+**Notes:**
+- Replace `/path/to/your/project` with your actual workspace path
+- Replace `your-collection-name` with your Qdrant collection name (e.g., `codebase` or use `qdrant_list` to find it)
+- OpenCode uses `"mcp"` as the top-level key, NOT `"mcpServers"`
+- The `"command"` field must be an array of strings, not a single string
+- Use `"environment"` for environment variables, NOT `"env"`
+- Include `"enabled": true` to activate each server
 
 ---
 

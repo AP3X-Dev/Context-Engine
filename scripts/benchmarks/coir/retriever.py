@@ -14,6 +14,11 @@ for standardized evaluation.
 - RERANKER_MODEL: Reranker model path/name
 - DENSE_DIM / LEXICAL_DIM: Vector dimensions
 
+**Memory tuning (for unified memory systems like M1/M2/M3):**
+- COIR_PARALLEL_BATCH: Parallel query batch size (default: 8 on Apple Silicon, 32 otherwise)
+- COIR_RERANK_TOP_N: Rerank candidates (default: 50 on Apple Silicon, 100 otherwise)
+- COIR_GC_INTERVAL: Run GC every N batches (default: 1, 0 to disable)
+
 CoIR expects retrievers to implement:
 - encode_queries(queries: List[str]) -> np.ndarray
 - encode_corpus(corpus: List[Dict]) -> np.ndarray
@@ -24,13 +29,37 @@ We implement the search() method to use our full hybrid+rerank pipeline.
 from __future__ import annotations
 
 import asyncio
+import gc
+import logging
 import os
+import platform
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+
+
+logger = logging.getLogger(__name__)
+def _is_apple_silicon() -> bool:
+    """Detect Apple Silicon (unified memory) systems."""
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def _get_default_parallel_batch() -> int:
+    """Get default parallel batch size based on system."""
+    if _is_apple_silicon():
+        return 8  # Conservative for unified memory
+    return 32
+
+
+def _get_default_rerank_candidates() -> int:
+    """Get default rerank candidate count based on system."""
+    if _is_apple_silicon():
+        return 50  # Reduce memory pressure
+    return 100
 
 # Shared utilities
 from scripts.benchmarks.qdrant_utils import probe_pseudo_tags, verify_config_compatibility, get_qdrant_client
@@ -58,6 +87,9 @@ class ContextEngineRetriever:
         use_hybrid_search: bool = True,
         rerank_enabled: bool = True,
         batch_size: int = 32,
+        mode: str = "hybrid",
+        task_name: str = "",
+        skip_index: bool = False,
         **kwargs,
     ):
         """
@@ -68,6 +100,9 @@ class ContextEngineRetriever:
             use_hybrid_search: Use our hybrid search instead of pure embedding
             rerank_enabled: Enable reranker when using hybrid search
             batch_size: Batch size for embedding
+            mode: Search mode ('hybrid', 'dense', or 'lexical')
+            task_name: Task name for language detection (e.g., 'codesearchnet-go')
+            skip_index: Skip indexing (use existing collection data)
         
         Note: Collection naming is automatic based on corpus fingerprint.
         Each unique corpus+config gets its own named collection for reuse.
@@ -76,6 +111,9 @@ class ContextEngineRetriever:
         self.use_hybrid_search = use_hybrid_search
         self.rerank_enabled = rerank_enabled
         self.batch_size = batch_size
+        self.mode = mode
+        self.task_name = task_name
+        self.skip_index = skip_index
         self._model = None
         self._corpus_index = {}  # doc_id -> embedding
         self._corpus_doc_ids: set = set()  # Track which doc IDs are in current corpus
@@ -91,14 +129,32 @@ class ContextEngineRetriever:
         self._corpus_doc_ids = set()
 
     def _get_model(self):
-        """Lazy load embedding model."""
+        """Lazy load embedding model with optional GPU acceleration."""
         if self._model is None:
+            # Check if GPU mode is enabled via env
+            use_gpu = os.environ.get("COIR_USE_GPU", "").lower() in ("1", "true", "yes")
+            providers = None
+            if use_gpu:
+                # Parse providers from env (set by runner)
+                providers_str = os.environ.get("ONNX_PROVIDERS", "")
+                if providers_str:
+                    providers = [p.strip() for p in providers_str.split(",") if p.strip()]
+
             try:
                 from scripts.embedder import get_embedding_model
-                self._model = get_embedding_model(self.model_name)
+                # Note: core embedder doesn't support providers yet, use fallback
+                if providers:
+                    from fastembed import TextEmbedding
+                    self._model = TextEmbedding(model_name=self.model_name, providers=providers)
+                    print(f"[coir] Embedding model loaded with providers: {providers}")
+                else:
+                    self._model = get_embedding_model(self.model_name)
             except ImportError:
                 from fastembed import TextEmbedding
-                self._model = TextEmbedding(model_name=self.model_name)
+                if providers:
+                    self._model = TextEmbedding(model_name=self.model_name, providers=providers)
+                else:
+                    self._model = TextEmbedding(model_name=self.model_name)
         return self._model
 
     def encode_queries(
@@ -269,10 +325,16 @@ class ContextEngineRetriever:
         collection = get_corpus_collection(corpus_list)
         self._indexed_collections.add(collection)
         
-        # index_coir_corpus checks fingerprint and skips if unchanged
-        index_result = await asyncio.to_thread(index_coir_corpus, corpus_list, collection)
-        if index_result.get("reused"):
-            pass  # Collection reused, no indexing needed
+        # Skip indexing if requested (use existing collection data)
+        if self.skip_index:
+            print(f"[coir] Skipping indexing (--skip-index), using collection {collection}")
+        else:
+            # index_coir_corpus checks fingerprint and skips if unchanged
+            index_result = await asyncio.to_thread(
+                index_coir_corpus, corpus_list, collection, task_name=self.task_name
+            )
+            if index_result.get("reused"):
+                pass  # Collection reused, no indexing needed
 
         # Verify config compatibility (Fail-Fast)
         # Checks that the collection we are about to search matches our current env config
@@ -291,10 +353,33 @@ class ContextEngineRetriever:
             print(f"  [warn] Probe failed: {e}")
 
         # Search queries in parallel batches using Context-Engine
-        # Use larger candidate pool for reranking (100 candidates -> top_k)
+        # Memory-aware settings for unified memory systems (M1/M2/M3)
         query_items = list(queries.items())
-        batch_size = self.batch_size or 32  # Parallel batch size
+
+        # Get parallel batch size from env or use system-aware default
+        try:
+            batch_size = int(os.environ.get("COIR_PARALLEL_BATCH", "") or 0)
+        except (ValueError, TypeError):
+            batch_size = 0
+        if batch_size <= 0:
+            batch_size = self.batch_size if self.batch_size else _get_default_parallel_batch()
+
+        # Get rerank candidates from env or use system-aware default
+        try:
+            rerank_top_n = int(os.environ.get("COIR_RERANK_TOP_N", "") or 0)
+        except (ValueError, TypeError):
+            rerank_top_n = 0
+        if rerank_top_n <= 0:
+            rerank_top_n = _get_default_rerank_candidates()
+
+        # GC interval (run gc.collect() every N batches, 0 to disable)
+        try:
+            gc_interval = int(os.environ.get("COIR_GC_INTERVAL", "1") or 1)
+        except (ValueError, TypeError):
+            gc_interval = 1
+
         results = {}
+        batch_count = 0
 
         async def search_one(qid: str, query_text: str) -> tuple:
             result = await repo_search(
@@ -303,13 +388,19 @@ class ContextEngineRetriever:
                 per_path=1,
                 collection=collection,
                 rerank_enabled=self.rerank_enabled,
-                rerank_top_n=100 if self.rerank_enabled else None,
+                rerank_top_n=rerank_top_n if self.rerank_enabled else None,
                 rerank_return_m=top_k if self.rerank_enabled else None,
+                mode=self.mode,
+                output_format="json",  # Ensure dict results, not TOON strings
             )
             # Extract scores
             doc_scores = {}
             for r in result.get("results", []):
-                doc_id = r.get("doc_id") or r.get("code_id") or r.get("_id") or (r.get("payload") or {}).get("_id")
+                payload = r.get("payload") or {}
+                doc_id = (
+                    r.get("doc_id") or r.get("code_id") or r.get("_id")
+                    or payload.get("doc_id") or payload.get("code_id") or payload.get("_id")
+                )
                 score = r.get("score", 0.0)
                 if doc_id:
                     score_val = float(score)
@@ -317,7 +408,7 @@ class ContextEngineRetriever:
                     doc_scores[doc_id] = score_val if prev is None else max(prev, score_val)
             return qid, doc_scores
 
-        # Process in batches
+        # Process in batches with memory management
         total_queries = len(query_items)
         for batch_start in range(0, total_queries, batch_size):
             batch_end = min(batch_start + batch_size, total_queries)
@@ -330,8 +421,14 @@ class ContextEngineRetriever:
             for qid, doc_scores in batch_results:
                 results[qid] = doc_scores
 
+            batch_count += 1
+
+            # Memory management: run GC periodically to prevent OOM on unified memory
+            if gc_interval > 0 and batch_count % gc_interval == 0:
+                gc.collect()
+
             # Progress update
-            print(f"[coir] Searched {batch_end}/{total_queries} queries", flush=True)
+            print(f"[coir] Searched {batch_end}/{total_queries} queries (batch_size={batch_size})", flush=True)
 
         return results
     
@@ -354,10 +451,10 @@ class ContextEngineRetriever:
                     try:
                         client.delete_collection(coll)
                         deleted += 1
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         self._indexed_collections.clear()
         return deleted
 
@@ -366,18 +463,18 @@ class ContextEngineRetrieverDense(ContextEngineRetriever):
     """Dense-only retriever (no hybrid, no rerank) for ablation studies."""
 
     def __init__(self, **kwargs):
-        super().__init__(use_hybrid_search=False, rerank_enabled=False, **kwargs)
+        super().__init__(use_hybrid_search=False, rerank_enabled=False, mode="dense", **kwargs)
 
 
 class ContextEngineRetrieverHybrid(ContextEngineRetriever):
     """Hybrid retriever without reranker for ablation studies."""
 
     def __init__(self, **kwargs):
-        super().__init__(use_hybrid_search=True, rerank_enabled=False, **kwargs)
+        super().__init__(use_hybrid_search=True, rerank_enabled=False, mode="hybrid", **kwargs)
 
 
 class ContextEngineRetrieverFull(ContextEngineRetriever):
     """Full pipeline: hybrid + reranker."""
 
     def __init__(self, **kwargs):
-        super().__init__(use_hybrid_search=True, rerank_enabled=True, **kwargs)
+        super().__init__(use_hybrid_search=True, rerank_enabled=True, mode="hybrid", **kwargs)

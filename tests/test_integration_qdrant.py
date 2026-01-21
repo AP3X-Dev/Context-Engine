@@ -4,6 +4,8 @@ import uuid
 import importlib
 import pytest
 
+from conftest import get_results
+
 pytestmark = pytest.mark.integration
 
 ing = importlib.import_module("scripts.ingest_code")
@@ -45,7 +47,7 @@ def test_index_and_search_minirepo(tmp_path, monkeypatch, qdrant_container):
     os.environ["COLLECTION_NAME"] = f"test-{uuid.uuid4().hex[:8]}"
     os.environ["USE_TREE_SITTER"] = "0"
     os.environ["HYBRID_IN_PROCESS"] = "1"
-    os.environ["EMBEDDING_MODEL"] = "fake"
+    monkeypatch.setenv("EMBEDDING_MODEL", "fake")
 
     # Stub embeddings everywhere (FakeEmbedder produces 32-dim vectors)
     monkeypatch.setattr(ing, "TextEmbedding", lambda *a, **k: FakeEmbedder("fake"))
@@ -75,7 +77,8 @@ def test_index_and_search_minirepo(tmp_path, monkeypatch, qdrant_container):
     )
 
     # Search directly via async function
-    res = srv.asyncio.get_event_loop().run_until_complete(
+    import asyncio
+    res = asyncio.run(
         srv.repo_search(
             queries=["def f"],
             limit=5,
@@ -86,7 +89,7 @@ def test_index_and_search_minirepo(tmp_path, monkeypatch, qdrant_container):
     )
 
     assert res.get("ok", True)
-    assert any(str(f1) in (r.get("path") or "") for r in res.get("results", []))
+    assert any(str(f1) in (r.get("path") or "") for r in get_results(res))
 
 
 @pytest.mark.integration
@@ -96,7 +99,7 @@ def test_filters_language_and_path(tmp_path, monkeypatch, qdrant_container):
     os.environ.setdefault("COLLECTION_NAME", f"test-{uuid.uuid4().hex[:8]}")
     os.environ["USE_TREE_SITTER"] = "0"
     os.environ["HYBRID_IN_PROCESS"] = "1"
-    os.environ["EMBEDDING_MODEL"] = "fake"
+    monkeypatch.setenv("EMBEDDING_MODEL", "fake")
 
     # Stub embeddings (FakeEmbedder produces 32-dim vectors)
     monkeypatch.setattr(ing, "TextEmbedding", lambda *a, **k: FakeEmbedder("fake"))
@@ -127,19 +130,20 @@ def test_filters_language_and_path(tmp_path, monkeypatch, qdrant_container):
     f_md = str(tmp_path / "pkg" / "b.md")
 
     # Filter by language=python should bias toward .py
-    res1 = srv.asyncio.get_event_loop().run_until_complete(
+    import asyncio
+    res1 = asyncio.run(
         srv.repo_search(queries=["def"], limit=5, language="python", compact=False)
     )
-    assert any(f_py in (r.get("path") or "") for r in res1.get("results", []))
+    assert any(f_py in (r.get("path") or "") for r in get_results(res1))
 
     # Filter by ext=txt should retrieve text file
-    res2 = srv.asyncio.get_event_loop().run_until_complete(
+    res2 = asyncio.run(
         srv.repo_search(queries=["hello"], limit=5, ext="md", compact=False)
     )
-    assert any(f_md in (r.get("path") or "") for r in res2.get("results", []))
+    assert any(f_md in (r.get("path") or "") for r in get_results(res2))
 
     # Path glob to only allow pkg/*.py
-    res3 = srv.asyncio.get_event_loop().run_until_complete(
+    res3 = asyncio.run(
         srv.repo_search(
             queries=["def"],
             limit=5,
@@ -149,5 +153,5 @@ def test_filters_language_and_path(tmp_path, monkeypatch, qdrant_container):
     )
     assert all(
         "/pkg/" in (r.get("path") or "") and r.get("path", "").endswith(".py")
-        for r in res3.get("results", [])
+        for r in get_results(res3)
     )

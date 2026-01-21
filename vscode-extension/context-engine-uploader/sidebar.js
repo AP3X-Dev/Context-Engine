@@ -87,10 +87,28 @@ function findConfigFile(bases, filename) {
 const _authStatusCache = new Map();
 const _AUTH_STATUS_TTL_MS = 30_000;
 const _AUTH_STATUS_TIMEOUT_MS = 750;
+const _AUTH_STATUS_MAX_ENTRIES = 100;
 
 const _endpointReachableCache = new Map();
 const _ENDPOINT_REACHABLE_TTL_MS = 15_000;
 const _ENDPOINT_REACHABLE_TIMEOUT_MS = 750;
+const _ENDPOINT_REACHABLE_MAX_ENTRIES = 100;
+
+function pruneCache(cache, ttlMs, maxEntries) {
+  const now = Date.now();
+  for (const [key, entry] of cache.entries()) {
+    if (!entry.ts || (now - entry.ts) > ttlMs) {
+      cache.delete(key);
+    }
+  }
+  if (cache.size > maxEntries) {
+    const entries = [...cache.entries()].sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0));
+    const toRemove = entries.slice(0, cache.size - maxEntries);
+    for (const [key] of toRemove) {
+      cache.delete(key);
+    }
+  }
+}
 
 async function probeEndpointReachable(endpoint) {
   const base = (endpoint || '').trim().replace(/\/+$/, '');
@@ -726,13 +744,24 @@ function register(context, deps) {
         profilesProvider.refresh();
         statusProvider.refresh();
         actionsProvider.refresh();
-      }, 7500);
+        pruneCache(_authStatusCache, _AUTH_STATUS_TTL_MS, _AUTH_STATUS_MAX_ENTRIES);
+        pruneCache(_endpointReachableCache, _ENDPOINT_REACHABLE_TTL_MS, _ENDPOINT_REACHABLE_MAX_ENTRIES);
+      }, 2000);
     }
   };
 
   profilesTree.onDidChangeVisibility(bumpTimer, null, context.subscriptions);
   statusTree.onDidChangeVisibility(bumpTimer, null, context.subscriptions);
   actionsTree.onDidChangeVisibility(bumpTimer, null, context.subscriptions);
+
+  context.subscriptions.push({
+    dispose: () => {
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = undefined;
+      }
+    }
+  });
 
   bumpTimer();
 

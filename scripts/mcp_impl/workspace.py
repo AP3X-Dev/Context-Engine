@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
 """
 mcp/workspace.py - Workspace state and collection resolution utilities.
 
@@ -106,15 +109,15 @@ def _work_script(name: str) -> str:
         work_path = os.path.join("/work", "scripts", name)
         if os.path.exists(work_path):
             return work_path
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     try:
         app_path = os.path.join("/app", "scripts", name)
         if os.path.exists(app_path):
             return app_path
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return os.path.join(os.getcwd(), "scripts", name)
 

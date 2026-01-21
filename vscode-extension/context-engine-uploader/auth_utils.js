@@ -1,6 +1,7 @@
 const process = require('process');
 
 const _skippedAuthCombos = new Set();
+const _SKIPPED_AUTH_MAX_SIZE = 100;
 
 function getFetch(deps) {
   if (deps && typeof deps.fetchGlobal === 'function') {
@@ -205,6 +206,10 @@ async function ensureAuthIfRequired(endpoint, deps) {
       'Skip for now',
     );
     if (choice !== 'Sign In') {
+      if (_skippedAuthCombos.size >= _SKIPPED_AUTH_MAX_SIZE) {
+        const first = _skippedAuthCombos.values().next().value;
+        if (first) _skippedAuthCombos.delete(first);
+      }
       _skippedAuthCombos.add(skipKey);
       return;
     }

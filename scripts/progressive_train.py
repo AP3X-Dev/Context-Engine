@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Progressive training evaluation - measures quality at checkpoints."""
+import logging
 import sys, os
+
+logger = logging.getLogger(__name__)
 sys.path.insert(0, '.')
 
 from scripts.rerank_eval import get_candidates, rerank_learning, rerank_onnx, DEFAULT_EVAL_QUERIES
@@ -55,8 +58,8 @@ def main():
             for lock in glob.glob('/tmp/rerank_weights/eval_*.lock'):
                 try:
                     os.remove(lock)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             learner = CollectionLearner(collection='eval')
             learner.process_events()

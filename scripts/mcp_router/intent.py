@@ -4,12 +4,19 @@ mcp_router/intent.py - Intent classification (rules + ML).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
+import time
+import fcntl
+import threading
+from pathlib import Path
 from typing import Any, Dict, List
 
 # Intent constants
+
+logger = logging.getLogger(__name__)
 INTENT_ANSWER = "answer"
 INTENT_SEARCH = "search"
 INTENT_SEARCH_TESTS = "search_tests"
@@ -23,6 +30,33 @@ INTENT_INDEX = "index"
 INTENT_PRUNE = "prune"
 INTENT_STATUS = "status"
 INTENT_LIST = "list"
+
+# Default ML confidence threshold (fallback to SEARCH if below)
+_DEFAULT_ML_THRESHOLD = float(os.environ.get("INTENT_ML_THRESHOLD", "0.25"))
+
+# Per-intent confidence thresholds (override default)
+# Lower = more permissive, higher = stricter classification
+# Rationale:
+#   - symbol_graph: very distinctive queries ("who calls X"), lower threshold
+#   - answer: expensive LLM call, require higher confidence
+#   - memory_store: irreversible action, require higher confidence
+#   - search: default fallback, moderate threshold
+_INTENT_THRESHOLDS: Dict[str, float] = {
+    INTENT_SYMBOL_GRAPH: float(os.environ.get("INTENT_THRESHOLD_SYMBOL_GRAPH", "0.20")),
+    INTENT_SEARCH_CALLERS: float(os.environ.get("INTENT_THRESHOLD_SEARCH_CALLERS", "0.20")),
+    INTENT_SEARCH_IMPORTERS: float(os.environ.get("INTENT_THRESHOLD_SEARCH_IMPORTERS", "0.22")),
+    INTENT_SEARCH_TESTS: float(os.environ.get("INTENT_THRESHOLD_SEARCH_TESTS", "0.22")),
+    INTENT_SEARCH_CONFIG: float(os.environ.get("INTENT_THRESHOLD_SEARCH_CONFIG", "0.22")),
+    INTENT_ANSWER: float(os.environ.get("INTENT_THRESHOLD_ANSWER", "0.30")),
+    INTENT_MEMORY_STORE: float(os.environ.get("INTENT_THRESHOLD_MEMORY_STORE", "0.35")),
+    INTENT_MEMORY_FIND: float(os.environ.get("INTENT_THRESHOLD_MEMORY_FIND", "0.25")),
+    INTENT_SEARCH: float(os.environ.get("INTENT_THRESHOLD_SEARCH", "0.25")),
+}
+
+
+def get_intent_threshold(intent: str) -> float:
+    """Get the confidence threshold for a specific intent."""
+    return _INTENT_THRESHOLDS.get(intent, _DEFAULT_ML_THRESHOLD)
 
 # Debug state
 _LAST_INTENT_DEBUG: Dict[str, Any] = {}
@@ -173,8 +207,8 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
         em = TextEmbedding(model_name=model_name)
         raw = list(em.embed(texts))
         return [v.tolist() if hasattr(v, "tolist") else list(v) for v in raw]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Fallback to lexical
     try:
@@ -198,9 +232,10 @@ def _classify_intent_ml(q: str) -> str:
             "query": q,
             "top_candidate": INTENT_SEARCH,
             "top_score": 0.0,
-            "threshold": 0.25,
+            "threshold": _DEFAULT_ML_THRESHOLD,
             "candidates": [],
             "reason": "embed_failed",
+            "timestamp": time.time(),
         }
         return INTENT_SEARCH
     qv = vecs[0]
@@ -209,7 +244,11 @@ def _classify_intent_ml(q: str) -> str:
         sims.append((lab, _cosine(qv, vecs[1 + i])))
     sims.sort(key=lambda x: x[1], reverse=True)
     top, score = sims[0]
-    picked = top if score >= 0.25 else INTENT_SEARCH
+
+    # Use per-intent threshold instead of hard-coded 0.25
+    threshold = get_intent_threshold(top)
+    picked = top if score >= threshold else INTENT_SEARCH
+
     _LAST_INTENT_DEBUG = {
         "strategy": "ml",
         "intent": picked,
@@ -217,30 +256,148 @@ def _classify_intent_ml(q: str) -> str:
         "query": q,
         "top_candidate": top,
         "top_score": float(score),
-        "threshold": 0.25,
+        "threshold": threshold,
         "candidates": [(name, float(val)) for name, val in sims[:5]],
         "fallback": picked == INTENT_SEARCH and top != INTENT_SEARCH,
+        "timestamp": time.time(),
     }
     return picked
 
 
+# Thread-safe event buffer for high-throughput logging
+_EVENT_BUFFER: List[dict] = []
+_EVENT_BUFFER_LOCK = threading.Lock()
+_EVENT_BUFFER_MAX = 100  # Flush when buffer reaches this size
+_EVENT_FLUSH_INTERVAL = 5.0  # Flush every N seconds
+_EVENT_LAST_FLUSH = 0.0
+
+
+def _flush_event_buffer() -> None:
+    """Flush buffered events to disk (called periodically or when buffer is full)."""
+    global _EVENT_LAST_FLUSH
+
+    with _EVENT_BUFFER_LOCK:
+        if not _EVENT_BUFFER:
+            return
+        events_to_write = _EVENT_BUFFER.copy()
+        _EVENT_BUFFER.clear()
+        _EVENT_LAST_FLUSH = time.time()
+
+    try:
+        log_dir = Path(os.environ.get("INTENT_EVENTS_DIR", "./events"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = log_dir / f"intent_confidence_{date_str}.jsonl"
+
+        # Check file size for rotation
+        max_size_mb = int(os.environ.get("INTENT_LOG_ROTATE_MB", "100") or 100)
+        if log_file.exists():
+            size_mb = log_file.stat().st_size / (1024 * 1024)
+            if size_mb >= max_size_mb:
+                for i in range(9, 0, -1):
+                    old_file = log_dir / f"intent_confidence_{date_str}.jsonl.{i}"
+                    new_file = log_dir / f"intent_confidence_{date_str}.jsonl.{i+1}"
+                    if old_file.exists():
+                        old_file.rename(new_file)
+                log_file.rename(log_dir / f"intent_confidence_{date_str}.jsonl.1")
+
+        # Write all buffered events at once (single lock acquisition)
+        with open(log_file, "a", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                for event in events_to_write:
+                    f.write(json.dumps(event) + "\n")
+                f.flush()
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        print(f"Intent flush error: {e}", file=sys.stderr)
+
+
+def _log_intent_event(event: dict) -> None:
+    """Buffer intent classification event for batched writing.
+
+    Uses in-memory buffer with periodic flush for high-throughput scenarios.
+    At 1000 repos / high QPS, this avoids per-event file lock contention.
+
+    Args:
+        event: Event dict with timestamp, query, intent, confidence, strategy, etc.
+    """
+    global _EVENT_LAST_FLUSH
+
+    tracking_enabled = os.environ.get("INTENT_TRACKING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+    if not tracking_enabled:
+        return
+
+    try:
+        with _EVENT_BUFFER_LOCK:
+            _EVENT_BUFFER.append(event)
+            buffer_full = len(_EVENT_BUFFER) >= _EVENT_BUFFER_MAX
+            time_to_flush = (time.time() - _EVENT_LAST_FLUSH) > _EVENT_FLUSH_INTERVAL
+
+        # Flush if buffer full or interval elapsed
+        if buffer_full or time_to_flush:
+            # Use a thread to avoid blocking the request path
+            # NOTE: For tests, call _flush_event_buffer() directly after _log_intent_event()
+            t = threading.Thread(target=_flush_event_buffer, daemon=True)
+            t.start()
+            # Give the thread a brief moment to start (non-blocking for production)
+            # This ensures test assertions find the file
+            if os.environ.get("INTENT_FLUSH_SYNC"):
+                t.join(timeout=1.0)
+
+    except Exception as e:
+        # Never fail the request due to logging
+        print(f"Intent logging error: {e}", file=sys.stderr)
+
+
 def classify_intent(q: str) -> str:
-    """Classify user query into an intent."""
+    """Classify user query into an intent and log the event."""
     global _LAST_INTENT_DEBUG
     ruled = _classify_intent_rules(q)
+
     if ruled is not None:
         _LAST_INTENT_DEBUG = {
             "strategy": "rules",
             "intent": ruled,
             "confidence": 1.0,
             "query": q,
+            "timestamp": time.time(),
         }
+        # Log event
+        _log_intent_event({
+            "timestamp": _LAST_INTENT_DEBUG["timestamp"],
+            "query": q,
+            "intent": ruled,
+            "confidence": 1.0,
+            "strategy": "rules",
+            "threshold": None,
+            "candidates": [],
+        })
         return ruled
+
     picked = _classify_intent_ml(q)
-    try:
-        if os.environ.get("DEBUG_ROUTER") and isinstance(_LAST_INTENT_DEBUG, dict):
-            if _LAST_INTENT_DEBUG.get("fallback"):
+
+    # Log ML classification event
+    if isinstance(_LAST_INTENT_DEBUG, dict):
+        event = {
+            "timestamp": _LAST_INTENT_DEBUG.get("timestamp", time.time()),
+            "query": q,
+            "intent": picked,
+            "confidence": _LAST_INTENT_DEBUG.get("confidence", 0.0),
+            "strategy": _LAST_INTENT_DEBUG.get("strategy", "ml"),
+            "threshold": _LAST_INTENT_DEBUG.get("threshold", 0.25),
+            "candidates": _LAST_INTENT_DEBUG.get("candidates", [])[:5],  # Top 5 only
+        }
+        _log_intent_event(event)
+
+        # Debug output
+        try:
+            if os.environ.get("DEBUG_ROUTER") and _LAST_INTENT_DEBUG.get("fallback"):
                 print(json.dumps({"router": {"intent_fallback": _LAST_INTENT_DEBUG}}), file=sys.stderr)
-    except Exception:
-        pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+
     return picked

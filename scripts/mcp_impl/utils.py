@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2025 John Donalson and Context-Engine Contributors.
+# Licensed under the Business Source License 1.1.
+# See the LICENSE file in the repository root for full terms.
 """
 mcp/utils.py - Shared utility functions for MCP indexer server.
 
@@ -12,6 +15,9 @@ Contains:
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
 __all__ = [
     # Constants
     "_STOP",
@@ -208,15 +214,14 @@ def _parse_kv_string(s: str) -> Dict[str, Any]:
                 k, v = part.split("=", 1)
                 out[k.strip()] = _coerce_value_string(v.strip())
             return out
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while parsing kv string: {e}")
         return {}
     return out
 
 
 def _extract_kwargs_payload(kwargs: Any) -> Dict[str, Any]:
-    """Extract kwargs payload from potentially nested/stringified input."""
     try:
-        # Handle kwargs being passed as a string "{}" by some MCP clients
         if isinstance(kwargs, str):
             parsed = _maybe_parse_jsonish(kwargs)
             if isinstance(parsed, dict):
@@ -231,13 +236,13 @@ def _extract_kwargs_payload(kwargs: Any) -> Dict[str, Any]:
             parsed = _maybe_parse_jsonish(inner)
             if isinstance(parsed, dict):
                 return parsed
-            # Fallback: accept query-string or k=v,k2=v2 strings
             if isinstance(inner, str):
                 kv = _parse_kv_string(inner)
                 if isinstance(kv, dict) and kv:
                     return kv
             return {}
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while extracting kwargs payload: {e}")
         return {}
     return {}
 
@@ -304,7 +309,8 @@ def _to_str_list_relaxed(x: Any) -> List[str]:
                 for parser in (json.loads, _ast.literal_eval):
                     try:
                         parsed = parser(current)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception, continuing: {e}")
                         continue
                     else:
                         break
@@ -432,6 +438,7 @@ def _primary_identifier_from_queries(qs: List[str]) -> str:
             return (0, len(c))
         cand.sort(key=_score, reverse=True)
         return cand[0] if cand else ""
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while extracting primary identifier: {e}")
         return ""
 

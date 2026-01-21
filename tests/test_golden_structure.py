@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import scripts.mcp_indexer_server as srv
+from conftest import get_results
 
 
 @pytest.mark.service
@@ -22,7 +23,8 @@ def test_repo_search_compact_golden_subset(monkeypatch):
 
     monkeypatch.setattr(hy, "run_hybrid_search", stub)
 
-    res = srv.asyncio.get_event_loop().run_until_complete(
+    import asyncio
+    res = asyncio.run(
         srv.repo_search(queries=["q"], limit=2, compact=True)
     )
 
@@ -33,7 +35,7 @@ def test_repo_search_compact_golden_subset(monkeypatch):
             "start_line": r.get("start_line"),
             "end_line": r.get("end_line"),
         }
-        for r in res.get("results", [])
+        for r in get_results(res)
     ]
 
     golden_path = Path(__file__).parent / "data" / "golden_compact.json"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,8 @@ from scripts.workspace_state import (
     remove_cached_symbols,
     set_cached_file_hash,
 )
+
+logger = logging.getLogger(__name__)
 from .config import LOGGER
 from .utils import (
     _detect_repo_for_file, 
@@ -78,8 +81,8 @@ class IndexHandler(FileSystemEventHandler):
                 self.excl = idx._Excluder(self.root)
                 self._ignore_mtime = cur
                 safe_print(f"[ignore_reload] reloaded patterns from {self._ignore_path}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _maybe_enqueue(self, src_path: str) -> None:
         self._maybe_reload_excluder()
@@ -182,13 +185,13 @@ class IndexHandler(FileSystemEventHandler):
                         try:
                             if src_repo_name:
                                 remove_cached_file(str(src), src_repo_name)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         src_collection = self._resolve_collection(src)
         dest_collection = self._resolve_collection(dest)
@@ -222,10 +225,10 @@ class IndexHandler(FileSystemEventHandler):
                 if dest_repo_name and src_hash:
                     try:
                         set_cached_file_hash(str(dest), src_hash, dest_repo_name)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             try:
                 _log_activity(
                     str(dest_repo_path or self.root),
@@ -233,8 +236,8 @@ class IndexHandler(FileSystemEventHandler):
                     dest,
                     {"from": str(src), "chunks": int(moved_count)},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return
         if self.client is not None:
             try:
@@ -242,19 +245,19 @@ class IndexHandler(FileSystemEventHandler):
                     try:
                         idx.delete_points_by_path(self.client, src_collection, str(src))
                         safe_print(f"[moved:reindex_src] {src} -> {dest} (dest skipped)")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 else:
                     # Non-indexable source file: use _delete_points for cleanup
                     self._delete_points(src, src_collection)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         else:
             safe_print(f"[remote_mode] Move detected: {src} -> {dest}")
         try:
             self._maybe_enqueue(str(dest))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _resolve_collection(self, path: Path) -> str | None:
         if self.collection is not None:
@@ -271,8 +274,8 @@ class IndexHandler(FileSystemEventHandler):
         try:
             idx.delete_points_by_path(self.client, collection, str(path))
             safe_print(f"[deleted] {path} -> {collection}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _invalidate_cache(self, path: Path) -> Optional[str]:
         detected_repo_path = _detect_repo_for_file(path)
@@ -281,12 +284,12 @@ class IndexHandler(FileSystemEventHandler):
         try:
             if repo_name:
                 remove_cached_file(str(path), repo_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         try:
             remove_cached_symbols(str(path))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return _repo_name_or_none(detected_repo_path)
 
 

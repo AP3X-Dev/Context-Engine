@@ -97,7 +97,8 @@ def _find_git_root(start: Path) -> Optional[Path]:
             try:
                 if (p / ".git").exists():
                     return p
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
     except Exception:
         return None
@@ -105,6 +106,23 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 def _compute_logical_repo_id(workspace_path: str) -> str:
+    """Compute a stable logical repo ID for git worktrees and multi-repo setups.
+
+    IMPORTANT: Logical repo reuse is OPT-IN only (MULTI_REPO_MODE=1 required).
+
+    Risks when enabled:
+    - Mutates every workspace state file (.codebase/repos/*/state.json)
+    - Reroutes watchers/uploads through reuse logic
+    - Missing or stale logical_repo_id can route events to the WRONG Qdrant collection
+    - Walks and rewrites state files on lookup (storage/performance impact)
+
+    Operators should only enable after validating their multi-repo topology
+    and understanding that env COLLECTION_NAME takes precedence and can
+    collapse multiple uploads into a single collection if set globally.
+
+    Returns:
+        A stable ID like "git:<hash>" for git repos or "fs:<hash>" for non-git paths.
+    """
     try:
         p = Path(workspace_path).resolve()
     except Exception:
@@ -231,8 +249,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
             if anc.returncode != 0:
                 snapshot_mode = True
                 base_head = ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Build git rev-list command (simple HEAD-based history)
     cmd: List[str] = ["git", "rev-list", "--no-merges"]
@@ -329,7 +347,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
                     "diff": diff_text,
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     if not records:
@@ -364,8 +383,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
         }
         with git_cache_path.open("w", encoding="utf-8") as f:
             json.dump(cache_out, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return manifest
 
@@ -408,10 +427,10 @@ def _load_local_cache_file_hashes(workspace_path: str, repo_name: Optional[str])
             except TypeError:
                 try:
                     cache_path.unlink()
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return {}
         return file_hashes
     except Exception:
@@ -434,20 +453,27 @@ class RemoteUploadClient:
                 container = PurePosixPath(container_root)
                 if relative.parts:
                     container = container.joinpath(*relative.parts)
+                else:
+                    # When host_path == host_root, relative is empty
+                    # Use the repo name (last component of host_path) as container subdirectory
+                    repo_name = host_path_obj.name
+                    if repo_name:
+                        container = container.joinpath(repo_name)
                 return str(container)
             except ValueError:
                 pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
+        # Fallback: strip drive/anchor and map to /work/<repo-name>
         try:
             container = PurePosixPath(container_root)
             usable_parts = [part for part in host_path_obj.parts if part not in (host_path_obj.anchor, host_path_obj.drive)]
             if usable_parts:
                 repo_name = usable_parts[-1]
                 return str(container.joinpath(repo_name))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         return host_path.replace('\\', '/').replace(':', '')
 
@@ -564,8 +590,8 @@ class RemoteUploadClient:
                 try:
                     if abs_path in self._stat_cache:
                         self._stat_cache.pop(abs_path, None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 continue
 
             # File exists - use stat to avoid unnecessary re-hashing when possible
@@ -608,8 +634,8 @@ class RemoteUploadClient:
             # Update caches
             try:
                 self._stat_cache[abs_path] = (getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)), stat.st_size)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             set_cached_file_hash(abs_path, current_hash, self.repo_name)
 
         # Detect moves by looking for files with same content hash
@@ -647,7 +673,8 @@ class RemoteUploadClient:
                         content = f.read()
                     file_hash = hashlib.sha1(content).hexdigest()
                     deleted_hashes[file_hash] = deleted_path
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         # Match created files with deleted files by hash
@@ -662,7 +689,8 @@ class RemoteUploadClient:
                     moves.append((source_path, created_path))
                     # Remove from consideration
                     del deleted_hashes[file_hash]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         return moves
@@ -843,8 +871,8 @@ class RemoteUploadClient:
                     # so subsequent scans do not keep re-reporting the same deletion.
                     try:
                         remove_cached_file(str(path.resolve()), self.repo_name)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
                 except Exception as e:
                     print(f"[bundle_create] Error processing deleted file {path}: {e}")
@@ -937,33 +965,38 @@ class RemoteUploadClient:
                 # Check bundle size (server-side enforcement)
                 bundle_size = os.path.getsize(bundle_path)
 
-                files = {
-                    "bundle": open(bundle_path, "rb"),
-                }
-                data = {
-                    "workspace_path": self._translate_to_container_path(self.workspace_path),
-                    "collection_name": self.collection_name,
-                    "sequence_number": manifest.get("sequence_number"),
-                    "force": False,
-                    "source_path": self.workspace_path,
-                    "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
-                }
+                # Use context manager to ensure file handle is closed
+                bundle_file = open(bundle_path, "rb")
+                try:
+                    files = {
+                        "bundle": bundle_file,
+                    }
+                    data = {
+                        "workspace_path": self._translate_to_container_path(self.workspace_path),
+                        "collection_name": self.collection_name,
+                        "sequence_number": manifest.get("sequence_number"),
+                        "force": False,
+                        "source_path": self.workspace_path,
+                        "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
+                    }
 
-                sess = get_auth_session(self.upload_endpoint)
-                if sess:
-                    data["session"] = sess
+                    sess = get_auth_session(self.upload_endpoint)
+                    if sess:
+                        data["session"] = sess
 
-                if getattr(self, "logical_repo_id", None):
-                    data['logical_repo_id'] = self.logical_repo_id
+                    if getattr(self, "logical_repo_id", None):
+                        data['logical_repo_id'] = self.logical_repo_id
 
-                logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
+                    logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
 
-                response = self.session.post(
-                    f"{self.upload_endpoint}/api/v1/delta/upload",
-                    files=files,
-                    data=data,
-                    timeout=(10, self.timeout)
-                )
+                    response = self.session.post(
+                        f"{self.upload_endpoint}/api/v1/delta/upload",
+                        files=files,
+                        data=data,
+                        timeout=(10, self.timeout)
+                    )
+                finally:
+                    bundle_file.close()
 
                 result = None
                 try:
@@ -977,8 +1010,8 @@ class RemoteUploadClient:
                     if seq is not None:
                         try:
                             manifest["sequence"] = seq
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     return result
 
                 # Handle error
@@ -1199,8 +1232,8 @@ class RemoteUploadClient:
                     if os.path.exists(bundle_path):
                         os.remove(bundle_path)
                     self.cleanup()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return True
             return False
         except Exception as e:
@@ -1499,7 +1532,8 @@ class RemoteUploadClient:
                     for p in fs_files:
                         try:
                             resolved = p.resolve()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                         path_map[resolved] = p
 
@@ -1509,7 +1543,8 @@ class RemoteUploadClient:
                         try:
                             cached_path = Path(cached_abs)
                             resolved = cached_path.resolve()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                         if resolved not in path_map:
                             path_map[resolved] = cached_path
@@ -1689,7 +1724,14 @@ def _cleanup_dir_with_retries(path: Optional[str]) -> None:
 
 
 def get_remote_config(cli_path: Optional[str] = None) -> Dict[str, str]:
-    """Get remote upload configuration from environment variables and command-line arguments."""
+    """Get remote upload configuration from environment variables and command-line arguments.
+
+    NOTE: Unlike standalone_upload_client.py, this client does NOT check COLLECTION_NAME env.
+    Collection name is always auto-generated from repo name via get_collection_name().
+    This is intentional to preserve multi-repo topology when MULTI_REPO_MODE=1.
+
+    If you need COLLECTION_NAME override, use standalone_upload_client.py instead.
+    """
     # Use command-line path if provided, otherwise fall back to environment variables
     if cli_path:
         workspace_path = cli_path
@@ -1698,7 +1740,9 @@ def get_remote_config(cli_path: Optional[str] = None) -> Dict[str, str]:
 
     logical_repo_id = _compute_logical_repo_id(workspace_path)
 
-    # Use auto-generated collection name based on repo name
+    # Always auto-generate collection name from repo name (no COLLECTION_NAME override).
+    # This preserves multi-repo topology when MULTI_REPO_MODE=1.
+    # See standalone_upload_client.py for COLLECTION_NAME override behavior.
     repo_name = _extract_repo_name_from_path(workspace_path)
     # Fallback to directory name if repo detection fails
     if not repo_name:

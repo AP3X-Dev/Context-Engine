@@ -258,10 +258,16 @@ function remapHitPaths(hit, workspaceRoot) {
   if (!containerPath && rawPath) {
     containerPath = rawPath;
   }
-  const relPath = computeWorkspaceRelativePath(containerPath, hostPath);
   const out = { ...hit };
-  if (relPath) {
-    out.rel_path = relPath;
+  // Respect server's rel_path if already provided and non-empty; only compute if missing
+  const serverRelPath = typeof hit.rel_path === "string" ? hit.rel_path.trim() : "";
+  if (serverRelPath) {
+    out.rel_path = serverRelPath;
+  } else {
+    const relPath = computeWorkspaceRelativePath(containerPath, hostPath);
+    if (relPath) {
+      out.rel_path = relPath;
+    }
   }
   // Remap related_paths nested under each hit (repo_search/hybrid_search emit this per result).
   try {
@@ -271,9 +277,10 @@ function remapHitPaths(hit, workspaceRoot) {
   } catch {
     // ignore
   }
-  if (workspaceRoot && relPath) {
+  const finalRelPath = out.rel_path || "";
+  if (workspaceRoot && finalRelPath) {
     try {
-      const relNative = _posixToNative(relPath);
+      const relNative = _posixToNative(finalRelPath);
       const candidate = path.join(workspaceRoot, relNative);
       const diagnostics = envTruthy(process.env.CTXCE_BRIDGE_PATH_DIAGNOSTICS, false);
       const strictClientPath = envTruthy(process.env.CTXCE_BRIDGE_CLIENT_PATH_STRICT, false);
@@ -315,8 +322,8 @@ function remapHitPaths(hit, workspaceRoot) {
   if (overridePath) {
     if (typeof out.client_path === "string" && out.client_path) {
       out.path = out.client_path;
-    } else if (relPath) {
-      out.path = relPath;
+    } else if (finalRelPath) {
+      out.path = finalRelPath;
     }
   }
   // Strip internal container_path before returning to client.
