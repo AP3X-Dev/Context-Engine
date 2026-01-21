@@ -106,6 +106,38 @@ def _normalize_path(path: str) -> str:
     return normalized.replace("\\", "/")
 
 
+def _extract_relative_path(full_path: str) -> str:
+    """Extract relative path from container path.
+
+    Container path format: /work/{collection-slug}/rest/of/path
+    Returns: rest/of/path
+
+    This is the canonical pattern used across all indexed codebases regardless
+    of language or platform. The /work/{slug}/ prefix is always present in
+    container environments.
+
+    For non-container paths, returns the path as-is (stripped of leading slash).
+    """
+    if not full_path:
+        return ""
+    if full_path.startswith("<external>"):
+        return full_path
+
+    # Normalize slashes
+    path = full_path.replace("\\", "/")
+
+    # Container path: /work/{slug}/rest/of/path -> rest/of/path
+    if path.startswith("/work/"):
+        remainder = path[6:]  # Skip "/work/"
+        if "/" in remainder:
+            _, rel = remainder.split("/", 1)
+            return rel
+        return remainder
+
+    # Non-container: strip leading slash for consistency
+    return path.lstrip("/")
+
+
 class Neo4jGraphBackend(GraphBackend):
     """Neo4j-based graph storage backend.
 
@@ -551,6 +583,15 @@ class Neo4jGraphBackend(GraphBackend):
                     CREATE INDEX symbol_simple_name_idx IF NOT EXISTS
                     FOR (s:Symbol) ON (s.simple_name)
                 """)
+                # Relative path indexes for filtering (strips container prefix)
+                session.run("""
+                    CREATE INDEX symbol_relpath_idx IF NOT EXISTS
+                    FOR (s:Symbol) ON (s.relative_path)
+                """)
+                session.run("""
+                    CREATE INDEX file_relpath_idx IF NOT EXISTS
+                    FOR (f:File) ON (f.relative_path)
+                """)
 
             self._initialized_databases.add(db)
             logger.info(f"Neo4j graph store initialized: {db}")
@@ -814,6 +855,10 @@ class Neo4jGraphBackend(GraphBackend):
             caller_path = _normalize_path(edge.caller_path)
             callee_path = edge.callee_path or f"<unresolved>/{edge.callee_symbol}"
 
+            # Extract relative paths (strips /work/{slug}/ prefix for filtering)
+            caller_rel_path = _extract_relative_path(caller_path)
+            callee_rel_path = _extract_relative_path(callee_path)
+
             # Extract simple names (leaf part of qualified paths) for resolution
             caller_simple = edge.caller_symbol.rsplit(".", 1)[-1] if edge.caller_symbol else ""
             callee_simple = edge.callee_symbol.rsplit(".", 1)[-1] if edge.callee_symbol else edge.callee_symbol
@@ -827,6 +872,8 @@ class Neo4jGraphBackend(GraphBackend):
                 "collection": collection,
                 "caller_path": caller_path,
                 "callee_path": callee_path,
+                "caller_rel_path": caller_rel_path,
+                "callee_rel_path": callee_rel_path,
                 "start_line": edge.start_line,
                 "end_line": edge.end_line,
                 "language": edge.language or "",
@@ -847,12 +894,14 @@ class Neo4jGraphBackend(GraphBackend):
         # Batch upsert CALLS edges using UNWIND
         # ON CREATE SET: populate Symbol node properties when first created
         # ON MATCH SET: update start_line/signature/docstring if we now have more specific values
+        # Also creates File nodes with both full path and relative_path for filtering
         for i in range(0, len(calls_edges), batch_size):
             batch = calls_edges[i:i + batch_size]
             try:
                 with driver.session(database=db) as session:
                     result = session.run("""
                         UNWIND $edges AS edge
+                        // Create/update caller Symbol with relative_path
                         MERGE (caller:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
                         ON CREATE SET caller.id = edge.caller_symbol,
                                       caller.simple_name = edge.caller_simple,
@@ -860,9 +909,11 @@ class Neo4jGraphBackend(GraphBackend):
                                       caller.language = edge.language,
                                       caller.signature = edge.caller_signature,
                                       caller.docstring = edge.caller_docstring,
+                                      caller.relative_path = edge.caller_rel_path,
                                       caller.indexed_at = timestamp()
                         ON MATCH SET caller.id = COALESCE(caller.id, edge.caller_symbol),
                                      caller.simple_name = COALESCE(caller.simple_name, edge.caller_simple),
+                                     caller.relative_path = edge.caller_rel_path,
                                      caller.start_line = CASE
                                          WHEN edge.start_line IS NOT NULL AND edge.start_line > 0 THEN edge.start_line
                                          ELSE COALESCE(caller.start_line, edge.start_line)
@@ -876,12 +927,28 @@ class Neo4jGraphBackend(GraphBackend):
                                          WHEN edge.caller_docstring IS NOT NULL AND edge.caller_docstring <> '' THEN edge.caller_docstring
                                          ELSE COALESCE(caller.docstring, edge.caller_docstring)
                                      END
+                        // Create/update callee Symbol with relative_path
                         MERGE (callee:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET callee.id = edge.callee_symbol, callee.simple_name = edge.callee_simple, callee.indexed_at = timestamp()
-                        ON MATCH SET callee.id = COALESCE(callee.id, edge.callee_symbol), callee.simple_name = COALESCE(callee.simple_name, edge.callee_simple)
+                        ON CREATE SET callee.id = edge.callee_symbol,
+                                      callee.simple_name = edge.callee_simple,
+                                      callee.relative_path = edge.callee_rel_path,
+                                      callee.indexed_at = timestamp()
+                        ON MATCH SET callee.id = COALESCE(callee.id, edge.callee_symbol),
+                                     callee.simple_name = COALESCE(callee.simple_name, edge.callee_simple),
+                                     callee.relative_path = edge.callee_rel_path
+                        // Create File node for caller (if not external)
+                        FOREACH (_ IN CASE WHEN NOT edge.caller_rel_path STARTS WITH '<external>' THEN [1] ELSE [] END |
+                            MERGE (caller_file:File {path: edge.caller_path, repo: edge.repo, collection: edge.collection})
+                            ON CREATE SET caller_file.relative_path = edge.caller_rel_path,
+                                          caller_file.indexed_at = timestamp()
+                            ON MATCH SET caller_file.relative_path = edge.caller_rel_path
+                        )
+                        // Create relationship
                         MERGE (caller)-[r:CALLS {edge_id: edge.edge_id}]->(callee)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
+                            r.caller_rel_path = edge.caller_rel_path,
+                            r.callee_rel_path = edge.callee_rel_path,
                             r.start_line = edge.start_line,
                             r.end_line = edge.end_line,
                             r.language = edge.language,
@@ -908,9 +975,11 @@ class Neo4jGraphBackend(GraphBackend):
                                       importer.language = edge.language,
                                       importer.signature = edge.caller_signature,
                                       importer.docstring = edge.caller_docstring,
+                                      importer.relative_path = edge.caller_rel_path,
                                       importer.indexed_at = timestamp()
                         ON MATCH SET importer.id = COALESCE(importer.id, edge.caller_symbol),
                                      importer.simple_name = COALESCE(importer.simple_name, edge.caller_simple),
+                                     importer.relative_path = edge.caller_rel_path,
                                      importer.language = COALESCE(edge.language, importer.language),
                                      importer.signature = CASE
                                          WHEN edge.caller_signature IS NOT NULL AND edge.caller_signature <> '' THEN edge.caller_signature
@@ -921,11 +990,25 @@ class Neo4jGraphBackend(GraphBackend):
                                          ELSE COALESCE(importer.docstring, edge.caller_docstring)
                                      END
                         MERGE (imported:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET imported.id = edge.callee_symbol, imported.simple_name = edge.callee_simple, imported.indexed_at = timestamp()
-                        ON MATCH SET imported.id = COALESCE(imported.id, edge.callee_symbol), imported.simple_name = COALESCE(imported.simple_name, edge.callee_simple)
+                        ON CREATE SET imported.id = edge.callee_symbol,
+                                      imported.simple_name = edge.callee_simple,
+                                      imported.relative_path = edge.callee_rel_path,
+                                      imported.indexed_at = timestamp()
+                        ON MATCH SET imported.id = COALESCE(imported.id, edge.callee_symbol),
+                                     imported.simple_name = COALESCE(imported.simple_name, edge.callee_simple),
+                                     imported.relative_path = edge.callee_rel_path
+                        // Create File node for importer (if not external)
+                        FOREACH (_ IN CASE WHEN NOT edge.caller_rel_path STARTS WITH '<external>' THEN [1] ELSE [] END |
+                            MERGE (importer_file:File {path: edge.caller_path, repo: edge.repo, collection: edge.collection})
+                            ON CREATE SET importer_file.relative_path = edge.caller_rel_path,
+                                          importer_file.indexed_at = timestamp()
+                            ON MATCH SET importer_file.relative_path = edge.caller_rel_path
+                        )
                         MERGE (importer)-[r:IMPORTS {edge_id: edge.edge_id}]->(imported)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
+                            r.caller_rel_path = edge.caller_rel_path,
+                            r.callee_rel_path = edge.callee_rel_path,
                             r.language = edge.language,
                             r.repo = edge.repo,
                             r.collection = edge.collection,
@@ -944,8 +1027,11 @@ class Neo4jGraphBackend(GraphBackend):
                     result = session.run("""
                         UNWIND $edges AS edge
                         MERGE (child:Symbol {name: edge.caller_symbol, repo: edge.repo, collection: edge.collection, path: edge.caller_path})
-                        ON CREATE SET child.simple_name = edge.caller_simple, child.indexed_at = timestamp()
+                        ON CREATE SET child.simple_name = edge.caller_simple,
+                                      child.relative_path = edge.caller_rel_path,
+                                      child.indexed_at = timestamp()
                         ON MATCH SET child.simple_name = COALESCE(child.simple_name, edge.caller_simple),
+                                     child.relative_path = edge.caller_rel_path,
                                      child.start_line = COALESCE(edge.start_line, child.start_line),
                                      child.language = COALESCE(edge.language, child.language),
                                      child.signature = CASE
@@ -957,11 +1043,23 @@ class Neo4jGraphBackend(GraphBackend):
                                          ELSE COALESCE(child.docstring, edge.caller_docstring)
                                      END
                         MERGE (base:Symbol {name: edge.callee_symbol, repo: edge.repo, collection: edge.collection, path: edge.callee_path})
-                        ON CREATE SET base.simple_name = edge.callee_simple, base.indexed_at = timestamp()
-                        ON MATCH SET base.simple_name = COALESCE(base.simple_name, edge.callee_simple)
+                        ON CREATE SET base.simple_name = edge.callee_simple,
+                                      base.relative_path = edge.callee_rel_path,
+                                      base.indexed_at = timestamp()
+                        ON MATCH SET base.simple_name = COALESCE(base.simple_name, edge.callee_simple),
+                                     base.relative_path = edge.callee_rel_path
+                        // Create File node for child (if not external)
+                        FOREACH (_ IN CASE WHEN NOT edge.caller_rel_path STARTS WITH '<external>' THEN [1] ELSE [] END |
+                            MERGE (child_file:File {path: edge.caller_path, repo: edge.repo, collection: edge.collection})
+                            ON CREATE SET child_file.relative_path = edge.caller_rel_path,
+                                          child_file.indexed_at = timestamp()
+                            ON MATCH SET child_file.relative_path = edge.caller_rel_path
+                        )
                         MERGE (child)-[r:INHERITS_FROM {edge_id: edge.edge_id}]->(base)
                         SET r.caller_path = edge.caller_path,
                             r.callee_path = edge.callee_path,
+                            r.caller_rel_path = edge.caller_rel_path,
+                            r.callee_rel_path = edge.callee_rel_path,
                             r.start_line = edge.start_line,
                             r.end_line = edge.end_line,
                             r.language = edge.language,

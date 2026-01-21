@@ -164,6 +164,9 @@ from scripts.hybrid_embed import (
 )
 
 # Import unified cache objects from cache_manager when available
+# Use OrderedDict for fallback caches to support popitem(last=False) eviction
+from collections import OrderedDict as _OD
+
 if UNIFIED_CACHE_AVAILABLE:
     try:
         from scripts.cache_manager import get_search_cache, get_embedding_cache, get_expansion_cache
@@ -172,19 +175,14 @@ if UNIFIED_CACHE_AVAILABLE:
         _EXPANSION_CACHE = get_expansion_cache()
     except ImportError:
         _EMBED_CACHE = None
-        _RESULTS_CACHE = {}
+        _RESULTS_CACHE = _OD()  # Bounded OrderedDict for FIFO eviction
         _EXPANSION_CACHE = None
 else:
     _EMBED_CACHE = None
-    _RESULTS_CACHE = {}
+    _RESULTS_CACHE = _OD()  # Bounded OrderedDict for FIFO eviction
     _EXPANSION_CACHE = None
 
 # Lightweight local fallback cache for deterministic test hits
-try:
-    from collections import OrderedDict as _OD
-except Exception as e:
-    logger.debug(f"Failed to import OrderedDict, using dict fallback: {e}")
-    _OD = dict  # pragma: no cover
 _RESULTS_CACHE_OD = _OD()
 _RESULTS_LOCK = threading.RLock()
 
