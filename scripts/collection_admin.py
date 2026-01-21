@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Optional, List
@@ -28,6 +29,14 @@ try:
     from scripts.workspace_state import get_collection_mappings
 except Exception:
     get_collection_mappings = None
+
+try:
+    from scripts.ingest.graph_edges import get_graph_collection_name
+except Exception:
+    get_graph_collection_name = None
+
+
+logger = logging.getLogger(__name__)
 
 
 _SLUGGED_REPO_RE = re.compile(r"^.+-[0-9a-f]{16}(?:_old)?$")
@@ -198,23 +207,45 @@ def delete_collection_everywhere(
         "collection": name,
         "qdrant_deleted": False,
         "registry_marked_deleted": False,
+        "graph_collection_deleted": False,
         "deleted_state_files": 0,
         "deleted_managed_workspaces": 0,
     }
 
     target_is_old = name.endswith("_old")
 
-    # 1) Delete Qdrant collection
+    # 1) Delete Qdrant collection and its associated graph collection
     try:
         if pooled_qdrant_client is not None:
             with pooled_qdrant_client(url=qdrant_url, api_key=os.environ.get("QDRANT_API_KEY")) as cli:
+                # Delete main collection
                 try:
                     cli.delete_collection(collection_name=name)
                     out["qdrant_deleted"] = True
-                except Exception:
+                except Exception as main_err:
                     out["qdrant_deleted"] = False
-    except Exception:
+                    logger.warning("[collection_admin] Failed to delete collection %s: %s", name, main_err)
+                    raise RuntimeError(f"Failed to delete collection {name}") from main_err
+
+                # Delete graph collection if it exists
+                if get_graph_collection_name is not None:
+                    try:
+                        graph_collection = get_graph_collection_name(name)
+                        cli.delete_collection(collection_name=graph_collection)
+                        out["graph_collection_deleted"] = True
+                    except Exception as graph_err:
+                        # Best-effort: graph collection might not exist
+                        out["graph_collection_deleted"] = False
+                        logger.warning(
+                            "[collection_admin] Failed to delete graph collection %s (best-effort): %s",
+                            name if "graph_collection" not in locals() else graph_collection,
+                            graph_err,
+                        )
+    except Exception as delete_exc:
+        logger.error("[collection_admin] Error deleting collections %s: %s", name, delete_exc)
         out["qdrant_deleted"] = False
+        out["graph_collection_deleted"] = False
+        raise
 
     # 2) Mark deleted in registry DB
     try:

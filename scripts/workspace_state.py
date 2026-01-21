@@ -1934,6 +1934,7 @@ def get_indexing_config_snapshot() -> Dict[str, Any]:
         "index_use_enhanced_ast": _env_truthy("INDEX_USE_ENHANCED_AST", False),
         "mini_vec_dim": _env_int("MINI_VEC_DIM"),
         "lex_sparse_mode": _env_truthy("LEX_SPARSE_MODE", False),
+        "index_graph_edges": _env_truthy("INDEX_GRAPH_EDGES", True),
     }
 
 

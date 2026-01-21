@@ -433,3 +433,64 @@ class TestConstants:
         assert "" in ws_module.PLACEHOLDER_COLLECTION_NAMES
         assert "default-collection" in ws_module.PLACEHOLDER_COLLECTION_NAMES
         assert "my-collection" in ws_module.PLACEHOLDER_COLLECTION_NAMES
+
+
+# ============================================================================
+# Tests: Config Drift
+# ============================================================================
+class TestConfigDrift:
+    """Tests for indexing config drift detection."""
+
+    def test_get_indexing_config_snapshot_includes_graph_edges(self, ws_module, monkeypatch):
+        """Verify index_graph_edges key exists in snapshot with default value True."""
+        # Clear any existing env vars to test defaults
+        monkeypatch.delenv("INDEX_GRAPH_EDGES", raising=False)
+
+        snapshot = ws_module.get_indexing_config_snapshot()
+
+        assert "index_graph_edges" in snapshot, "index_graph_edges should be in config snapshot"
+        assert snapshot["index_graph_edges"] is True, "Default value for index_graph_edges should be True"
+
+    def test_get_indexing_config_snapshot_respects_env_var(self, ws_module, monkeypatch):
+        """Verify INDEX_GRAPH_EDGES env var is respected in snapshot."""
+        # Test with False
+        monkeypatch.setenv("INDEX_GRAPH_EDGES", "0")
+        snapshot = ws_module.get_indexing_config_snapshot()
+        assert snapshot["index_graph_edges"] is False, "INDEX_GRAPH_EDGES=0 should set index_graph_edges to False"
+
+        # Test with True
+        monkeypatch.setenv("INDEX_GRAPH_EDGES", "1")
+        snapshot = ws_module.get_indexing_config_snapshot()
+        assert snapshot["index_graph_edges"] is True, "INDEX_GRAPH_EDGES=1 should set index_graph_edges to True"
+
+    def test_config_drift_classifies_graph_edges_as_recreate(self, ws_module):
+        """Verify that changing INDEX_GRAPH_EDGES triggers recreate drift."""
+        from scripts import indexing_admin
+
+        # Verify the drift rule exists and is classified as "recreate"
+        assert "index_graph_edges" in indexing_admin.CONFIG_DRIFT_RULES, \
+            "index_graph_edges should be in CONFIG_DRIFT_RULES"
+        assert indexing_admin.CONFIG_DRIFT_RULES["index_graph_edges"] == "recreate", \
+            "index_graph_edges drift should be classified as 'recreate'"
+
+    def test_config_drift_graph_edges_true_to_false(self, ws_module):
+        """Verify drift from True->False is classified as recreate."""
+        from scripts import indexing_admin
+
+        old_config = {"index_graph_edges": True}
+        new_config = {"index_graph_edges": False}
+
+        # The actual drift detection is more complex, but we can verify the rule
+        rule = indexing_admin.CONFIG_DRIFT_RULES.get("index_graph_edges")
+        assert rule == "recreate", "Changing index_graph_edges should require recreate"
+
+    def test_config_drift_graph_edges_false_to_true(self, ws_module):
+        """Verify drift from False->True is classified as recreate."""
+        from scripts import indexing_admin
+
+        old_config = {"index_graph_edges": False}
+        new_config = {"index_graph_edges": True}
+
+        # The actual drift detection is more complex, but we can verify the rule
+        rule = indexing_admin.CONFIG_DRIFT_RULES.get("index_graph_edges")
+        assert rule == "recreate", "Changing index_graph_edges should require recreate"

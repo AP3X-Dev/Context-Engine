@@ -12,6 +12,7 @@ This document tracks which environment/configuration knobs impact the indexing p
 | --- | --- | --- | --- |
 | `EMBEDDING_MODEL`, `EMBEDDING_PROVIDER` | Changes vector dimension/model space. | **Recreate** | Collection schema and stored vectors must match the embedding model; `ensure_collection()` recreates the collection when schema differs. |
 | `REFRAG_MODE`, `QWEN3_EMBEDDING_ENABLED`, `MINI_VEC_DIM`, `LEX_SPARSE_MODE` | Adds/removes named vectors (mini, sparse) and advanced embedding paths. | **Recreate** | Qdrant cannot add/remove vector names in-place; we back up → delete → recreate the collection to apply these changes. |
+| `INDEX_GRAPH_EDGES` | Enables/disables graph edge indexing for symbol relationships (defaults to enabled). | **Recreate** | Graph collections (`_graph` suffix) are created/deleted based on this setting; requires collection recreation. |
 | `INDEX_SEMANTIC_CHUNKS`, `INDEX_CHUNK_LINES`, `INDEX_CHUNK_OVERLAP` | Alters semantic chunk sizes/overlaps. | **Reindex** | Requires reprocessing every file so chunks align with the new geometry. |
 | `INDEX_MICRO_CHUNKS`, `MICRO_CHUNK_TOKENS`, `MICRO_CHUNK_STRIDE`, `MAX_MICRO_CHUNKS_PER_FILE` | Controls micro-chunk tier and token window. | **Reindex** | Points must be regenerated with the new token windows. |
 | `USE_TREE_SITTER`, `INDEX_USE_ENHANCED_AST` | Enables AST-guided segmentation + smart reindex logic. | **Reindex** | Cached symbols and chunk boundaries change; files need reindexing to stay consistent. |
