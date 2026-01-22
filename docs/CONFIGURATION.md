@@ -248,6 +248,23 @@ RERANK_EVENTS_ENABLED=0
 | RERANK_LLM_SAMPLE_RATE | Fraction of queries to evaluate with LLM teacher | 1.0 |
 | RERANK_VICREG_WEIGHT | Weight for VICReg consistency loss | 0.1 |
 
+### Calibrated Confidence (Early Stopping)
+
+Enhanced early stopping that considers score separation between top candidates, preventing premature stopping when results are in close competition.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| CALIBRATED_CONFIDENCE | Enable score-separation-aware early stopping | 0 (disabled) |
+| CONFIDENCE_MIN_SEPARATION | Minimum relative score gap between #1 and #2 to stop | 0.15 |
+
+**How it works:**
+- Standard early stopping checks rank stability and improvement threshold
+- Calibrated confidence adds a third check: is the top result clearly ahead?
+- If `(top1 - top2) / top1 < min_separation`, continue refining
+- Prevents stopping when top-2 candidates are neck-and-neck (e.g., 0.51 vs 0.49)
+
+**When to enable:** Useful for queries where ranking precision matters and you want the reranker to "work harder" on close calls.
+
 ## Decoder (llama.cpp / OpenAI / GLM / MiniMax)
 
 | Name | Description | Default |
@@ -481,6 +498,45 @@ Query expansion uses the decoder infrastructure (set via `REFRAG_RUNTIME`):
 
 Set `LLM_EXPAND_MAX=4` to enable LLM-assisted query expansion (generates up to 4 alternate phrasings).
 `EXPAND_MAX_TOKENS` controls the response length budget for the LLM call.
+
+### Pattern-based Expansion
+
+Uses discovered code patterns from the `OnlinePatternLearner` for query expansion. When enabled, searches for patterns matching the query and extracts expansion terms from pattern exemplars and descriptions.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| PATTERN_EXPANSION | Enable pattern-based query expansion (Tier 6) | 0 (disabled) |
+
+**How it works:**
+1. Query is matched against discovered patterns via `natural_language_query()`
+2. Terms are extracted from pattern descriptions and exemplar symbol names
+3. Added as Tier 6 expansions with weight 0.45
+
+**Requirements:** Pattern learner must have discovered patterns (runs during indexing when pattern detection is enabled).
+
+### Intent-Aware Expansion Cascade (IAEC)
+
+Routes query intent to specific expansion strategies instead of running all expansion tiers uniformly. Uses the MCP router's intent classification to select which expansion tiers are appropriate for each query type.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| INTENT_EXPANSION_CASCADE | Enable intent-aware expansion routing | 0 (disabled) |
+
+**Intent → Strategy mapping:**
+
+| Intent | Expansion Behavior |
+|--------|-------------------|
+| `symbol_graph` | Skip all expansion (exact symbol match only), 2x symbol boost |
+| `search_callers` / `search_importers` | Light expansion, 1.5x symbol boost |
+| `search_tests` | Full expansion + inject test patterns (`test_`, `pytest`, `_spec`) |
+| `search_config` | Full expansion + inject config patterns (`config`, `.yaml`, `.json`) |
+| `answer` | Full expansion except word substitution (reduces noise for explanations) |
+| `search` | Default balanced strategy (all tiers enabled) |
+
+**Why use IAEC:**
+- Symbol-focused queries (callers, graph) skip semantic expansion noise
+- Domain-specific queries (tests, config) get relevant term injection
+- Reduces token waste and improves precision for specialized queries
 
 ### Filename Boost
 

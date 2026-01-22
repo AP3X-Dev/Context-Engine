@@ -259,6 +259,9 @@ from scripts.hybrid_expand import (
     _prf_terms_from_results,
     # Availability flag
     SEMANTIC_EXPANSION_AVAILABLE,
+    # IAEC exports
+    IAEC_ENABLED,
+    get_expansion_strategy,
 )
 
 # Conditionally re-export semantic expansion functions
@@ -1192,6 +1195,20 @@ def _run_hybrid_search_impl(
     _query_weights: List[float] = [1.0] * len(qlist)  # Default weight 1.0 for originals
 
     if expand:
+        # IAEC: Classify intent to select expansion strategy
+        _iaec_intent: str | None = None
+        if IAEC_ENABLED and qlist:
+            try:
+                from scripts.mcp_router.intent import classify_intent, get_last_intent_debug
+                _iaec_intent = classify_intent(" ".join(qlist[:3]))
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    _debug = get_last_intent_debug()
+                    _iaec_conf = _debug.get("confidence", 0.0)
+                    logger.debug(f"IAEC intent: {_iaec_intent} (conf={_iaec_conf:.2f})")
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"IAEC intent classification failed: {e}")
+        
         # Use weighted expansion to track query quality tiers
         if SEMANTIC_EXPANSION_AVAILABLE:
             qlist, _query_weights = expand_queries_weighted(
@@ -1205,6 +1222,7 @@ def _run_hybrid_search_impl(
                 symbol=eff_symbol,
                 ext=eff_ext,
                 repo=eff_repo,
+                intent=_iaec_intent,
             )
         else:
             qlist = expand_queries(qlist, eff_language)
