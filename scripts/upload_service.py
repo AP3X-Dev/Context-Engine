@@ -48,6 +48,11 @@ from urllib.parse import urlencode
 
 from scripts.upload_delta_bundle import get_workspace_key, process_delta_bundle
 
+try:
+    from scripts.collection_health import get_collection_points_count
+except ImportError:
+    get_collection_points_count = None  # type: ignore
+
 from scripts.indexing_admin import (
     build_admin_collections_view,
     resolve_collection_root,
@@ -252,6 +257,22 @@ class BridgeCollectionStateResponse(BaseModel):
     serving_repo_slug: Optional[str]
     indexing_status: Optional[Dict[str, Any]]
     staging: Optional[Dict[str, Any]]
+
+
+class IndexingStatusResponse(BaseModel):
+    """Comprehensive indexing status for a workspace/collection."""
+    workspace_path: str
+    collection_name: str
+    repo_name: Optional[str] = None
+    indexing_state: str  # idle, indexing, watching, error
+    points_count: Optional[int] = None
+    progress: Optional[Dict[str, Any]] = None  # files_processed, total_files, current_file
+    started_at: Optional[str] = None
+    last_upload_at: Optional[str] = None
+    last_indexed_at: Optional[str] = None
+    qdrant_healthy: bool = False
+    watcher_active: bool = False
+    error: Optional[str] = None
 
 
 class AuthLoginRequest(BaseModel):
@@ -1406,6 +1427,112 @@ async def get_status(workspace_path: str):
     except Exception as e:
         logger.error(f"Error getting status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/indexing/status", response_model=IndexingStatusResponse)
+async def get_indexing_status(
+    workspace_path: Optional[str] = None,
+    collection: Optional[str] = None,
+    repo_name: Optional[str] = None,
+):
+    """Get comprehensive indexing status for a workspace/collection.
+
+    This endpoint provides detailed information about:
+    - Current indexing state (idle, indexing, watching, error)
+    - Progress information (files processed, total files)
+    - Qdrant collection health and point count
+    - Watcher status
+
+    Use this to poll for indexing completion after upload.
+    """
+    try:
+        # Resolve workspace and repo
+        ws_path = (workspace_path or "").strip() or WORK_DIR
+        repo = (repo_name or "").strip() or None
+        coll_name = (collection or "").strip() or None
+
+        # Try to resolve from collection if provided
+        if coll_name and resolve_collection_root:
+            try:
+                root, resolved_repo = resolve_collection_root(collection=coll_name, work_dir=WORK_DIR)
+                if root:
+                    ws_path = root
+                    repo = resolved_repo
+            except Exception:
+                pass
+
+        # Get repo name from path if not provided
+        if not repo and _extract_repo_name_from_path:
+            repo = _extract_repo_name_from_path(ws_path)
+
+        # Get collection name
+        if not coll_name:
+            if get_collection_name and repo:
+                coll_name = get_collection_name(repo)
+            else:
+                coll_name = DEFAULT_COLLECTION
+
+        # Get workspace state snapshot for indexing status
+        indexing_state = "unknown"
+        progress = None
+        started_at = None
+        last_indexed_at = None
+        error_msg = None
+
+        if get_collection_state_snapshot:
+            try:
+                snapshot = get_collection_state_snapshot(workspace_path=ws_path, repo_name=repo)
+                if snapshot:
+                    idx_status = snapshot.get("indexing_status") or {}
+                    indexing_state = idx_status.get("state", "idle")
+                    progress = idx_status.get("progress")
+                    started_at = idx_status.get("started_at")
+                    # Check staging info for additional context
+                    staging = snapshot.get("staging")
+                    if staging and staging.get("status"):
+                        staging_status = staging.get("status", {})
+                        if staging_status.get("state"):
+                            indexing_state = staging_status.get("state")
+            except Exception as e:
+                logger.debug(f"Failed to get workspace state: {e}")
+                error_msg = str(e)
+
+        # Get Qdrant collection point count
+        points_count = None
+        qdrant_healthy = False
+        if get_collection_points_count and coll_name:
+            try:
+                count = await asyncio.to_thread(
+                    get_collection_points_count, coll_name, QDRANT_URL
+                )
+                if count >= 0:
+                    points_count = count
+                    qdrant_healthy = True
+            except Exception as e:
+                logger.debug(f"Failed to get collection point count: {e}")
+
+        # Determine if watcher is active (based on indexing state)
+        watcher_active = indexing_state in ("watching", "indexing")
+
+        return IndexingStatusResponse(
+            workspace_path=ws_path,
+            collection_name=coll_name or DEFAULT_COLLECTION,
+            repo_name=repo,
+            indexing_state=indexing_state,
+            points_count=points_count,
+            progress=progress,
+            started_at=started_at,
+            last_upload_at=None,  # TODO: track in state
+            last_indexed_at=last_indexed_at,
+            qdrant_healthy=qdrant_healthy,
+            watcher_active=watcher_active,
+            error=error_msg,
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting indexing status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/v1/delta/upload", response_model=UploadResponse)
 async def upload_delta_bundle(
