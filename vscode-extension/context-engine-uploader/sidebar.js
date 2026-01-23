@@ -22,6 +22,9 @@ function makeTreeItem(label, opts = {}) {
   if (opts.contextValue !== undefined) {
     item.contextValue = opts.contextValue;
   }
+  if (opts.profileId !== undefined) {
+    item.id = opts.profileId;
+  }
   return item;
 }
 
@@ -348,7 +351,8 @@ function register(context, deps) {
             title: 'Set Active Profile',
             arguments: [p.id],
           },
-          contextValue: 'ProfilesChoice',
+          contextValue: 'ProfileItem',
+          profileId: p.id,
         }));
       }
 
@@ -359,7 +363,10 @@ function register(context, deps) {
       return [
         makeTreeItem('Setup Workspace', { icon: new vscode.ThemeIcon('rocket'), command: { command: 'contextEngineUploader.setupWorkspace', title: 'Setup Workspace' } }),
         makeTreeItem('Switch Profile', { icon: new vscode.ThemeIcon('sync'), command: { command: 'contextEngineUploader.switchProfile', title: 'Switch Profile' } }),
-        makeTreeItem('Create Profile From Current Settings', { icon: new vscode.ThemeIcon('add'), command: { command: 'contextEngineUploader.createProfileFromCurrentSettings', title: 'Create Profile From Current Settings' } }),
+        makeTreeItem('Create Profile', { icon: new vscode.ThemeIcon('add'), command: { command: 'contextEngineUploader.createProfileFromCurrentSettings', title: 'Create Profile' } }),
+        makeTreeItem('Rename Profile', { icon: new vscode.ThemeIcon('edit'), command: { command: 'contextEngineUploader.renameProfile', title: 'Rename Profile' } }),
+        makeTreeItem('Duplicate Profile', { icon: new vscode.ThemeIcon('copy'), command: { command: 'contextEngineUploader.duplicateProfile', title: 'Duplicate Profile' } }),
+        makeTreeItem('Delete Profile', { icon: new vscode.ThemeIcon('trash'), command: { command: 'contextEngineUploader.deleteProfile', title: 'Delete Profile' } }),
         makeTreeItem('Import Profiles', { icon: new vscode.ThemeIcon('cloud-download'), command: { command: 'contextEngineUploader.importProfiles', title: 'Import Profiles' } }),
         makeTreeItem('Export Profiles', { icon: new vscode.ThemeIcon('cloud-upload'), command: { command: 'contextEngineUploader.exportProfiles', title: 'Export Profiles' } }),
       ];
@@ -402,10 +409,32 @@ function register(context, deps) {
   const actionsProvider = createProvider(async (element) => {
     if (!element) {
       return [
-        makeTreeItem('Getting Started', { collapsibleState: vscode.TreeItemCollapsibleState.Expanded, contextValue: 'ctxceActionsGettingStartedRoot' }),
-        makeTreeItem('Upload & Watch', { collapsibleState: vscode.TreeItemCollapsibleState.Expanded, contextValue: 'ctxceActionsUploadRoot' }),
-        makeTreeItem('MCP Bridge & Config', { collapsibleState: vscode.TreeItemCollapsibleState.Collapsed, contextValue: 'ctxceActionsBridgeRoot' }),
-        makeTreeItem('Utilities', { collapsibleState: vscode.TreeItemCollapsibleState.Collapsed, contextValue: 'ctxceActionsUtilitiesRoot' }),
+        makeTreeItem('Settings', {
+          icon: new vscode.ThemeIcon('settings-gear'),
+          command: { command: 'contextEngineUploader.openSettings', title: 'Open Settings' },
+          tooltip: 'Open Context Engine settings panel',
+          contextValue: 'ctxceSettingsButton'
+        }),
+        makeTreeItem('Getting Started', {
+          icon: new vscode.ThemeIcon('rocket'),
+          collapsibleState: vscode.TreeItemCollapsibleState.Expanded,
+          contextValue: 'ctxceActionsGettingStartedRoot'
+        }),
+        makeTreeItem('Indexing', {
+          icon: new vscode.ThemeIcon('database'),
+          collapsibleState: vscode.TreeItemCollapsibleState.Expanded,
+          contextValue: 'ctxceActionsUploadRoot'
+        }),
+        makeTreeItem('MCP Integrations', {
+          icon: new vscode.ThemeIcon('plug'),
+          collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
+          contextValue: 'ctxceActionsBridgeRoot'
+        }),
+        makeTreeItem('Prompt+', {
+          icon: new vscode.ThemeIcon('sparkle'),
+          collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
+          contextValue: 'ctxceActionsUtilitiesRoot'
+        }),
       ];
     }
 

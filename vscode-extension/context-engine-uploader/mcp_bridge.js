@@ -1,3 +1,43 @@
+const net = require('net');
+
+// Max attempts to find an available port (auto-increment from base port)
+const MAX_PORT_ATTEMPTS = 10;
+
+/**
+ * Check if a port is available by attempting to bind to it.
+ * Returns a Promise that resolves to true if port is free, false otherwise.
+ */
+function isPortAvailable(port, host = '127.0.0.1') {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => {
+      // Port is in use or inaccessible
+      resolve(false);
+    });
+    server.once('listening', () => {
+      server.close(() => {
+        resolve(true);
+      });
+    });
+    server.listen(port, host);
+  });
+}
+
+/**
+ * Find the first available port starting from basePort.
+ * Returns the port number if found, undefined if all attempts fail.
+ */
+async function findAvailablePort(basePort, maxAttempts = MAX_PORT_ATTEMPTS, host = '127.0.0.1') {
+  for (let i = 0; i < maxAttempts; i++) {
+    const port = basePort + i;
+    const available = await isPortAvailable(port, host);
+    if (available) {
+      return port;
+    }
+  }
+  return undefined;
+}
+
 function createBridgeManager(deps) {
   const vscode = deps.vscode;
   const spawn = deps.spawn;
@@ -109,6 +149,12 @@ function createBridgeManager(deps) {
 
   function resolveBridgeHttpUrl() {
     try {
+      // If bridge is running, return the actual port it's listening on
+      if (httpBridgeProcess && httpBridgePort) {
+        const hostname = '127.0.0.1';
+        return `http://${hostname}:${httpBridgePort}/mcp`;
+      }
+      // Otherwise fall back to configured port (pre-start state)
       const settings = getEffectiveConfig();
       let port = Number(settings.get('mcpBridgePort') || 30810);
       if (!Number.isFinite(port) || port <= 0) {
@@ -174,6 +220,21 @@ function createBridgeManager(deps) {
       vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for HTTP bridge.');
       return undefined;
     }
+
+    // Find an available port, auto-incrementing if the configured port is in use
+    const basePort = options.port;
+    const actualPort = await findAvailablePort(basePort, MAX_PORT_ATTEMPTS);
+    if (!actualPort) {
+      const errorMsg = `Context Engine Uploader: could not find available port in range ${basePort}-${basePort + MAX_PORT_ATTEMPTS - 1}. Check if another process is using these ports.`;
+      log(errorMsg);
+      vscode.window.showErrorMessage(errorMsg);
+      return undefined;
+    }
+
+    if (actualPort !== basePort) {
+      log(`Configured port ${basePort} is in use; using port ${actualPort} instead.`);
+    }
+
     const cliArgs = ['mcp-http-serve'];
     if (options.workspacePath) {
       cliArgs.push('--workspace', normalizeWorkspaceForBridge(options.workspacePath));
@@ -184,9 +245,9 @@ function createBridgeManager(deps) {
     if (options.memoryUrl) {
       cliArgs.push('--memory-url', options.memoryUrl);
     }
-    if (options.port) {
-      cliArgs.push('--port', String(options.port));
-    }
+    // Use the actually resolved port (may differ from config if port was in use)
+    cliArgs.push('--port', String(actualPort));
+
     const finalArgs = [...invocation.args, ...cliArgs];
     log(`Starting HTTP MCP bridge via ${invocation.command} ${finalArgs.join(' ')}`);
     const child = spawn(invocation.command, finalArgs, {
@@ -194,7 +255,7 @@ function createBridgeManager(deps) {
       env: process.env,
     });
     httpBridgeProcess = child;
-    httpBridgePort = options.port;
+    httpBridgePort = actualPort;
     httpBridgeWorkspace = options.workspacePath;
     attachOutput(child, 'mcp-http');
     child.on('exit', (code, signal) => {
@@ -213,11 +274,11 @@ function createBridgeManager(deps) {
         httpBridgeWorkspace = undefined;
       }
     });
-    vscode.window.showInformationMessage(`Context Engine HTTP MCP bridge listening on http://127.0.0.1:${options.port}/mcp`);
+    vscode.window.showInformationMessage(`Context Engine HTTP MCP bridge listening on http://127.0.0.1:${actualPort}/mcp`);
     if (typeof scheduleMcpConfigRefreshAfterBridge === 'function') {
       scheduleMcpConfigRefreshAfterBridge();
     }
-    return options.port;
+    return actualPort;
   }
 
   function stop() {

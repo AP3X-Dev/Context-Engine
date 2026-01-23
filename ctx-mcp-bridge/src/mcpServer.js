@@ -63,11 +63,7 @@ async function listMemoryTools(client) {
     return [];
   }
   try {
-    const remote = await withTimeout(
-      client.listTools(),
-      5000,
-      "memory tools/list",
-    );
+    const remote = await client.listTools();
     return Array.isArray(remote?.tools) ? remote.tools.slice() : [];
   } catch (err) {
     debugLog("[ctxce] Error calling memory tools/list: " + String(err));
@@ -113,15 +109,15 @@ function getBridgeToolTimeoutMs() {
   try {
     const raw = process.env.CTXCE_TOOL_TIMEOUT_MSEC;
     if (!raw) {
-      return 300000;
+      return 600000; // 10 minutes default for remote operations
     }
     const parsed = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 300000;
+      return 600000;
     }
     return parsed;
   } catch {
-    return 300000;
+    return 600000;
   }
 }
 
@@ -182,7 +178,7 @@ function getBridgeRetryAttempts() {
   try {
     const raw = process.env.CTXCE_TOOL_RETRY_ATTEMPTS;
     if (!raw) {
-      return 2;
+      return 3; // 3 attempts for better reliability on remote
     }
     const parsed = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -190,7 +186,7 @@ function getBridgeRetryAttempts() {
     }
     return parsed;
   } catch {
-    return 2;
+    return 3;
   }
 }
 
@@ -198,7 +194,7 @@ function getBridgeRetryDelayMs() {
   try {
     const raw = process.env.CTXCE_TOOL_RETRY_DELAY_MSEC;
     if (!raw) {
-      return 200;
+      return 1000; // 1 second delay between retries for remote
     }
     const parsed = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(parsed) || parsed < 0) {
@@ -206,7 +202,7 @@ function getBridgeRetryDelayMs() {
     }
     return parsed;
   } catch {
-    return 200;
+    return 1000;
   }
 }
 
@@ -677,11 +673,7 @@ async function createBridgeServer(options) {
       if (!indexerClient) {
         throw new Error("Indexer MCP client not initialized");
       }
-      remote = await withTimeout(
-        indexerClient.listTools(),
-        10000,
-        "indexer tools/list",
-      );
+      remote = await indexerClient.listTools();
     } catch (err) {
       debugLog("[ctxce] Error calling remote tools/list: " + String(err));
       const memoryToolsFallback = await listMemoryTools(memoryClient);

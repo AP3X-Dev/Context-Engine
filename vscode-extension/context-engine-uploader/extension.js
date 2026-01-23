@@ -16,6 +16,8 @@ const { createPythonEnvManager } = require('./python_env');
 const { createProcessManager } = require('./process_manager');
 const { registerExtensionCommands } = require('./commands');
 const { createConfigResolver } = require('./config_resolver');
+const { createDashboardViewProvider } = require('./dashboard');
+const { SettingsWebviewProvider } = require('./settings-webview');
 let outputChannel;
 let extensionRoot;
 let statusBarItem;
@@ -34,6 +36,8 @@ let pythonEnvManager;
 let processManager;
 let configResolver;
 let sidebarApi;
+let dashboardProvider;
+let settingsWebviewProvider;
 let pendingProfileRestartTimer;
 const DEFAULT_CONTAINER_ROOT = '/work';
 // const CLAUDE_HOOK_COMMAND = '/home/coder/project/Context-Engine/ctx-hook-simple.sh';
@@ -361,6 +365,37 @@ function activate(context) {
     log(`Sidebar registration failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  // Register Dashboard Webview
+  try {
+    dashboardProvider = createDashboardViewProvider(context.extensionUri, {
+      getState: () => ({
+        statusMode,
+        httpBridgeProcess: bridgeManager ? bridgeManager.getState().process : undefined,
+        httpBridgePort: bridgeManager ? bridgeManager.getState().port : undefined,
+      }),
+    });
+    const dashboardRegistration = vscode.window.registerWebviewViewProvider(
+      'contextEngineDashboard',
+      dashboardProvider
+    );
+    context.subscriptions.push(dashboardRegistration);
+    log('Dashboard webview registered successfully');
+  } catch (error) {
+    log(`Dashboard registration failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  // Register Settings Webview
+  try {
+    settingsWebviewProvider = new SettingsWebviewProvider(context.extensionUri);
+    const openSettingsCmd = vscode.commands.registerCommand('contextEngineUploader.openSettings', () => {
+      settingsWebviewProvider.openSettings();
+    });
+    context.subscriptions.push(openSettingsCmd);
+    log('Settings webview registered successfully');
+  } catch (error) {
+    log(`Settings webview registration failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // Register extension commands via the commands module
   try {
     const commandDisposables = registerExtensionCommands({
@@ -575,18 +610,39 @@ function setStatusBarState(mode) {
     return;
   }
   statusMode = mode;
+
+  // Reset to defaults
+  statusBarItem.color = undefined;
+  statusBarItem.backgroundColor = undefined;
+
   if (mode === 'indexing') {
-    statusBarItem.text = '$(sync~spin) Indexing...';
-    statusBarItem.color = undefined;
+    statusBarItem.text = '$(sync~spin) Context Engine: Indexing...';
+    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    statusBarItem.tooltip = 'Indexing codebase in progress...';
   } else if (mode === 'indexed') {
-    statusBarItem.text = '$(check) Indexed';
+    statusBarItem.text = '$(check) Context Engine: Ready';
     statusBarItem.color = new vscode.ThemeColor('charts.green');
+    statusBarItem.tooltip = 'Codebase indexed and ready. Click to re-index.';
   } else if (mode === 'watch') {
-    statusBarItem.text = '$(sync) Watching (Click Force Index)';
+    statusBarItem.text = '$(eye) Context Engine: Watching';
     statusBarItem.color = new vscode.ThemeColor('charts.purple');
+    statusBarItem.tooltip = 'Watching for file changes. Click to force re-index.';
+  } else if (mode === 'error') {
+    statusBarItem.text = '$(error) Context Engine: Error';
+    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    statusBarItem.tooltip = 'Connection error. Click to retry.';
+  } else if (mode === 'disconnected') {
+    statusBarItem.text = '$(debug-disconnect) Context Engine: Disconnected';
+    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    statusBarItem.tooltip = 'Endpoint unreachable. Click to configure.';
   } else {
-    statusBarItem.text = '$(sync) Index Codebase';
-    statusBarItem.color = undefined;
+    statusBarItem.text = '$(rocket) Context Engine';
+    statusBarItem.tooltip = 'Click to index codebase';
+  }
+
+  // Refresh dashboard if it exists
+  if (dashboardProvider && typeof dashboardProvider.refresh === 'function') {
+    try { dashboardProvider.refresh(); } catch (_) { }
   }
 }
 function log(message) {
