@@ -122,6 +122,10 @@
       {
         "command": "contextEngineUploader.startSavedStack",
         "title": "Context Engine Uploader: Start Saved Stack (docker compose up)"
+      },
+      {
+        "command": "contextEngineUploader.deleteProfile",
+        "title": "Context Engine Uploader: Delete Profile"
       }
     ],
     "viewsContainers": {

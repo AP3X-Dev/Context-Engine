@@ -685,6 +685,58 @@ async function importProfilesWizard() {
   _vscode.window.showInformationMessage(`Context Engine Uploader: imported ${incoming.length} profile(s).`);
 }
 
+async function deleteProfileWizard() {
+  if (!_vscode) {
+    return;
+  }
+  const db = loadProfilesDb();
+  const profiles = Array.isArray(db.profiles) ? db.profiles : [];
+  if (!profiles.length) {
+    _vscode.window.showInformationMessage('Context Engine Uploader: no profiles to delete.');
+    return;
+  }
+
+  const activeId = getActiveProfileId();
+  const items = profiles
+    .filter(p => p && typeof p === 'object' && p.id)
+    .map(p => ({
+      label: `${(p.name || p.id || '').trim() || 'Unnamed profile'}${p.id === activeId ? ' (active)' : ''}`,
+      description: p.id,
+      id: p.id,
+    }));
+
+  const picked = await _vscode.window.showQuickPick(items, {
+    placeHolder: 'Select profile to delete',
+    canPickMany: false,
+  });
+  if (!picked) {
+    return;
+  }
+
+  const confirm = await _vscode.window.showWarningMessage(
+    `Delete profile "${picked.label}"?`,
+    { modal: true },
+    'Delete',
+  );
+  if (confirm !== 'Delete') {
+    return;
+  }
+
+  db.profiles = profiles.filter(p => p && p.id !== picked.id);
+
+  if (!await saveProfilesDb(db)) {
+    _vscode.window.showErrorMessage('Context Engine Uploader: failed to save profiles database after delete.');
+    return;
+  }
+
+  if (activeId === picked.id) {
+    await setActiveProfileId(undefined);
+    _vscode.window.showInformationMessage(`Context Engine Uploader: deleted profile "${picked.label}" and cleared active profile.`);
+  } else {
+    _vscode.window.showInformationMessage(`Context Engine Uploader: deleted profile "${picked.label}".`);
+  }
+}
+
 function registerCommands(deps) {
   if (!_vscode || !_context) {
     throw new Error('profiles.registerCommands called before profiles.init');
@@ -695,6 +747,7 @@ function registerCommands(deps) {
     _vscode.commands.registerCommand('contextEngineUploader.createProfileFromCurrentSettings', () => createProfileFromCurrentSettingsWizard()),
     _vscode.commands.registerCommand('contextEngineUploader.exportProfiles', () => exportProfilesWizard()),
     _vscode.commands.registerCommand('contextEngineUploader.importProfiles', () => importProfilesWizard()),
+    _vscode.commands.registerCommand('contextEngineUploader.deleteProfile', () => deleteProfileWizard()),
   ];
 }
 
