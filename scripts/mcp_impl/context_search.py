@@ -642,7 +642,12 @@ async def _context_search_impl(
     # Shape code results to a common schema
     code_hits: List[Dict[str, Any]] = []
     if isinstance(code_res, dict):
-        items = code_res.get("results") or code_res.get("data") or code_res.get("items")
+        # Prefer results_json (preserved structured data from TOON encoding) over results
+        # Use 'in' check to distinguish "key missing" from "empty list" (empty list is valid)
+        if "results_json" in code_res and isinstance(code_res.get("results_json"), list):
+            items = code_res["results_json"]
+        else:
+            items = code_res.get("results") or code_res.get("data") or code_res.get("items")
         # If compact mode was used, results may be a list; support both shapes
         items = items if items is not None else code_res.get("results", code_res)
     else:
