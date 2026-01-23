@@ -883,11 +883,12 @@ def _ca_prepare_filters_and_retrieve(
     )
     if os.environ.get("DEBUG_CONTEXT_ANSWER"):
         try:
-            print(
-                "[DEBUG] TIER1 items:",
-                len(items),
-                "first path:",
-                (items[0].get("path") if items else None),
+            logger.debug(
+                "TIER1 items",
+                extra={
+                    "count": len(items),
+                    "first_path": (items[0].get("path") if items else None),
+                },
             )
         except Exception as e:
             logger.debug(f"Suppressed exception: {e}")
@@ -1220,15 +1221,13 @@ def _ca_fallback_and_budget(
             )
 
             if os.environ.get("DEBUG_CONTEXT_ANSWER"):
-                logger.debug(
-                    "TIER2: broader hybrid returned items", extra={"count": len(items)}
-                )
                 try:
-                    print(
-                        "[DEBUG] TIER2 items:",
-                        len(items),
-                        "first path:",
-                        (items[0].get("path") if items else None),
+                    logger.debug(
+                        "TIER2 items",
+                        extra={
+                            "count": len(items),
+                            "first_path": (items[0].get("path") if items else None),
+                        },
                     )
                 except Exception as e:
                     logger.debug(f"Suppressed exception: {e}")

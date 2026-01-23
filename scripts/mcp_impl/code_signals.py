@@ -111,7 +111,7 @@ def _init_code_intent_centroids():
             _CODE_INTENT_CACHE["initialized"] = True
         except Exception as e:
             if os.environ.get("DEBUG_CODE_SIGNALS"):
-                print(f"[DEBUG] Failed to init code intent centroids: {e}")
+                logger.debug(f"Failed to init code intent centroids: {e}")
             _CODE_INTENT_CACHE["initialized"] = False
 
 

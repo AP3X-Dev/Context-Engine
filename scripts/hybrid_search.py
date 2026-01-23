@@ -164,6 +164,9 @@ from scripts.hybrid_embed import (
 )
 
 # Import unified cache objects from cache_manager when available
+# Use OrderedDict for fallback caches to support popitem(last=False) eviction
+from collections import OrderedDict as _OD
+
 if UNIFIED_CACHE_AVAILABLE:
     try:
         from scripts.cache_manager import get_search_cache, get_embedding_cache, get_expansion_cache
@@ -172,19 +175,14 @@ if UNIFIED_CACHE_AVAILABLE:
         _EXPANSION_CACHE = get_expansion_cache()
     except ImportError:
         _EMBED_CACHE = None
-        _RESULTS_CACHE = {}
+        _RESULTS_CACHE = _OD()  # Bounded OrderedDict for FIFO eviction
         _EXPANSION_CACHE = None
 else:
     _EMBED_CACHE = None
-    _RESULTS_CACHE = {}
+    _RESULTS_CACHE = _OD()  # Bounded OrderedDict for FIFO eviction
     _EXPANSION_CACHE = None
 
 # Lightweight local fallback cache for deterministic test hits
-try:
-    from collections import OrderedDict as _OD
-except Exception as e:
-    logger.debug(f"Failed to import OrderedDict, using dict fallback: {e}")
-    _OD = dict  # pragma: no cover
 _RESULTS_CACHE_OD = _OD()
 _RESULTS_LOCK = threading.RLock()
 
@@ -261,6 +259,9 @@ from scripts.hybrid_expand import (
     _prf_terms_from_results,
     # Availability flag
     SEMANTIC_EXPANSION_AVAILABLE,
+    # IAEC exports
+    IAEC_ENABLED,
+    get_expansion_strategy,
 )
 
 # Conditionally re-export semantic expansion functions
@@ -1194,6 +1195,20 @@ def _run_hybrid_search_impl(
     _query_weights: List[float] = [1.0] * len(qlist)  # Default weight 1.0 for originals
 
     if expand:
+        # IAEC: Classify intent to select expansion strategy
+        _iaec_intent: str | None = None
+        if IAEC_ENABLED and qlist:
+            try:
+                from scripts.mcp_router.intent import classify_intent, get_last_intent_debug
+                _iaec_intent = classify_intent(" ".join(qlist[:3]))
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    _debug = get_last_intent_debug()
+                    _iaec_conf = _debug.get("confidence", 0.0)
+                    logger.debug(f"IAEC intent: {_iaec_intent} (conf={_iaec_conf:.2f})")
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"IAEC intent classification failed: {e}")
+        
         # Use weighted expansion to track query quality tiers
         if SEMANTIC_EXPANSION_AVAILABLE:
             qlist, _query_weights = expand_queries_weighted(
@@ -1207,6 +1222,7 @@ def _run_hybrid_search_impl(
                 symbol=eff_symbol,
                 ext=eff_ext,
                 repo=eff_repo,
+                intent=_iaec_intent,
             )
         else:
             qlist = expand_queries(qlist, eff_language)
@@ -1547,6 +1563,12 @@ def _run_hybrid_search_impl(
                 for result in mini_results:
                     if hasattr(result, 'id'):
                         candidate_ids.add(result.id)
+                # Cap check: if union exceeds REFRAG_CANDIDATES, gating hurts more than helps
+                if len(candidate_ids) > cand_n:
+                    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                        logger.debug(f"ReFRAG gate-first skipped: {len(candidate_ids)} candidates exceeds cap {cand_n}")
+                    candidate_ids = set()  # Clear to skip gating
+                    break
 
             if candidate_ids:
                 # Server-side gating without requiring payload fields: prefer HasIdCondition

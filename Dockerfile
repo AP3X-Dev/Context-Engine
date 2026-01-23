@@ -17,8 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /tmp/requirements.txt
 
-# Copy scripts for all services
+# Copy scripts and templates for all services
 COPY scripts /app/scripts
+COPY templates /app/templates
 
 # Create directories
 WORKDIR /work

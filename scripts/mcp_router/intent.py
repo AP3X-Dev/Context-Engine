@@ -1,5 +1,20 @@
 """
-mcp_router/intent.py - Intent classification (rules + ML).
+mcp_router/intent.py - Intent classification for MCP tool routing.
+
+Classifies user queries into specific tool intents (12+ categories) using
+rules-first with ML fallback. Returns a string intent constant.
+
+NOTE: This module handles TOOL-LEVEL intent for MCP tool dispatch.
+For RETRIEVAL-LEVEL intent (4 categories: GRAPH, SEMANTIC, IDENTIFIER, HYBRID),
+see scripts/intent_classifier.py which tunes search strategy in QueryOptimizer.
+
+The split is intentional:
+- Router intent (this file): fine-grained tool selection → returns str
+- Retrieval intent: broad search strategy → returns Tuple[QueryIntent, float, bool]
+
+Intents handled here:
+  answer, search, search_tests, search_config, search_callers, search_importers,
+  memory_store, memory_find, symbol_graph, index, prune, status, list
 """
 from __future__ import annotations
 
