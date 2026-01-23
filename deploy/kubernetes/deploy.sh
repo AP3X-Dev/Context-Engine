@@ -191,7 +191,8 @@ apply_with_kustomize() {
 
   # Copy manifests to temp dir to avoid absolute path issues
   cp namespace.yaml configmap.yaml qdrant.yaml mcp-memory.yaml mcp-indexer.yaml \
-     mcp-http.yaml indexer-services.yaml rbac.yaml hpa.yaml networkpolicy.yaml "${tmp_dir}/"
+     mcp-http.yaml indexer-services.yaml rbac.yaml hpa.yaml networkpolicy.yaml \
+     upload-pvc.yaml code-models-pvc.yaml upload-service.yaml learning-reranker-worker.yaml "${tmp_dir}/"
 
   if [[ "${SKIP_LLAMACPP}" != "true" ]]; then
     cp llamacpp.yaml "${tmp_dir}/"
@@ -210,9 +211,13 @@ apply_with_kustomize() {
     echo "  - namespace.yaml"
     echo "  - configmap.yaml"
     echo "  - qdrant.yaml"
+    echo "  - upload-pvc.yaml"
+    echo "  - code-models-pvc.yaml"
     echo "  - mcp-memory.yaml"
     echo "  - mcp-indexer.yaml"
     echo "  - mcp-http.yaml"
+    echo "  - upload-service.yaml"
+    echo "  - learning-reranker-worker.yaml"
     echo "  - indexer-services.yaml"
     echo "  - rbac.yaml"
     echo "  - hpa.yaml"
