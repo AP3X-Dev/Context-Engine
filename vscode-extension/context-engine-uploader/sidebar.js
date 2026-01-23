@@ -1,7 +1,9 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
-const { getDefaultWindsurfMcpPath, getDefaultAugmentMcpPath } = require('./mcp_config');
+const { spawn } = require('child_process');
+const { getDefaultWindsurfMcpPath, getDefaultAugmentMcpPath, getDefaultAntigravityMcpPath } = require('./mcp_config');
+const { checkAuthStatus } = require('./auth_utils');
 
 function makeTreeItem(label, opts = {}) {
   const item = new vscode.TreeItem(label, opts.collapsibleState || vscode.TreeItemCollapsibleState.None);
@@ -210,14 +212,98 @@ async function getCachedAuthEnabled(endpoint) {
   return enabled;
 }
 
+const _authLoggedInCache = new Map();
+const _AUTH_LOGGED_IN_TTL_MS = 10_000;
+
+/**
+ * Check if user is logged in to the configured endpoint.
+ * Uses ctxce auth status to check session state.
+ * Returns true if logged in (state === 'ok'), false otherwise.
+ * @param {string} endpoint
+ * @param {object} deps - needs spawn, resolveBridgeCliInvocation, getWorkspaceFolderPath
+ */
+async function getCachedAuthLoggedIn(endpoint, deps) {
+  // Validate deps first before accessing any properties
+  if (!deps || typeof deps.resolveBridgeCliInvocation !== 'function' || typeof deps.getWorkspaceFolderPath !== 'function' || typeof deps.spawn !== 'function') {
+    return undefined;
+  }
+  const workspacePath = typeof deps.getWorkspaceFolderPath === 'function' ? deps.getWorkspaceFolderPath() || '' : '';
+  const key = `${endpoint || ''}::${workspacePath}`;
+  if (!endpoint) {
+    return undefined;
+  }
+  const now = Date.now();
+  const cached = _authLoggedInCache.get(key);
+  if (cached && cached.ts && (now - cached.ts) < _AUTH_LOGGED_IN_TTL_MS) {
+    return cached.loggedIn;
+  }
+  const statusDeps = {
+    spawn: deps.spawn,
+    resolveBridgeCliInvocation: deps.resolveBridgeCliInvocation,
+    getWorkspaceFolderPath: deps.getWorkspaceFolderPath,
+  };
+  try {
+    const status = await checkAuthStatus(endpoint, statusDeps);
+    const loggedIn = status && status.state === 'ok';
+    _authLoggedInCache.set(key, { loggedIn, ts: now });
+    return loggedIn;
+  } catch (error) {
+    // Log error without throwing into UI
+    const message = error instanceof Error ? error.message : String(error);
+    if (typeof deps.log === 'function') {
+      deps.log(`Failed to check auth status: ${message}`);
+    }
+    return undefined;
+  }
+}
+
+
+async function probeBridgeAlive(port) {
+  if (!port) return false;
+  const fetchFn = (typeof fetch === 'function' ? fetch : undefined);
+  if (!fetchFn) return false;
+  try {
+    const res = await fetchFn(`http://127.0.0.1:${port}/mcp`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+    // Bridge returns 405 for GET /mcp, which is fine, it means something is listening
+    return res.status === 405 || res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 function register(context, deps) {
   const profiles = deps && deps.profiles;
   const getEffectiveConfig = deps && deps.getEffectiveConfig;
   const getResolvedTargetPath = deps && deps.getResolvedTargetPath;
   const getState = deps && deps.getState;
   const onboarding = deps && deps.onboarding;
+  const resolveBridgeCliInvocation = deps && deps.resolveBridgeCliInvocation;
+  const getWorkspaceFolderPath = deps && deps.getWorkspaceFolderPath;
+  const spawn = deps && deps.spawn;
+  const log = deps && deps.log;
 
   const providers = [];
+
+  // Helper function to build auth menu items (Sign In / Sign Out)
+  async function buildAuthMenuItem(endpoint, authDeps) {
+    const isLoggedIn = await getCachedAuthLoggedIn(endpoint, authDeps);
+    if (isLoggedIn) {
+      return makeTreeItem('Sign Out', {
+        icon: new vscode.ThemeIcon('sign-out'),
+        command: { command: 'contextEngineUploader.authLogout', title: 'Sign Out' },
+        tooltip: 'Sign out from the configured endpoint.',
+      });
+    } else {
+      return makeTreeItem('Sign In', {
+        icon: new vscode.ThemeIcon('account'),
+        command: { command: 'contextEngineUploader.authLogin', title: 'Sign In' },
+        tooltip: 'Runs ctxce auth login for the configured endpoint.',
+      });
+    }
+  }
 
   const profilesProvider = createProvider(async element => {
     if (!profiles || typeof profiles.listProfiles !== 'function') {
@@ -295,7 +381,14 @@ function register(context, deps) {
     const targetTooltip = resolvedTarget && resolvedTarget.source ? `Source: ${resolvedTarget.source}` : undefined;
 
     const mcpMode = resolveMcpMode(cfg);
-    const bridge = state && state.httpBridgeProcess ? `running:${state.httpBridgePort || ''}` : 'stopped';
+    let bridge = state && state.httpBridgeProcess ? `running:${state.httpBridgePort || ''}` : 'stopped';
+
+    if (bridge === 'stopped') {
+      const configPort = Number(cfg.get('mcpBridgePort') || 30810);
+      if (await probeBridgeAlive(configPort)) {
+        bridge = `running (external):${configPort}`;
+      }
+    }
 
     return [
       makeTreeItem('Run State', { description: state && state.statusMode ? state.statusMode : 'unknown', icon: new vscode.ThemeIcon('pulse') }),
@@ -364,6 +457,9 @@ function register(context, deps) {
       const augmentEnabled = (() => {
         try { return !!cfg.get('mcpAugmentEnabled', false); } catch (_) { return false; }
       })();
+      const antigravityEnabled = (() => {
+        try { return !!cfg.get('mcpAntigravityEnabled', false); } catch (_) { return false; }
+      })();
       const windsurfMcpPath = (() => {
         try {
           const custom = (cfg.get('windsurfMcpPath') || '').trim();
@@ -380,6 +476,14 @@ function register(context, deps) {
           return getDefaultAugmentMcpPath();
         }
       })();
+      const antigravityMcpPath = (() => {
+        try {
+          const custom = (cfg.get('antigravityMcpPath') || '').trim();
+          return custom || getDefaultAntigravityMcpPath();
+        } catch (_) {
+          return getDefaultAntigravityMcpPath();
+        }
+      })();
 
       const bridgeMode = (() => {
         const mode = resolveMcpMode(cfg);
@@ -394,7 +498,8 @@ function register(context, deps) {
       const missingClaudeMcpConfig = !!(claudeEnabled && !mcpConfigPath);
       const missingWindsurfMcpConfig = !!(windsurfEnabled && windsurfMcpPath && !pathExists(windsurfMcpPath));
       const missingAugmentMcpConfig = !!(augmentEnabled && augmentMcpPath && !pathExists(augmentMcpPath));
-      const missingAnyMcpConfig = !!(missingClaudeMcpConfig || missingWindsurfMcpConfig || missingAugmentMcpConfig);
+      const missingAntigravityMcpConfig = !!(antigravityEnabled && antigravityMcpPath && !pathExists(antigravityMcpPath));
+      const missingAnyMcpConfig = !!(missingClaudeMcpConfig || missingWindsurfMcpConfig || missingAugmentMcpConfig || missingAntigravityMcpConfig);
       const missingCtxConfig = !ctxConfigPath;
 
       const items = [
@@ -483,7 +588,7 @@ function register(context, deps) {
           description: 'Missing',
           icon: new vscode.ThemeIcon('warning'),
           command: { command: 'contextEngineUploader.writeMcpConfigSelect', title: 'Write MCP Config...' },
-          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment).',
+          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment, Antigravity).',
         }));
       }
 
@@ -505,11 +610,13 @@ function register(context, deps) {
       }
 
       if (showAuth) {
-        items.push(makeTreeItem('Sign In', {
-          icon: new vscode.ThemeIcon('account'),
-          command: { command: 'contextEngineUploader.authLogin', title: 'Sign In' },
-          tooltip: 'Runs ctxce auth login for the configured endpoint.',
-        }));
+        const authDeps = {
+          resolveBridgeCliInvocation,
+          getWorkspaceFolderPath,
+          spawn,
+          log,
+        };
+        items.push(await buildAuthMenuItem(endpoint, authDeps));
       }
 
       return items;
@@ -550,7 +657,7 @@ function register(context, deps) {
         makeTreeItem('Write MCP Config...', {
           icon: new vscode.ThemeIcon('file-code'),
           command: { command: 'contextEngineUploader.writeMcpConfigSelect', title: 'Write MCP Config...' },
-          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment).',
+          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment, Antigravity).',
         }),
         makeTreeItem('Write CTX Config (ctx_config.json)', {
           icon: new vscode.ThemeIcon('file-text'),
@@ -588,7 +695,13 @@ function register(context, deps) {
       ];
 
       if (showAuth) {
-        items.push(makeTreeItem('Sign In', { icon: new vscode.ThemeIcon('account'), command: { command: 'contextEngineUploader.authLogin', title: 'Sign In' } }));
+        const authDeps = {
+          resolveBridgeCliInvocation,
+          getWorkspaceFolderPath,
+          spawn,
+          log,
+        };
+        items.push(await buildAuthMenuItem(endpoint, authDeps));
       }
 
       return items;
