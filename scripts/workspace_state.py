@@ -11,6 +11,7 @@ This module provides functionality to track workspace-specific state including:
 - Activity logging with structured metadata
 - Multi-repo support with per-repo state files
 """
+import functools
 import json
 import logging
 import os
@@ -584,8 +585,12 @@ def indexing_lock():
     """
     yield
 
+@functools.lru_cache(maxsize=64)
 def _git_remote_repo_name(repo_path: Path) -> Optional[str]:
-    """Return canonical repo name from git remote origin URL or toplevel."""
+    """Return canonical repo name from git remote origin URL or toplevel.
+
+    Cached to avoid repeated subprocess calls for the same repo path.
+    """
     try:
         r = subprocess.run(
             ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],

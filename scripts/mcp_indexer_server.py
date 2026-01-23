@@ -2282,6 +2282,8 @@ if __name__ == "__main__":
         logger.debug(f"Suppressed exception: {e}")
 
     transport = os.environ.get("FASTMCP_TRANSPORT", "sse").strip().lower()
+    # Enable stateless HTTP mode to avoid session handshake requirement
+    stateless_http = str(os.environ.get("FASTMCP_STATELESS_HTTP", "1")).strip().lower() in {"1", "true", "yes", "on"}
     if transport == "stdio":
         # Run over stdio (for clients that don't support network transports)
         mcp.run(transport="stdio")
@@ -2290,13 +2292,18 @@ if __name__ == "__main__":
         try:
             mcp.settings.host = HOST
             mcp.settings.port = PORT
+            # Set stateless mode via settings (not run kwarg)
+            if stateless_http:
+                mcp.settings.stateless_http = True
         except Exception as e:
-            logger.debug(f"Suppressed exception: {e}")
+            logger.debug(f"Suppressed exception setting config: {e}")
         # Use the correct FastMCP transport name
         try:
+            logger.info(f"Starting streamable-http transport on {HOST}:{PORT} (stateless={stateless_http})")
             mcp.run(transport="streamable-http")
-        except Exception:
-            # Fallback to SSE only if HTTP truly unavailable
+        except Exception as e:
+            # Log the actual error instead of silently falling back
+            logger.warning(f"streamable-http transport failed: {e}, falling back to SSE")
             mcp.settings.host = HOST
             mcp.settings.port = PORT
             mcp.run(transport="sse")
