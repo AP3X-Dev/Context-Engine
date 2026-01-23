@@ -185,6 +185,8 @@ async def _query_callers_async(
     Supports class-level queries: for "MyClass", also matches callers of "MyClass.method".
     Also supports suffix matching for symbols stored with full module paths
     (e.g., "RecursiveReranker" matches "scripts.rerank_recursive.RecursiveReranker").
+
+    Returns relative_path (strips container prefix) for cleaner output.
     """
     symbol_prefix = f"{symbol}."
     symbol_suffix = f".{symbol}"  # For matching full module paths like "module.ClassName"
@@ -195,7 +197,8 @@ async def _query_callers_async(
                    OR callee.name STARTS WITH $symbol_prefix
                    OR callee.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection AND (r.repo = $repo OR callee.repo = $repo)
-            RETURN caller.name as symbol, r.caller_path as path,
+            RETURN caller.name as symbol,
+                   COALESCE(r.caller_rel_path, caller.relative_path, r.caller_path) as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, callee.repo as repo
             LIMIT $limit
@@ -208,7 +211,8 @@ async def _query_callers_async(
                    OR callee.name STARTS WITH $symbol_prefix
                    OR callee.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection
-            RETURN caller.name as symbol, r.caller_path as path,
+            RETURN caller.name as symbol,
+                   COALESCE(r.caller_rel_path, caller.relative_path, r.caller_path) as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, callee.repo as repo
             LIMIT $limit
@@ -229,6 +233,7 @@ async def _query_callees_async(
 
     Supports class-level queries: for "MyClass", also matches callees of "MyClass.method".
     Also supports suffix matching for symbols stored with full module paths.
+    Returns relative_path for cleaner output.
     """
     symbol_prefix = f"{symbol}."
     symbol_suffix = f".{symbol}"  # For matching full module paths
@@ -239,7 +244,8 @@ async def _query_callees_async(
                    OR caller.name STARTS WITH $symbol_prefix
                    OR caller.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection AND (r.repo = $repo OR caller.repo = $repo)
-            RETURN callee.name as symbol, r.caller_path as path,
+            RETURN callee.name as symbol,
+                   COALESCE(r.callee_rel_path, callee.relative_path, r.callee_path) as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, caller.repo as repo
             LIMIT $limit
@@ -252,7 +258,8 @@ async def _query_callees_async(
                    OR caller.name STARTS WITH $symbol_prefix
                    OR caller.name ENDS WITH $symbol_suffix)
                   AND r.collection = $collection
-            RETURN callee.name as symbol, r.caller_path as path,
+            RETURN callee.name as symbol,
+                   COALESCE(r.callee_rel_path, callee.relative_path, r.callee_path) as path,
                    r.start_line as start_line, r.end_line as end_line,
                    r.language as language, caller.repo as repo
             LIMIT $limit
@@ -275,6 +282,7 @@ async def _query_transitive_callers_async(
 
     Supports class-level queries: for "MyClass", also matches callers of "MyClass.method".
     Also supports suffix matching for symbols stored with full module paths.
+    Returns relative_path for cleaner output.
     """
     safe_depth = max(1, min(10, int(depth)))
     symbol_prefix = f"{symbol}."
@@ -289,6 +297,7 @@ async def _query_transitive_callers_async(
                 WITH caller, path, length(path) as hop
                 RETURN caller.name as symbol, hop,
                        [n in nodes(path) | n.name] as path_nodes,
+                       COALESCE(caller.relative_path, caller.path) as path,
                        caller.repo as repo
                 ORDER BY hop
                 LIMIT $limit
@@ -302,6 +311,7 @@ async def _query_transitive_callers_async(
                 WITH caller, path, length(path) as hop
                 RETURN caller.name as symbol, hop,
                        [n in nodes(path) | n.name] as path_nodes,
+                       COALESCE(caller.relative_path, caller.path) as path,
                        caller.repo as repo
                 ORDER BY hop
                 LIMIT $limit
@@ -314,7 +324,7 @@ async def _query_transitive_callers_async(
                 WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix OR target.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT caller
-                RETURN caller.name as symbol, caller.repo as repo
+                RETURN caller.name as symbol, COALESCE(caller.relative_path, caller.path) as path, caller.repo as repo
                 LIMIT $limit
             """
             params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
@@ -324,7 +334,7 @@ async def _query_transitive_callers_async(
                 WHERE (target.name = $symbol OR target.name STARTS WITH $symbol_prefix OR target.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT caller
-                RETURN caller.name as symbol, caller.repo as repo
+                RETURN caller.name as symbol, COALESCE(caller.relative_path, caller.path) as path, caller.repo as repo
                 LIMIT $limit
             """
             params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
@@ -345,6 +355,7 @@ async def _query_transitive_callees_async(
 
     Supports class-level queries: for "MyClass", also matches callees of "MyClass.method".
     Also supports suffix matching for symbols stored with full module paths.
+    Returns relative_path for cleaner output.
     """
     safe_depth = max(1, min(10, int(depth)))
     symbol_prefix = f"{symbol}."
@@ -359,6 +370,7 @@ async def _query_transitive_callees_async(
                 WITH callee, path, length(path) as hop
                 RETURN callee.name as symbol, hop,
                        [n in nodes(path) | n.name] as path_nodes,
+                       COALESCE(callee.relative_path, callee.path) as path,
                        callee.repo as repo
                 ORDER BY hop
                 LIMIT $limit
@@ -372,6 +384,7 @@ async def _query_transitive_callees_async(
                 WITH callee, path, length(path) as hop
                 RETURN callee.name as symbol, hop,
                        [n in nodes(path) | n.name] as path_nodes,
+                       COALESCE(callee.relative_path, callee.path) as path,
                        callee.repo as repo
                 ORDER BY hop
                 LIMIT $limit
@@ -384,7 +397,7 @@ async def _query_transitive_callees_async(
                 WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
                 WITH DISTINCT callee
-                RETURN callee.name as symbol, callee.repo as repo
+                RETURN callee.name as symbol, COALESCE(callee.relative_path, callee.path) as path, callee.repo as repo
                 LIMIT $limit
             """
             params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
@@ -394,7 +407,7 @@ async def _query_transitive_callees_async(
                 WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                       AND all(r IN relationships(path) WHERE r.collection = $collection)
                 WITH DISTINCT callee
-                RETURN callee.name as symbol, callee.repo as repo
+                RETURN callee.name as symbol, COALESCE(callee.relative_path, callee.path) as path, callee.repo as repo
                 LIMIT $limit
             """
             params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}
@@ -415,6 +428,7 @@ async def _query_dependencies_async(
 
     Supports class-level queries: for "MyClass", also matches dependencies of "MyClass.method".
     Also supports suffix matching for symbols stored with full module paths.
+    Returns relative_path for cleaner output.
     """
     safe_depth = max(1, min(10, int(depth)))
     symbol_prefix = f"{symbol}."
@@ -427,7 +441,7 @@ async def _query_dependencies_async(
             WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                   AND all(r IN relationships(path) WHERE r.collection = $collection AND r.repo = $repo)
             WITH DISTINCT dep
-            RETURN dep.name as symbol, dep.repo as repo
+            RETURN dep.name as symbol, COALESCE(dep.relative_path, dep.path) as path, dep.repo as repo
             LIMIT $limit
         """
         params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "repo": repo, "collection": collection, "limit": limit}
@@ -437,7 +451,7 @@ async def _query_dependencies_async(
             WHERE (source.name = $symbol OR source.name STARTS WITH $symbol_prefix OR source.name ENDS WITH $symbol_suffix)
                   AND all(r IN relationships(path) WHERE r.collection = $collection)
             WITH DISTINCT dep
-            RETURN dep.name as symbol, dep.repo as repo
+            RETURN dep.name as symbol, COALESCE(dep.relative_path, dep.path) as path, dep.repo as repo
             LIMIT $limit
         """
         params = {"symbol": symbol, "symbol_prefix": symbol_prefix, "symbol_suffix": symbol_suffix, "collection": collection, "limit": limit}

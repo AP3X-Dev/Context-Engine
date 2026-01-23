@@ -415,7 +415,7 @@ def _ensure_collection(name: str):
         )
         vector_names = list(vectors_cfg.keys())
         sparse_info = f", sparse: {list(sparse_cfg.keys())}" if sparse_cfg else ""
-        print(f"[MEMORY_SERVER] Created collection '{name}' with vectors: {vector_names}{sparse_info}")
+        logger.info(f"Created collection '{name}' with vectors: {vector_names}{sparse_info}")
         return True
     finally:
         _return_qdrant_client(client)

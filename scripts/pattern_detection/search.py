@@ -59,12 +59,17 @@ def _is_toon_enabled() -> bool:
     return os.environ.get("TOON_ENABLED", "0").lower() in ("1", "true", "yes")
 
 
-def _should_use_toon(output_format: Any) -> bool:
-    """Determine if TOON format should be used based on explicit param or env flag."""
-    if output_format is not None:
-        fmt = str(output_format).strip().lower()
-        return fmt == "toon"
-    return _is_toon_enabled()
+# Import shared TOON helper to avoid duplication (see scripts/mcp_impl/toon.py)
+try:
+    from scripts.mcp_impl.toon import _should_use_toon
+except ImportError:
+    # Fallback if mcp_impl not available (standalone usage)
+    def _should_use_toon(output_format: Any) -> bool:
+        """Determine if TOON format should be used based on explicit param or env flag."""
+        if output_format is not None:
+            fmt = str(output_format).strip().lower()
+            return fmt == "toon"
+        return _is_toon_enabled()
 
 
 def _format_pattern_results_as_toon(
@@ -113,7 +118,7 @@ def encode_pattern_results(
 
     # Determine fields based on compact mode
     if compact:
-        fields = ["path", "start_line", "end_line", "score", "language", "matched_lines"]
+        fields = ["path", "start_line", "end_line", "symbol", "score", "language", "matched_lines"]
     else:
         # Full fields for pattern results
         fields = [

@@ -160,6 +160,88 @@ from scripts.utils import lex_sparse_vector_text as _lex_sparse_vector_text
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
 
+
+# -----------------------------------------------------------------------------
+# Edge extraction wrappers - handle Neo4j vs Qdrant signature differences
+# Neo4j adapter accepts extra params (import_paths, collection, qdrant_client)
+# Qdrant-native implementation does not accept these params
+# -----------------------------------------------------------------------------
+
+def _extract_call_edges_compat(
+    symbol_path: str,
+    calls: list,
+    path: str,
+    repo: str,
+    start_line: int = None,
+    end_line: int = None,
+    language: str = None,
+    caller_point_id: str = None,
+    # Neo4j-only params (ignored when Neo4j disabled)
+    import_paths: dict = None,
+    collection: str = None,
+    qdrant_client=None,
+) -> list:
+    """Wrapper for extract_call_edges that handles Neo4j vs Qdrant signatures."""
+    if _NEO4J_GRAPH_ENABLED:
+        return extract_call_edges(
+            symbol_path=symbol_path,
+            calls=calls,
+            path=path,
+            repo=repo,
+            start_line=start_line,
+            end_line=end_line,
+            language=language,
+            caller_point_id=caller_point_id,
+            import_paths=import_paths,
+            collection=collection,
+            qdrant_client=qdrant_client,
+        )
+    else:
+        return extract_call_edges(
+            symbol_path=symbol_path,
+            calls=calls,
+            path=path,
+            repo=repo,
+            start_line=start_line,
+            end_line=end_line,
+            language=language,
+            caller_point_id=caller_point_id,
+        )
+
+
+def _extract_import_edges_compat(
+    symbol_path: str,
+    imports: list,
+    path: str,
+    repo: str,
+    language: str = None,
+    caller_point_id: str = None,
+    # Neo4j-only params (ignored when Neo4j disabled)
+    collection: str = None,
+    qdrant_client=None,
+) -> list:
+    """Wrapper for extract_import_edges that handles Neo4j vs Qdrant signatures."""
+    if _NEO4J_GRAPH_ENABLED:
+        return extract_import_edges(
+            symbol_path=symbol_path,
+            imports=imports,
+            path=path,
+            repo=repo,
+            language=language,
+            caller_point_id=caller_point_id,
+            collection=collection,
+            qdrant_client=qdrant_client,
+        )
+    else:
+        return extract_import_edges(
+            symbol_path=symbol_path,
+            imports=imports,
+            path=path,
+            repo=repo,
+            language=language,
+            caller_point_id=caller_point_id,
+        )
+
 try:
     from scripts.ast_analyzer import get_ast_analyzer
     _AST_ANALYZER_AVAILABLE = True
@@ -1097,7 +1179,7 @@ def _index_single_file_inner(
                         # Get caller_point_id from symbol_path mapping
                         caller_pid = symbol_path_to_point_id.get(caller)
                         all_edges.extend(
-                            extract_call_edges(
+                            _extract_call_edges_compat(
                                 symbol_path=caller,
                                 calls=callees,
                                 path=str(file_path),
@@ -1115,7 +1197,7 @@ def _index_single_file_inner(
                         # For file-level imports, use first point ID if available
                         file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
                         all_edges.extend(
-                            extract_import_edges(
+                            _extract_import_edges_compat(
                                 symbol_path=str(file_path),
                                 imports=imports,
                                 path=str(file_path),
@@ -1132,7 +1214,7 @@ def _index_single_file_inner(
                     # Use first point ID for file-level edges
                     file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
                     if calls:
-                        all_edges.extend(extract_call_edges(
+                        all_edges.extend(_extract_call_edges_compat(
                             symbol_path=source_file_path,
                             calls=calls,
                             path=source_file_path,
@@ -1143,7 +1225,7 @@ def _index_single_file_inner(
                             qdrant_client=client,
                         ))
                     if imports:
-                        all_edges.extend(extract_import_edges(
+                        all_edges.extend(_extract_import_edges_compat(
                             symbol_path=source_file_path,
                             imports=imports,
                             path=source_file_path,
@@ -2094,7 +2176,7 @@ def process_file_with_smart_reindexing(
                         # Get caller_point_id from symbol_path mapping
                         caller_pid = symbol_path_to_point_id_sr.get(caller)
                         all_edges.extend(
-                            extract_call_edges(
+                            _extract_call_edges_compat(
                                 symbol_path=caller,
                                 calls=callees,
                                 path=fp,
@@ -2109,7 +2191,7 @@ def process_file_with_smart_reindexing(
                         # For file-level imports, use first point ID if available
                         file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
                         all_edges.extend(
-                            extract_import_edges(
+                            _extract_import_edges_compat(
                                 symbol_path=fp,
                                 imports=imports,
                                 path=fp,
@@ -2132,7 +2214,7 @@ def process_file_with_smart_reindexing(
                     # Use first point ID for file-level edges
                     file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
                     if file_calls:
-                        all_edges.extend(extract_call_edges(
+                        all_edges.extend(_extract_call_edges_compat(
                             symbol_path=fp,
                             calls=file_calls,
                             path=fp,
@@ -2141,7 +2223,7 @@ def process_file_with_smart_reindexing(
                             import_paths=file_import_map,
                         ))
                     if file_imports:
-                        all_edges.extend(extract_import_edges(
+                        all_edges.extend(_extract_import_edges_compat(
                             symbol_path=fp,
                             imports=file_imports,
                             path=fp,
@@ -2499,7 +2581,7 @@ def graph_backfill_tick(
                     caller_pid = str(pt.id) if pt.id is not None else None
                     if symbol_path:
                         if calls:
-                            all_edges.extend(extract_call_edges(
+                            all_edges.extend(_extract_call_edges_compat(
                                 symbol_path=symbol_path,
                                 calls=calls,
                                 path=path,
@@ -2510,7 +2592,7 @@ def graph_backfill_tick(
                             ))
 
                         if imports:
-                            all_edges.extend(extract_import_edges(
+                            all_edges.extend(_extract_import_edges_compat(
                                 symbol_path=symbol_path,
                                 imports=imports,
                                 path=path,

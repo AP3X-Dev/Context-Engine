@@ -56,7 +56,7 @@ def encode_search_results(
         TOON-formatted search results
     """
     if compact:
-        core_fields = {"path", "start_line", "end_line"}
+        core_fields = {"path", "start_line", "end_line", "symbol"}
         filtered = [{k: v for k, v in r.items() if k in core_fields} for r in results]
     else:
         filtered = results
@@ -87,7 +87,7 @@ def encode_context_results(
 
     # Filter fields if compact mode
     if compact:
-        code_fields = {"path", "start_line", "end_line"}
+        code_fields = {"path", "start_line", "end_line", "symbol"}
         mem_fields = {"content", "score"}
         code_results = [{k: v for k, v in r.items() if k in code_fields} for r in code_results]
         memory_results = [{k: v for k, v in r.items() if k in mem_fields} for r in memory_results]
