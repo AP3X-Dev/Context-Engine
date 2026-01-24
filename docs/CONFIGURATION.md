@@ -475,6 +475,22 @@ To use legacy settings (pre-v2): `LEX_VECTOR_DIM=4096 LEX_MULTI_HASH=1 LEX_BIGRA
 | HYBRID_RESULTS_CACHE | Max cached search results | 128 |
 | HYBRID_RESULTS_CACHE_ENABLED | Enable search result caching | 1 (enabled) |
 
+### Codebase State Backend
+
+Controls where `.codebase/state.json`, `.codebase/cache.json`, and symbol cache data are stored.
+Useful for Kubernetes deployments where a shared filesystem is not reliable.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| CODEBASE_STATE_BACKEND | State backend (`file` or `redis`) | file |
+| CODEBASE_STATE_REDIS_ENABLED | Enable Redis backend when CODEBASE_STATE_BACKEND is unset | 0 (disabled) |
+| CODEBASE_STATE_REDIS_URL | Redis connection URL | redis://redis:6379/0 |
+| CODEBASE_STATE_REDIS_PREFIX | Redis key prefix | context-engine:codebase |
+| CODEBASE_STATE_REDIS_LOCK_TTL_MS | Redis lock TTL in ms | 5000 |
+| CODEBASE_STATE_REDIS_LOCK_WAIT_MS | Redis lock wait in ms | 2000 |
+| CODEBASE_STATE_REDIS_SOCKET_TIMEOUT | Redis socket timeout in seconds | 2 |
+| CODEBASE_STATE_REDIS_CONNECT_TIMEOUT | Redis connect timeout in seconds | 2 |
+
 ### Semantic Expansion
 
 Synonym/related term expansion for improved recall on natural language queries.
@@ -643,4 +659,3 @@ docker compose run --rm indexer --root /work --no-default-excludes --exclude '/v
 | Large (1k+ files) | 120 (default) | 20 | 128+ |
 
 For large monorepos, set `INDEX_PROGRESS_EVERY=200` for visibility.
-

@@ -22,6 +22,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Literal, TypedDict
+from contextlib import contextmanager
 import threading
 import time
 
@@ -37,6 +38,219 @@ _cache_memo_lock = threading.Lock()
 _cache_memo: Dict[str, Dict[str, Any]] = {}
 _cache_memo_sig: Dict[str, tuple[int, int]] = {}
 _cache_memo_last_check: Dict[str, float] = {}
+_REDIS_CLIENT = None
+_REDIS_CLIENT_LOCK = threading.Lock()
+
+
+def _redis_state_enabled() -> bool:
+    backend = str(os.environ.get("CODEBASE_STATE_BACKEND", "") or "").strip().lower()
+    if backend in {"redis", "rediscache"}:
+        return True
+    if backend in {"file", "filesystem", "local"}:
+        return False
+    raw = os.environ.get("CODEBASE_STATE_REDIS_ENABLED")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _redis_state_active() -> bool:
+    if not _redis_state_enabled():
+        return False
+    return _get_redis_client() is not None
+
+
+def _redis_prefix() -> str:
+    return str(os.environ.get("CODEBASE_STATE_REDIS_PREFIX", "context-engine:codebase") or "context-engine:codebase").rstrip(":")
+
+
+def _redis_key_for_path(kind: str, path: Path) -> str:
+    raw = str(path)
+    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()
+    return f"{_redis_prefix()}:{kind}:{digest}"
+
+
+def _get_redis_client():
+    if not _redis_state_enabled():
+        return None
+    global _REDIS_CLIENT
+    with _REDIS_CLIENT_LOCK:
+        if _REDIS_CLIENT is not None:
+            return _REDIS_CLIENT
+        try:
+            import redis  # type: ignore
+        except Exception as e:
+            logger.warning(f"Redis backend enabled but redis package not available: {e}")
+            return None
+        url = os.environ.get("CODEBASE_STATE_REDIS_URL") or os.environ.get("REDIS_URL") or "redis://redis:6379/0"
+        try:
+            socket_timeout = float(os.environ.get("CODEBASE_STATE_REDIS_SOCKET_TIMEOUT", "2") or 2)
+            connect_timeout = float(os.environ.get("CODEBASE_STATE_REDIS_CONNECT_TIMEOUT", "2") or 2)
+        except Exception:
+            socket_timeout = 2.0
+            connect_timeout = 2.0
+        try:
+            client = redis.Redis.from_url(
+                url,
+                decode_responses=True,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=connect_timeout,
+            )
+            try:
+                client.ping()
+            except Exception as e:
+                logger.warning(f"Redis backend enabled but ping failed: {e}")
+                return None
+            _REDIS_CLIENT = client
+            return _REDIS_CLIENT
+        except Exception as e:
+            logger.warning(f"Redis backend enabled but connection failed: {e}")
+            return None
+
+
+def _redis_get_json(kind: str, path: Path) -> Optional[Dict[str, Any]]:
+    client = _get_redis_client()
+    if client is None:
+        return None
+    key = _redis_key_for_path(kind, path)
+    try:
+        raw = client.get(key)
+    except Exception as e:
+        logger.debug(f"Redis get failed for {key}: {e}")
+        return None
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except Exception as e:
+        logger.debug(f"Redis JSON decode failed for {key}: {e}")
+        return None
+    if isinstance(obj, dict):
+        return obj
+    return None
+
+
+def _redis_set_json(kind: str, path: Path, obj: Dict[str, Any]) -> bool:
+    client = _get_redis_client()
+    if client is None:
+        return False
+    key = _redis_key_for_path(kind, path)
+    try:
+        payload = json.dumps(obj, ensure_ascii=False)
+    except Exception as e:
+        logger.debug(f"Failed to JSON serialize redis payload for {key}: {e}")
+        return False
+    try:
+        client.set(key, payload)
+        return True
+    except Exception as e:
+        logger.debug(f"Redis set failed for {key}: {e}")
+        return False
+
+
+def _redis_exists(kind: str, path: Path) -> bool:
+    client = _get_redis_client()
+    if client is None:
+        return False
+    key = _redis_key_for_path(kind, path)
+    try:
+        return bool(client.exists(key))
+    except Exception as e:
+        logger.debug(f"Redis exists failed for {key}: {e}")
+        return False
+
+
+def _redis_scan_keys(kind: str) -> List[str]:
+    client = _get_redis_client()
+    if client is None:
+        return []
+    pattern = f"{_redis_prefix()}:{kind}:*"
+    keys: List[str] = []
+    try:
+        for key in client.scan_iter(match=pattern, count=200):
+            keys.append(str(key))
+    except Exception as e:
+        logger.debug(f"Redis scan failed for {pattern}: {e}")
+    return keys
+
+
+def _redis_get_json_by_key(key: str) -> Optional[Dict[str, Any]]:
+    client = _get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(key)
+    except Exception as e:
+        logger.debug(f"Redis get failed for {key}: {e}")
+        return None
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except Exception as e:
+        logger.debug(f"Redis JSON decode failed for {key}: {e}")
+        return None
+    if isinstance(obj, dict):
+        return obj
+    return None
+
+
+def _redis_delete(kind: str, path: Path) -> bool:
+    client = _get_redis_client()
+    if client is None:
+        return False
+    key = _redis_key_for_path(kind, path)
+    try:
+        client.delete(key)
+        return True
+    except Exception as e:
+        logger.debug(f"Redis delete failed for {key}: {e}")
+        return False
+
+
+@contextmanager
+def _redis_lock(kind: str, path: Path):
+    client = _get_redis_client()
+    if client is None:
+        yield
+        return
+    lock_key = _redis_key_for_path(kind, path) + ":lock"
+    token = uuid.uuid4().hex
+    try:
+        ttl_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_TTL_MS", "5000") or 5000)
+    except Exception:
+        ttl_ms = 5000
+    try:
+        wait_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_WAIT_MS", "2000") or 2000)
+    except Exception:
+        wait_ms = 2000
+    deadline = time.time() + (wait_ms / 1000.0)
+    acquired = False
+    while time.time() < deadline:
+        try:
+            if client.set(lock_key, token, nx=True, px=ttl_ms):
+                acquired = True
+                break
+        except Exception as e:
+            logger.debug(f"Redis lock set failed for {lock_key}: {e}")
+            break
+        time.sleep(0.05)
+    if not acquired:
+        logger.debug(f"Redis lock not acquired for {lock_key}, proceeding without lock")
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            client.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                1,
+                lock_key,
+                token,
+            )
+        except Exception as e:
+            logger.debug(f"Redis lock release failed for {lock_key}: {e}")
 
 
 def is_staging_enabled() -> bool:
@@ -53,6 +267,39 @@ def _cache_memo_recheck_seconds() -> float:
     except Exception as e:
         logger.debug(f"Failed to parse CACHE_MEMO_RECHECK_SECONDS, using default: {e}")
         return 60.0
+
+
+def _cache_memo_key(cache_path: Path) -> str:
+    if _redis_state_active():
+        return _redis_key_for_path("cache", cache_path)
+    return str(cache_path)
+
+
+def _state_exists(state_path: Path) -> bool:
+    if _redis_state_active():
+        return _redis_exists("state", state_path)
+    return state_path.exists()
+
+
+def _cache_exists(cache_path: Path) -> bool:
+    if _redis_state_active():
+        return _redis_exists("cache", cache_path)
+    return cache_path.exists()
+
+
+def _read_state_by_path(state_path: Path) -> Optional[Dict[str, Any]]:
+    if _redis_state_active():
+        return _redis_get_json("state", state_path)
+    if not state_path.exists():
+        return None
+    try:
+        with open(state_path, "r", encoding="utf-8-sig") as f:
+            obj = json.load(f)
+            if isinstance(obj, dict):
+                return obj
+    except (json.JSONDecodeError, ValueError, OSError):
+        return None
+    return None
 
 
 def _normalize_cache_key_path(file_path: str) -> str:
@@ -73,17 +320,18 @@ def _normalize_cache_key_path(file_path: str) -> str:
 
 
 def _memoize_cache_obj(cache_path: Path, obj: Dict[str, Any]) -> None:
-    key = str(cache_path)
+    key = _cache_memo_key(cache_path)
     now = time.time()
     sig = (-1, -1)
-    try:
-        st = cache_path.stat()
-        mtime_ns = int(
-            getattr(st, "st_mtime_ns", int(getattr(st, "st_mtime", 0) * 1_000_000_000))
-        )
-        sig = (mtime_ns, int(getattr(st, "st_size", 0)))
-    except OSError:
-        sig = (-1, -1)
+    if not _redis_state_active():
+        try:
+            st = cache_path.stat()
+            mtime_ns = int(
+                getattr(st, "st_mtime_ns", int(getattr(st, "st_mtime", 0) * 1_000_000_000))
+            )
+            sig = (mtime_ns, int(getattr(st, "st_size", 0)))
+        except OSError:
+            sig = (-1, -1)
     with _cache_memo_lock:
         _cache_memo[key] = obj
         _cache_memo_last_check[key] = now
@@ -91,6 +339,8 @@ def _memoize_cache_obj(cache_path: Path, obj: Dict[str, Any]) -> None:
 
 
 def _cache_file_sig(cache_path: Path) -> Optional[tuple[int, int]]:
+    if _redis_state_active():
+        return None
     try:
         st = cache_path.stat()
     except OSError:
@@ -389,8 +639,6 @@ try:
     import fcntl  # type: ignore
 except Exception:  # pragma: no cover
     fcntl = None  # type: ignore
-
-from contextlib import contextmanager
 
 @contextmanager
 def _cross_process_lock(lock_path: Path):
@@ -701,6 +949,16 @@ def _generate_collection_name(workspace_path: str) -> str:
 
 def _atomic_write_state(state_path: Path, state: WorkspaceState) -> None:
     """Atomically write state to prevent corruption during concurrent access."""
+    if _redis_state_active():
+        kind = "state"
+        try:
+            if state_path.name == CACHE_FILENAME:
+                kind = "cache"
+        except Exception:
+            kind = "state"
+        with _redis_lock(kind, state_path):
+            _redis_set_json(kind, state_path, dict(state))
+        return
     # Write to temp file first, then rename (atomic on most filesystems)
     temp_path = state_path.with_suffix(f".tmp.{uuid.uuid4().hex[:8]}")
     try:
@@ -747,53 +1005,54 @@ def get_workspace_state(
             except Exception as e:
                 logger.debug(f"Failed to resolve workspace root for repo {repo_name}: {e}")
                 ws_dir = None
-            try:
-                if not state_dir.exists() and (ws_dir is None or not ws_dir.exists()):
+            if not _redis_state_active():
+                try:
+                    if not state_dir.exists() and (ws_dir is None or not ws_dir.exists()):
+                        return {}
+                except Exception as e:
+                    logger.debug(f"Failed to check state dir existence for repo {repo_name}: {e}")
                     return {}
-            except Exception as e:
-                logger.debug(f"Failed to check state dir existence for repo {repo_name}: {e}")
-                return {}
-            state_dir.mkdir(parents=True, exist_ok=True)
-            # Ensure repo state dir is group-writable so root upload service and
-            # non-root watcher/indexer processes can both write state/cache files.
-            try:
-                os.chmod(state_dir, 0o775)
-            except Exception as e:
-                logger.debug(f"Suppressed exception: {e}")
+                state_dir.mkdir(parents=True, exist_ok=True)
+                # Ensure repo state dir is group-writable so root upload service and
+                # non-root watcher/indexer processes can both write state/cache files.
+                try:
+                    os.chmod(state_dir, 0o775)
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             state_path = state_dir / STATE_FILENAME
             lock_scope_path = state_dir
         else:
             try:
-                state_path = _ensure_state_dir(workspace_path)
-                lock_scope_path = state_path.parent
+                if _redis_state_active():
+                    state_path = _get_state_path(workspace_path or _resolve_workspace_root())
+                    lock_scope_path = state_path.parent
+                else:
+                    state_path = _ensure_state_dir(workspace_path)
+                    lock_scope_path = state_path.parent
             except PermissionError:
                 lock_scope_path = _get_global_state_dir(workspace_path)
                 lock_scope_path.mkdir(parents=True, exist_ok=True)
                 state_path = lock_scope_path / STATE_FILENAME
 
         lock_path = lock_scope_path / (STATE_FILENAME + ".lock")
-        with _cross_process_lock(lock_path):
-            if state_path.exists():
-                try:
-                    with open(state_path, "r", encoding="utf-8-sig") as f:
-                        state = json.load(f)
-                    if isinstance(state, dict):
-                        if logical_repo_reuse_enabled():
-                            workspace_real = str(Path(workspace_path or _resolve_workspace_root()).resolve())
-                            state = ensure_logical_repo_id(state, workspace_real)
-                            try:
-                                _atomic_write_state(state_path, state)
-                            except Exception as e:
-                                print(f"[workspace_state] Failed to persist logical_repo_id to {state_path}: {e}")
-                        modified = _ensure_repo_slug_defaults(state, repo_name)
-                        if modified:
-                            try:
-                                _atomic_write_state(state_path, state)
-                            except Exception as e:
-                                logger.debug(f"Suppressed exception: {e}")
-                        return state
-                except (json.JSONDecodeError, ValueError, OSError) as e:
-                    print(f"[workspace_state] Failed to read state from {state_path}: {e}")
+        lock_ctx = _redis_lock("state", state_path) if _redis_state_active() else _cross_process_lock(lock_path)
+        with lock_ctx:
+            state = _read_state_by_path(state_path) if _state_exists(state_path) else None
+            if isinstance(state, dict):
+                if logical_repo_reuse_enabled():
+                    workspace_real = str(Path(workspace_path or _resolve_workspace_root()).resolve())
+                    state = ensure_logical_repo_id(state, workspace_real)
+                    try:
+                        _atomic_write_state(state_path, state)
+                    except Exception as e:
+                        print(f"[workspace_state] Failed to persist logical_repo_id to {state_path}: {e}")
+                modified = _ensure_repo_slug_defaults(state, repo_name)
+                if modified:
+                    try:
+                        _atomic_write_state(state_path, state)
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+                return state
 
             now = datetime.now().isoformat()
             collection_name = get_collection_name(repo_name)
@@ -840,8 +1099,9 @@ def update_workspace_state(
             # directory is not present (e.g. dev-remote simulations where only
             # .codebase state is persisted).
             state_dir = _get_repo_state_dir(repo_name)
-            if not (ws_root / repo_name).exists() and not state_dir.exists():
-                return {}
+            if not _redis_state_active():
+                if not (ws_root / repo_name).exists() and not state_dir.exists():
+                    return {}
         except Exception as e:
             logger.debug(f"Failed to check repo state dir for {repo_name}: {e}")
             return {}
@@ -862,11 +1122,15 @@ def update_workspace_state(
 
         if is_multi_repo_mode() and repo_name:
             state_dir = _get_repo_state_dir(repo_name)
-            state_dir.mkdir(parents=True, exist_ok=True)
+            if not _redis_state_active():
+                state_dir.mkdir(parents=True, exist_ok=True)
             state_path = state_dir / STATE_FILENAME
         else:
             try:
-                state_path = _ensure_state_dir(workspace_path)
+                if _redis_state_active():
+                    state_path = _get_state_path(workspace_path or _resolve_workspace_root())
+                else:
+                    state_path = _ensure_state_dir(workspace_path)
             except PermissionError:
                 state_dir = _get_global_state_dir(workspace_path)
                 state_dir.mkdir(parents=True, exist_ok=True)
@@ -1279,30 +1543,39 @@ def log_activity(
     if is_multi_repo_mode() and repo_name:
         try:
             ws_root = Path(_resolve_workspace_root())
-            if not (ws_root / repo_name).exists():
-                return
+            if not _redis_state_active():
+                if not (ws_root / repo_name).exists():
+                    return
         except Exception as e:
             logger.debug(f"Failed to check workspace root for repo {repo_name}: {e}")
             return
         state_dir = _get_repo_state_dir(repo_name)
-        state_dir.mkdir(parents=True, exist_ok=True)
-        state_path = state_dir / STATE_FILENAME
-        lock_path = state_path.with_suffix(".lock")
+        if not _redis_state_active():
+            state_dir.mkdir(parents=True, exist_ok=True)
+            state_path = state_dir / STATE_FILENAME
+            lock_path = state_path.with_suffix(".lock")
 
-        with _cross_process_lock(lock_path):
-            try:
-                if state_path.exists():
-                    with open(state_path, "r", encoding="utf-8-sig") as f:
-                        state = json.load(f)
-                else:
+            with _cross_process_lock(lock_path):
+                try:
+                    if state_path.exists():
+                        with open(state_path, "r", encoding="utf-8-sig") as f:
+                            state = json.load(f)
+                    else:
+                        state = {"created_at": datetime.now().isoformat()}
+                except Exception as e:
+                    logger.debug(f"Failed to read state file for repo {repo_name}, using default: {e}")
                     state = {"created_at": datetime.now().isoformat()}
-            except Exception as e:
-                logger.debug(f"Failed to read state file for repo {repo_name}, using default: {e}")
-                state = {"created_at": datetime.now().isoformat()}
 
-            state["last_activity"] = activity
-            state["updated_at"] = datetime.now().isoformat()
-            _atomic_write_state(state_path, state)
+                state["last_activity"] = activity
+                state["updated_at"] = datetime.now().isoformat()
+                _atomic_write_state(state_path, state)
+        else:
+            state_path = state_dir / STATE_FILENAME
+            with _redis_lock("state", state_path):
+                state = _read_state_by_path(state_path) or {"created_at": datetime.now().isoformat()}
+                state["last_activity"] = activity
+                state["updated_at"] = datetime.now().isoformat()
+                _atomic_write_state(state_path, state)
     else:
         update_workspace_state(
             workspace_path=resolved_workspace,
@@ -1555,6 +1828,12 @@ def _get_cache_path(workspace_path: str) -> Path:
 
 
 def _read_cache_file_uncached(cache_path: Path) -> Dict[str, Any]:
+    if _redis_state_active():
+        cached = _redis_get_json("cache", cache_path)
+        if isinstance(cached, dict) and isinstance(cached.get("file_hashes"), dict):
+            return cached
+        now = datetime.now().isoformat()
+        return {"file_hashes": {}, "created_at": now, "updated_at": now}
     if not cache_path.exists():
         now = datetime.now().isoformat()
         return {"file_hashes": {}, "created_at": now, "updated_at": now}
@@ -1570,7 +1849,7 @@ def _read_cache_file_uncached(cache_path: Path) -> Dict[str, Any]:
 
 
 def _read_cache_file_cached(cache_path: Path) -> Dict[str, Any]:
-    key = str(cache_path)
+    key = _cache_memo_key(cache_path)
     now = time.time()
 
     with _cache_memo_lock:
@@ -1608,6 +1887,11 @@ def _write_cache(workspace_path: str, cache: Dict[str, Any]) -> None:
     lock = _get_state_lock(workspace_path)
     with lock:
         cache_path = _get_cache_path(workspace_path)
+        if _redis_state_active():
+            with _redis_lock("cache", cache_path):
+                _redis_set_json("cache", cache_path, cache)
+            _memoize_cache_obj(cache_path, cache)
+            return
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = cache_path.with_suffix(cache_path.suffix + ".lock")
         with _cross_process_lock(lock_path):
@@ -1672,9 +1956,10 @@ def set_cached_file_hash(file_path: str, file_hash: str, repo_name: Optional[str
             return
         state_dir = _get_repo_state_dir(repo_name)
         cache_path = state_dir / CACHE_FILENAME
-        state_dir.mkdir(parents=True, exist_ok=True)
+        if not _redis_state_active():
+            state_dir.mkdir(parents=True, exist_ok=True)
 
-        if cache_path.exists():
+        if _cache_exists(cache_path):
             cache = _read_cache_file_cached(cache_path)
         else:
             cache = {"file_hashes": {}, "created_at": datetime.now().isoformat()}
@@ -1767,7 +2052,7 @@ def remove_cached_file(file_path: str, repo_name: Optional[str] = None) -> None:
         state_dir = _get_repo_state_dir(repo_name)
         cache_path = state_dir / CACHE_FILENAME
 
-        if cache_path.exists():
+        if _cache_exists(cache_path):
             cache = _read_cache_file_cached(cache_path)
             file_hashes = cache.get("file_hashes", {})
 
@@ -1838,6 +2123,36 @@ def get_collection_mappings(search_root: Optional[str] = None) -> List[Dict[str,
     mappings: List[Dict[str, Any]] = []
 
     try:
+        if _redis_state_active():
+            keys = _redis_scan_keys("state")
+            for key in keys:
+                state = _redis_get_json_by_key(key) or {}
+                if not isinstance(state, dict):
+                    continue
+                origin = state.get("origin", {}) or {}
+                repo_name = (
+                    state.get("active_repo_slug")
+                    or state.get("serving_repo_slug")
+                    or origin.get("repo_name")
+                )
+                if not repo_name:
+                    try:
+                        repo_name = Path(str(state.get("workspace_path") or root_path)).name
+                    except Exception:
+                        repo_name = None
+                mappings.append(
+                    {
+                        "repo_name": repo_name,
+                        "collection_name": state.get("qdrant_collection")
+                        or get_collection_name(repo_name),
+                        "container_path": origin.get("container_path")
+                        or str(state.get("workspace_path") or root_path),
+                        "source_path": origin.get("source_path"),
+                        "state_file": "redis",
+                        "updated_at": state.get("updated_at"),
+                    }
+                )
+            return mappings
         if is_multi_repo_mode():
             repos_root = root_path / STATE_DIRNAME / "repos"
             if repos_root.exists():
@@ -2004,6 +2319,19 @@ def find_collection_for_logical_repo(logical_repo_id: str, search_root: Optional
     root_path = Path(search_root or _resolve_workspace_root()).resolve()
 
     try:
+        if _redis_state_active():
+            keys = _redis_scan_keys("state")
+            for key in keys:
+                state = _redis_get_json_by_key(key) or {}
+                if not isinstance(state, dict):
+                    continue
+                ws = state.get("workspace_path") or str(root_path)
+                state = ensure_logical_repo_id(state, ws)
+                if state.get("logical_repo_id") == logical_repo_id:
+                    coll = state.get("qdrant_collection")
+                    if coll:
+                        return coll
+            return None
         if is_multi_repo_mode():
             repos_root = root_path / STATE_DIRNAME / "repos"
             if repos_root.exists():
@@ -2165,11 +2493,17 @@ def get_cached_symbols(file_path: str) -> dict:
     """Load cached symbol metadata for a file."""
     cache_path = _get_symbol_cache_path(file_path)
 
+    if _redis_state_active():
+        cache_data = _redis_get_json("symbols", cache_path)
+        if isinstance(cache_data, dict):
+            return cache_data.get("symbols", {}) or {}
+        return {}
+
     if not cache_path.exists():
         return {}
 
     try:
-        with open(cache_path, 'r', encoding='utf-8-sig') as f:
+        with open(cache_path, "r", encoding="utf-8-sig") as f:
             cache_data = json.load(f)
             return cache_data.get("symbols", {})
     except Exception as e:
@@ -2180,7 +2514,8 @@ def get_cached_symbols(file_path: str) -> dict:
 def set_cached_symbols(file_path: str, symbols: dict, file_hash: str) -> None:
     """Save symbol metadata for a file. Extends existing to include pseudo data."""
     cache_path = _get_symbol_cache_path(file_path)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _redis_state_active():
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         cache_data = {
@@ -2190,16 +2525,20 @@ def set_cached_symbols(file_path: str, symbols: dict, file_hash: str) -> None:
             "symbols": symbols
         }
 
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, indent=2)
+        if _redis_state_active():
+            with _redis_lock("symbols", cache_path):
+                _redis_set_json("symbols", cache_path, cache_data)
+        else:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f, indent=2)
 
-        # Ensure symbol cache files are group-writable so both indexer and
-        # watcher processes (potentially different users sharing a group)
-        # can update them on shared volumes.
-        try:
-            os.chmod(cache_path, 0o664)
-        except PermissionError:
-            pass
+            # Ensure symbol cache files are group-writable so both indexer and
+            # watcher processes (potentially different users sharing a group)
+            # can update them on shared volumes.
+            try:
+                os.chmod(cache_path, 0o664)
+            except PermissionError:
+                pass
     except Exception as e:
         print(f"[SYMBOL_CACHE_WARNING] Failed to save symbol cache for {file_path}: {e}")
 
@@ -2281,6 +2620,9 @@ def remove_cached_symbols(file_path: str) -> None:
     """Remove symbol cache for a file (when file is deleted)."""
     cache_path = _get_symbol_cache_path(file_path)
     try:
+        if _redis_state_active():
+            _redis_delete("symbols", cache_path)
+            return
         if cache_path.exists():
             cache_path.unlink()
     except Exception as e:
@@ -2298,6 +2640,24 @@ def clear_symbol_cache(
     """
     dirs_removed = 0
     workspace_root = workspace_path or _resolve_workspace_root()
+
+    if _redis_state_active():
+        keys = _redis_scan_keys("symbols")
+        deleted = 0
+        for key in keys:
+            data = _redis_get_json_by_key(key) or {}
+            file_path = str(data.get("file_path") or "")
+            if repo_name and is_multi_repo_mode():
+                if f"/{repo_name}/" not in file_path:
+                    continue
+            try:
+                client = _get_redis_client()
+                if client is not None:
+                    client.delete(key)
+                    deleted += 1
+            except Exception as e:
+                logger.debug(f"Redis delete failed for {key}: {e}")
+        return deleted
 
     target_dirs: List[Path] = []
     if is_multi_repo_mode() and repo_name:
@@ -2403,6 +2763,47 @@ def list_workspaces(
     root_path = Path(search_root).resolve()
     workspaces: List[Dict[str, Any]] = []
     seen_paths: set = set()
+
+    if _redis_state_active():
+        try:
+            keys = _redis_scan_keys("state")
+            for key in keys:
+                try:
+                    state = _redis_get_json_by_key(key) or {}
+                    if not isinstance(state, dict):
+                        continue
+                    workspace_path = state.get("workspace_path")
+                    if not workspace_path:
+                        continue
+                    if workspace_path in seen_paths:
+                        continue
+                    seen_paths.add(workspace_path)
+                    collection_name = state.get("qdrant_collection", "")
+                    updated_at = state.get("updated_at", "")
+                    indexing_status = state.get("indexing_status", {})
+                    if isinstance(indexing_status, dict):
+                        indexing_state = indexing_status.get("state", "unknown")
+                    else:
+                        indexing_state = "unknown"
+                    workspaces.append(
+                        {
+                            "workspace_path": workspace_path,
+                            "collection_name": collection_name,
+                            "last_updated": updated_at,
+                            "indexing_state": indexing_state,
+                            "source": "redis",
+                        }
+                    )
+                except Exception as e:
+                    logger.debug(f"Suppressed exception, continuing: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+        if workspaces:
+            try:
+                workspaces.sort(key=lambda w: w.get("last_updated", ""), reverse=True)
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+            return workspaces
 
     # --- Local filesystem scan ---
     try:

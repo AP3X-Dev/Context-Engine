@@ -12,6 +12,7 @@ resources:
 
   # Core services
   - qdrant.yaml
+  - redis.yaml
   - code-models-pvc.yaml
   - upload-pvc.yaml
 

@@ -4,7 +4,7 @@ SHELL := /bin/bash
 # An empty export forces docker to use its default context/socket.
 export DOCKER_HOST =
 
-.PHONY: help up down logs ps restart rebuild index reindex watch watch-remote env hybrid bootstrap history rerank-local setup-reranker prune warm health test-e2e
+.PHONY: help up down up-redis down-redis restart-redis logs ps restart rebuild index reindex watch watch-remote env hybrid bootstrap history rerank-local setup-reranker prune warm health test-e2e
 .PHONY: venv venv-install dev-remote-up dev-remote-down dev-remote-logs dev-remote-restart dev-remote-bootstrap dev-remote-test dev-remote-client dev-remote-clean
 .PHONY: rerank-eval rerank-eval-ablations rerank-benchmark
 
@@ -30,8 +30,14 @@ guard-%:
 up: ## docker compose up (build if needed)
 	docker compose up -d --build
 
+up-redis: ## docker compose up with redis overlay
+	docker compose -f docker-compose.yml -f docker-compose.redis.yml up -d --build
+
 down: ## docker compose down
 	docker compose down
+
+down-redis: ## docker compose down with redis overlay
+	docker compose -f docker-compose.yml -f docker-compose.redis.yml down
 
 logs: ## follow logs
 	docker compose logs -f --tail=100
@@ -41,6 +47,10 @@ ps: ## show container status
 
 restart: ## restart stack (rebuild)
 	docker compose down && docker compose up -d --build
+
+restart-redis: ## restart stack with redis overlay (rebuild)
+	docker compose -f docker-compose.yml -f docker-compose.redis.yml down && \
+	docker compose -f docker-compose.yml -f docker-compose.redis.yml up -d --build
 
 rebuild: ## rebuild images without cache
 	docker compose build --no-cache
