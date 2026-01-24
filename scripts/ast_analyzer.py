@@ -881,7 +881,15 @@ class ASTAnalyzer:
     def _extract_calls_from_tree(self, root, content_bytes: bytes, symbols: List[CodeSymbol], language: str) -> List[CallReference]:
         """Walk tree to extract function calls."""
         calls: List[CallReference] = []
-        symbol_ranges = [(s.start_line, s.end_line, s.path or s.name) for s in symbols]
+        # Only include functions/methods/classes as valid callers - NOT assignments/constants
+        # This prevents calls like `result = foo()` from being attributed to `result` instead of
+        # the enclosing function
+        valid_caller_kinds = {"function", "method", "class", "async_function", "module"}
+        symbol_ranges = [
+            (s.start_line, s.end_line, s.path or s.name)
+            for s in symbols
+            if s.kind in valid_caller_kinds
+        ]
         
         def find_enclosing_symbol(line: int) -> str:
             best_match = ""
