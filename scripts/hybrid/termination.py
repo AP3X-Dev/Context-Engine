@@ -162,37 +162,36 @@ class TerminationChecker:
             logger.debug(f"Termination: result limit {self.config.result_limit}")
             return True, "result_limit"
 
-	        # Handle None/non-numeric scores gracefully
-	        def get_numeric_score(r: dict) -> float:
-	            score = r.get(score_key, 0)
-	            if score is None or isinstance(score, bool):
-	                return 0.0
-	            try:
-	                return float(score)
-	            except (TypeError, ValueError):
-	                return 0.0
+        def get_numeric_score(r: dict) -> float:
+            score = r.get(score_key, 0)
+            if score is None or isinstance(score, bool):
+                return 0.0
+            try:
+                return float(score)
+            except (TypeError, ValueError):
+                return 0.0
 
-	        high_scoring = [r for r in results if get_numeric_score(r) > 0]
+        high_scoring = [r for r in results if get_numeric_score(r) > 0]
         if len(high_scoring) < self.config.min_candidates_for_expansion:
             logger.debug(f"Termination: insufficient candidates ({len(high_scoring)})")
             return True, "insufficient_candidates"
 
         sorted_results = sorted(results, key=lambda x: -get_numeric_score(x))
         top_n = sorted_results[:self.config.top_n_to_track]
-	        
-	        if top_n:
-	            top_score = get_numeric_score(top_n[0])
-	            self.score_stats.update(top_score)
-	            self.top_scores_history.append(top_score)
-        
+
+        if top_n:
+            top_score = get_numeric_score(top_n[0])
+            self.score_stats.update(top_score)
+            self.top_scores_history.append(top_score)
+
         if self.iteration >= self.config.min_iterations_before_stop:
-            
-	            if self.config.use_page_hinkley and top_n:
-	                top_score = get_numeric_score(top_n[0])
-	                if self.page_hinkley.update(top_score):
-	                    logger.debug("Termination: Page-Hinkley detected score drift")
-	                    return True, "score_drift_detected"
-            
+
+            if self.config.use_page_hinkley and top_n:
+                top_score = get_numeric_score(top_n[0])
+                if self.page_hinkley.update(top_score):
+                    logger.debug("Termination: Page-Hinkley detected score drift")
+                    return True, "score_drift_detected"
+
             if self.tracked_chunk_scores and self.iteration > 2:
                 if self.config.use_adaptive_threshold:
                     threshold = self.score_stats.adaptive_threshold(
@@ -202,35 +201,35 @@ class TerminationChecker:
                         threshold = self.config.fixed_degradation_threshold
                 else:
                     threshold = self.config.fixed_degradation_threshold
-                
+
                 max_drop = 0.0
-	                for chunk_id, prev_score in self.tracked_chunk_scores.items():
-	                    current_score = next(
-	                        (get_numeric_score(r) for r in results if r.get(id_key) == chunk_id),
-	                        0.0,
-	                    )
+                for chunk_id, prev_score in self.tracked_chunk_scores.items():
+                    current_score = next(
+                        (get_numeric_score(r) for r in results if r.get(id_key) == chunk_id),
+                        0.0,
+                    )
                     if current_score < prev_score:
                         max_drop = max(max_drop, prev_score - current_score)
-                
+
                 if max_drop >= threshold:
                     logger.debug(
                         f"Termination: score degradation {max_drop:.3f} >= "
                         f"threshold {threshold:.3f}"
                     )
                     return True, "score_degradation"
-        
-	        self.tracked_chunk_scores.clear()
-	        for r in top_n:
-	            chunk_id = r.get(id_key)
-	            if chunk_id:
-	                self.tracked_chunk_scores[chunk_id] = get_numeric_score(r)
-	        
-	        if top_n:
-	            min_score = min(get_numeric_score(r) for r in top_n)
-	            if min_score < self.config.min_relevance_score:
-	                logger.debug(f"Termination: min relevance {min_score:.3f}")
-	                return True, "min_relevance"
-        
+
+        self.tracked_chunk_scores.clear()
+        for r in top_n:
+            chunk_id = r.get(id_key)
+            if chunk_id:
+                self.tracked_chunk_scores[chunk_id] = get_numeric_score(r)
+
+        if top_n:
+            min_score = min(get_numeric_score(r) for r in top_n)
+            if min_score < self.config.min_relevance_score:
+                logger.debug(f"Termination: min relevance {min_score:.3f}")
+                return True, "min_relevance"
+
         return False, ""
     
     def get_stats(self) -> Dict[str, float]:
