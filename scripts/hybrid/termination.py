@@ -172,14 +172,14 @@ class TerminationChecker:
 	            except (TypeError, ValueError):
 	                return 0.0
 
-        high_scoring = [r for r in results if get_numeric_score(r) > 0]
+	        high_scoring = [r for r in results if get_numeric_score(r) > 0]
         if len(high_scoring) < self.config.min_candidates_for_expansion:
             logger.debug(f"Termination: insufficient candidates ({len(high_scoring)})")
             return True, "insufficient_candidates"
 
         sorted_results = sorted(results, key=lambda x: -get_numeric_score(x))
         top_n = sorted_results[:self.config.top_n_to_track]
-        
+	        
 	        if top_n:
 	            top_score = get_numeric_score(top_n[0])
 	            self.score_stats.update(top_score)
@@ -190,8 +190,8 @@ class TerminationChecker:
 	            if self.config.use_page_hinkley and top_n:
 	                top_score = get_numeric_score(top_n[0])
 	                if self.page_hinkley.update(top_score):
-                    logger.debug("Termination: Page-Hinkley detected score drift")
-                    return True, "score_drift_detected"
+	                    logger.debug("Termination: Page-Hinkley detected score drift")
+	                    return True, "score_drift_detected"
             
             if self.tracked_chunk_scores and self.iteration > 2:
                 if self.config.use_adaptive_threshold:
@@ -207,7 +207,7 @@ class TerminationChecker:
 	                for chunk_id, prev_score in self.tracked_chunk_scores.items():
 	                    current_score = next(
 	                        (get_numeric_score(r) for r in results if r.get(id_key) == chunk_id),
-	                        0.0
+	                        0.0,
 	                    )
                     if current_score < prev_score:
                         max_drop = max(max_drop, prev_score - current_score)
@@ -224,12 +224,12 @@ class TerminationChecker:
 	            chunk_id = r.get(id_key)
 	            if chunk_id:
 	                self.tracked_chunk_scores[chunk_id] = get_numeric_score(r)
-        
+	        
 	        if top_n:
 	            min_score = min(get_numeric_score(r) for r in top_n)
-            if min_score < self.config.min_relevance_score:
-                logger.debug(f"Termination: min relevance {min_score:.3f}")
-                return True, "min_relevance"
+	            if min_score < self.config.min_relevance_score:
+	                logger.debug(f"Termination: min relevance {min_score:.3f}")
+	                return True, "min_relevance"
         
         return False, ""
     
