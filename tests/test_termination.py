@@ -14,9 +14,11 @@ class TestTerminationConfig:
         assert config.time_limit == 5.0
         assert config.result_limit == 500
         assert config.min_candidates_for_expansion == 5
-        assert config.score_degradation_threshold == 0.15
+        assert config.fixed_degradation_threshold == 0.15
         assert config.min_relevance_score == 0.3
         assert config.top_n_to_track == 5
+        assert config.use_page_hinkley is True
+        assert config.page_hinkley_threshold == 0.5
 
     def test_custom_values(self):
         """Test custom configuration values."""
@@ -91,12 +93,15 @@ class TestTerminationChecker:
         assert reason == "insufficient_candidates"
 
     def test_score_degradation_termination(self):
-        """Test termination on score degradation."""
+        """Test termination on score degradation via Page-Hinkley."""
         config = TerminationConfig(
-            score_degradation_threshold=0.1,
+            fixed_degradation_threshold=0.1,
             top_n_to_track=3,
             min_candidates_for_expansion=1,
             min_relevance_score=0.0,
+            use_page_hinkley=True,
+            page_hinkley_threshold=0.3,
+            min_iterations_before_stop=2,
         )
         checker = TerminationChecker(config)
         
@@ -109,16 +114,25 @@ class TestTerminationChecker:
         should_terminate, reason = checker.check(results1)
         assert should_terminate is False
         
-        # Second iteration - scores dropped significantly
+        # Second iteration - scores start dropping
         results2 = [
-            {"chunk_id": "a", "score": 0.7},  # Dropped 0.2
+            {"chunk_id": "a", "score": 0.7},
             {"chunk_id": "b", "score": 0.6},
             {"chunk_id": "c", "score": 0.5},
         ]
         should_terminate, reason = checker.check(results2)
+        assert should_terminate is False
+        
+        # Third iteration - continued drop triggers Page-Hinkley
+        results3 = [
+            {"chunk_id": "a", "score": 0.4},
+            {"chunk_id": "b", "score": 0.3},
+            {"chunk_id": "c", "score": 0.2},
+        ]
+        should_terminate, reason = checker.check(results3)
         
         assert should_terminate is True
-        assert reason == "score_degradation"
+        assert reason in ("score_drift_detected", "score_degradation")
 
     def test_min_relevance_termination(self):
         """Test termination when min relevance score is too low."""

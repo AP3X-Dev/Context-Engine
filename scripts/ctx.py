@@ -1070,7 +1070,9 @@ def fetch_context(query: str, **filters) -> Tuple[str, str]:
         sys.stderr.flush()
         return "", "Context retrieval returned no data."
 
-    hits = data.get("results") or []
+    hits = data.get("results_json") or data.get("results") or []
+    if isinstance(hits, str):
+        hits = []
     relevance = _estimate_query_result_relevance(query, hits)
     sys.stderr.write(f"[DEBUG] repo_search returned {len(hits)} hits (relevance={relevance:.3f})\n")
     sys.stderr.flush()
@@ -1120,7 +1122,9 @@ def fetch_context(query: str, **filters) -> Tuple[str, str]:
         if "error" not in memory_result:
             memory_data = parse_mcp_response(memory_result)
             if memory_data:
-                memory_hits = memory_data.get("results") or []
+                memory_hits = memory_data.get("results_json") or memory_data.get("results") or []
+                if isinstance(memory_hits, str):
+                    memory_hits = []
                 if memory_hits:
                     return format_search_results(memory_hits, include_snippets=with_snippets), "Using memories and design docs"
         return "", "No relevant context found for the prompt."

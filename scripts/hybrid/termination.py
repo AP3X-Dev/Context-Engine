@@ -50,20 +50,24 @@ class WelfordState:
 
 @dataclass 
 class PageHinkleyState:
-    """Page-Hinkley test for mean shift detection.
+    """Page-Hinkley test for DOWNWARD mean shift detection (score degradation).
     
-    Detects when cumulative deviation from mean exceeds threshold.
-    Good for detecting gradual degradation, not just sudden drops.
+    Detects when scores drop significantly below the running mean.
+    Cumsum formula: cumsum += (mean - x + delta)
+    When x consistently falls below mean, cumsum grows and triggers detection.
+    
+    This is the inverse of the standard PH test (which detects upward drift).
+    Optimized for search relevance degradation detection.
     """
     delta: float = 0.005
-    threshold: float = 15.0
+    threshold: float = 0.5
     n: int = 0
     mean: float = 0.0
     cumsum: float = 0.0
-    cumsum_min: float = 0.0
+    cumsum_max: float = 0.0
     
     def update(self, x: float) -> bool:
-        """Update and return True if drift detected."""
+        """Update and return True if downward drift detected."""
         self.n += 1
         
         if self.n == 1:
@@ -72,10 +76,11 @@ class PageHinkleyState:
         
         self.mean = ((self.n - 1) * self.mean + x) / self.n
         
-        self.cumsum += x - self.mean - self.delta
-        self.cumsum_min = min(self.cumsum_min, self.cumsum)
+        # cumsum += (mean - x + delta): grows when x < mean
+        self.cumsum += self.mean - x + self.delta
+        self.cumsum_max = max(self.cumsum_max, self.cumsum)
         
-        if self.cumsum - self.cumsum_min > self.threshold:
+        if self.cumsum > self.threshold:
             return True
         
         return False
@@ -84,7 +89,7 @@ class PageHinkleyState:
         self.n = 0
         self.mean = 0.0
         self.cumsum = 0.0
-        self.cumsum_min = 0.0
+        self.cumsum_max = 0.0
 
 
 @dataclass
@@ -99,7 +104,7 @@ class TerminationConfig:
     
     use_page_hinkley: bool = True
     page_hinkley_delta: float = 0.005
-    page_hinkley_threshold: float = 15.0
+    page_hinkley_threshold: float = 0.5
     
     min_relevance_score: float = 0.3
     top_n_to_track: int = 5

@@ -6,7 +6,7 @@ from scripts.ingest.chunk_deduplication import (
     get_chunk_specificity,
     deduplicate_chunks,
     deduplicate_semantic_chunks,
-    CONCEPT_SPECIFICITY,
+    TYPE_WEIGHTS,
 )
 
 
@@ -48,10 +48,10 @@ class TestGetChunkSpecificity:
         chunk = {"chunk_type": "DEFINITION"}
         assert get_chunk_specificity(chunk) == 4
 
-    def test_unknown_type_returns_negative(self):
-        """Test unknown type returns -1."""
+    def test_unknown_type_returns_zero(self):
+        """Test unknown type returns 0 (lowest specificity)."""
         chunk = {"chunk_type": "unknown_type"}
-        assert get_chunk_specificity(chunk) == -1
+        assert get_chunk_specificity(chunk) == 0
 
     def test_concept_key_fallback(self):
         """Test fallback to 'concept' key."""
