@@ -1231,21 +1231,30 @@ def _choose_symbol_for_chunk(start: int, end: int, symbols: List[_Sym]):
 # ---------------------------------------------------------------------------
 # Smart symbol reindexing support
 # ---------------------------------------------------------------------------
-def extract_symbols_with_tree_sitter(file_path: str) -> dict:
+def extract_symbols_with_tree_sitter(
+    file_path: str,
+    content: str | None = None,
+    language: str | None = None,
+) -> dict:
     """Extract functions, classes, methods from file using tree-sitter or fallback.
+
+    Args:
+        file_path: Path to the file (used for language detection if language not provided)
+        content: Optional file content to avoid redundant file reads
+        language: Optional language override (detected from file_path if not provided)
 
     Returns:
         dict: {symbol_id: {name, type, start_line, end_line, content_hash, pseudo, tags}}
     """
     from scripts.ingest.pipeline import detect_language
-    
+
     try:
-        # Read file content
-        text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
-        language = detect_language(Path(file_path))
+        # Use provided content or read from file
+        text = content if content is not None else Path(file_path).read_text(encoding="utf-8", errors="ignore")
+        lang = language if language is not None else detect_language(Path(file_path))
 
         # Use existing symbol extraction infrastructure
-        symbols_list = _extract_symbols(language, text)
+        symbols_list = _extract_symbols(lang, text)
 
         # Convert to our expected dict format
         symbols = {}

@@ -77,8 +77,19 @@ def _split_ident_lex(s: str) -> List[str]:
     return [x.lower() for x in out if x and x.lower() not in _STOP]
 
 
+# Try to use xxhash for faster hashing (10x faster than MD5)
+try:
+    import xxhash
+    _XXHASH_AVAILABLE = True
+except ImportError:
+    _XXHASH_AVAILABLE = False
+
+
 def _lex_hash_vector(text: str, dim: int = LEX_VECTOR_DIM) -> list[float]:
-    """Create a lexical hash vector from text using hashing trick."""
+    """Create a lexical hash vector from text using hashing trick.
+
+    Uses xxhash when available (10x faster than MD5), falls back to MD5.
+    """
     if not text:
         return [0.0] * dim
     vec = [0.0] * dim
@@ -86,10 +97,20 @@ def _lex_hash_vector(text: str, dim: int = LEX_VECTOR_DIM) -> list[float]:
     toks = _split_ident_lex(text)
     if not toks:
         return vec
-    for t in toks:
-        h = int(hashlib.md5(t.encode("utf-8", errors="ignore")).hexdigest()[:8], 16)
-        idx = h % dim
-        vec[idx] += 1.0
+
+    if _XXHASH_AVAILABLE:
+        # xxhash is ~10x faster than MD5
+        for t in toks:
+            h = xxhash.xxh32(t.encode("utf-8", errors="ignore")).intdigest()
+            idx = h % dim
+            vec[idx] += 1.0
+    else:
+        # Fallback to MD5
+        for t in toks:
+            h = int(hashlib.md5(t.encode("utf-8", errors="ignore")).hexdigest()[:8], 16)
+            idx = h % dim
+            vec[idx] += 1.0
+
     # L2 normalize (avoid huge magnitudes)
     import math
     norm = math.sqrt(sum(v * v for v in vec)) or 1.0

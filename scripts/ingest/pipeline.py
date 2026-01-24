@@ -737,7 +737,7 @@ def _index_single_file_inner(
     if get_cached_symbols and set_cached_symbols:
         cached_symbols = get_cached_symbols(str(file_path))
         if cached_symbols:
-            current_symbols = extract_symbols_with_tree_sitter(str(file_path))
+            current_symbols = extract_symbols_with_tree_sitter(str(file_path), content=text, language=language)
             _, changed = compare_symbol_changes(cached_symbols, current_symbols)
             for symbol_data in current_symbols.values():
                 symbol_id = f"{symbol_data['type']}_{symbol_data['name']}_{symbol_data['start_line']}"
@@ -1626,7 +1626,7 @@ def process_file_with_smart_reindexing(
     except Exception as e:
         print(f"[SMART_REINDEX] Failed to derive logical repo identity for {file_path}: {e}")
 
-    symbol_meta = extract_symbols_with_tree_sitter(fp)
+    symbol_meta = extract_symbols_with_tree_sitter(fp, content=text, language=language)
     if not symbol_meta:
         print(f"[SMART_REINDEX] No symbols found in {file_path}, falling back to full reindex")
         return "failed"

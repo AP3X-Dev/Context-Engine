@@ -659,16 +659,52 @@ def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: 
 
 
 def ensure_payload_indexes(client: QdrantClient, collection: str):
-    """Create helpful payload indexes if they don't exist (idempotent)."""
-    for field in PAYLOAD_INDEX_FIELDS:
+    """Create helpful payload indexes if they don't exist (idempotent).
+
+    Uses concurrent execution to reduce latency. Concurrency is controlled via
+    QDRANT_INDEX_WORKERS env var (default: 2, set to 1 for sequential).
+    In K8s with multiple pods, keep this low to avoid overwhelming Qdrant.
+    """
+    # Configurable concurrency - default 2 is safe for K8s multi-pod scenarios
+    try:
+        max_workers = int(os.environ.get("QDRANT_INDEX_WORKERS", "2"))
+    except (ValueError, TypeError):
+        max_workers = 2
+    max_workers = max(1, min(max_workers, len(PAYLOAD_INDEX_FIELDS)))
+
+    # Sequential fallback when workers=1 (no thread overhead)
+    if max_workers == 1:
+        for field in PAYLOAD_INDEX_FIELDS:
+            try:
+                client.create_payload_index(
+                    collection_name=collection,
+                    field_name=field,
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            except Exception as e:
+                logger.debug(f"Suppressed exception for {field}: {e}")
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _create_index(field: str) -> tuple[str, bool, str]:
+        """Create a single payload index. Returns (field, success, error_msg)."""
         try:
             client.create_payload_index(
                 collection_name=collection,
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
+            return (field, True, "")
         except Exception as e:
-            logger.debug(f"Suppressed exception: {e}")
+            return (field, False, str(e))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_create_index, field): field for field in PAYLOAD_INDEX_FIELDS}
+        for future in as_completed(futures):
+            field, success, error_msg = future.result()
+            if not success:
+                logger.debug(f"Suppressed exception for {field}: {error_msg}")
 
 
 def ensure_collection_and_indexes_once(

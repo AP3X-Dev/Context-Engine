@@ -394,7 +394,9 @@ def _run_indexing_strategy(
                 ok = True
                 raise _SkipUnchanged()
             try:
-                use_smart, smart_reason = idx.should_use_smart_reindexing(str(path), file_hash)
+                use_smart, smart_reason = idx.should_use_smart_reindexing(
+                    str(path), file_hash, content=text, language=language
+                )
             except Exception:
                 use_smart, smart_reason = False, "smart_check_failed"
             # Bootstrap: if we have no symbol cache yet, still run smart path once
