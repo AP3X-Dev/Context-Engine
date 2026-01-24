@@ -34,12 +34,12 @@ CONCEPT_SPECIFICITY = {
     "block": 1,
     "array": 1,
     "structure": 0,
-    # CAST+ concept types (from concept_extractor)
-    "DEFINITION": 4,
-    "IMPORT": 3,
-    "COMMENT": 2,
-    "BLOCK": 1,
-    "STRUCTURE": 0,
+    # CAST+ concept types (from concept_extractor) - lowercase to match get_chunk_specificity()
+    "definition": 4,
+    "import": 3,
+    "comment": 2,
+    "block": 1,
+    # Note: "structure" already defined above
 }
 
 

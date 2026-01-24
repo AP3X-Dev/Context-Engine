@@ -239,9 +239,14 @@ def filter_by_elbow(
     # Ensure minimum results
     if len(filtered) < min_results and len(results) >= min_results:
         # Return top min_results by score
+        def _get_score(x):
+            score = x.get(score_key)
+            if score is None:
+                score = x.get(fallback_score_key, 0.0)
+            return float(score)
         sorted_results = sorted(
             results,
-            key=lambda x: float(x.get(score_key) or x.get(fallback_score_key, 0.0)),
+            key=_get_score,
             reverse=True
         )
         return sorted_results[:min_results]
