@@ -943,6 +943,29 @@ def find_similar_chunks(
 
 
 __all__ = [
+    # Pool availability flag
+    "_POOL_AVAILABLE",
+    # Connection pooling
+    "get_qdrant_client",
+    "return_qdrant_client",
+    "pooled_qdrant_client",
+    # Thread executor
+    "_QUERY_EXECUTOR",
+    "_EXECUTOR_LOCK",
+    "_get_query_executor",
+    # Point coercion
+    "_coerce_points",
+    # Legacy search
+    "_legacy_vector_search",
+    # Collection caching
+    "_ENSURED_COLLECTIONS",
+    "_get_client_endpoint",
+    "_ensure_collection",
+    "clear_ensured_collections",
+    # Collection resolution
+    "_collection",
+    # Filter sanitization
+    "_sanitize_filter_obj",
     # Lexical vector functions
     "_split_ident_lex",
     "lex_hash_vector",
@@ -966,3 +989,4 @@ __all__ = [
     "LEX_SPARSE_MODE",
     "EF_SEARCH",
 ]
+
