@@ -3028,7 +3028,7 @@ def _run_hybrid_search_impl(
             items,
             score_key="rerank_score",
             fallback_score_key="score",
-            min_results=max(1, limit // 2),  # Keep at least half the requested limit
+            min_results=max(1, limit // 2) if limit > 0 else 0,  # Keep at least half the requested limit
         )
         if os.environ.get("DEBUG_HYBRID_SEARCH"):
             logger.debug(
