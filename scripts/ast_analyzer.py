@@ -247,7 +247,7 @@ class ASTAnalyzer:
         
         logger.info(f"ASTAnalyzer initialized: tree_sitter={self.use_tree_sitter}, tree_cache={'enabled' if self._tree_cache else 'disabled'}")
     
-    def _parse_with_cache(self, parser: Any, content: str, file_path: str, language: str) -> Optional[Any]:
+    def _parse_with_cache(self, parser: Any, content: str, file_path: str, language: str, content_provided: bool = False) -> Optional[Any]:
         """Parse content with tree-sitter, using cache when available.
         
         Args:
@@ -255,14 +255,17 @@ class ASTAnalyzer:
             content: Source code content
             file_path: Path to the file (used as cache key)
             language: Programming language
+            content_provided: If True, content was explicitly provided (not read from disk),
+                              so skip cache to avoid returning stale tree
             
         Returns:
             Parsed tree or None on failure
         """
         path = Path(file_path) if file_path else None
         
-        # Try to get cached tree (only for real files, not in-memory content)
-        if self._tree_cache and path and path.exists():
+        # Try to get cached tree (only for real files when content was NOT explicitly provided)
+        # If content_provided=True, the caller passed in-memory content that may differ from disk
+        if self._tree_cache and path and path.exists() and not content_provided:
             cached_tree = self._tree_cache.get(path)
             if cached_tree is not None:
                 return cached_tree
@@ -300,6 +303,10 @@ class ASTAnalyzer:
         Returns:
             Dict with symbols, imports, calls, and dependencies
         """
+        # Track if content was explicitly provided (vs read from disk)
+        # This affects caching - explicit content may differ from on-disk state
+        content_provided = content is not None
+        
         if content is None:
             try:
                 content = Path(file_path).read_text(encoding="utf-8", errors="ignore")
@@ -309,7 +316,7 @@ class ASTAnalyzer:
         
         # Use language mappings (32 languages, declarative queries)
         if _LANGUAGE_MAPPINGS_AVAILABLE and self.use_tree_sitter:
-            result = self._analyze_with_mapping(content, file_path, language)
+            result = self._analyze_with_mapping(content, file_path, language, content_provided)
             if result and (result.get("symbols") or result.get("imports") or result.get("calls")):
                 return result
         
@@ -488,11 +495,17 @@ class ASTAnalyzer:
     
     # ---- Language Mappings Analysis (unified, concept-based) ----
     
-    def _analyze_with_mapping(self, content: str, file_path: str, language: str) -> Dict[str, Any]:
+    def _analyze_with_mapping(self, content: str, file_path: str, language: str, content_provided: bool = False) -> Dict[str, Any]:
         """Analyze code using language mappings (concept-based extraction).
         
         This uses the declarative tree-sitter queries from language_mappings
         to extract symbols, imports, and calls. Supports 34 languages.
+        
+        Args:
+            content: Source code content
+            file_path: Path to the file
+            language: Programming language
+            content_provided: If True, content was explicitly provided (not read from disk)
         """
         if not _LANGUAGE_MAPPINGS_AVAILABLE:
             return self._empty_analysis()
@@ -512,7 +525,8 @@ class ASTAnalyzer:
             return self._empty_analysis()
         
         # Parse with caching (avoids re-parsing unchanged files)
-        tree = self._parse_with_cache(parser, content, file_path, language)
+        # Skip cache if content was explicitly provided to avoid stale results
+        tree = self._parse_with_cache(parser, content, file_path, language, content_provided)
         if tree is None:
             return self._empty_analysis()
         root = tree.root_node

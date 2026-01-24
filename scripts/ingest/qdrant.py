@@ -931,16 +931,40 @@ def upsert_points(
 
 
 def flush_upserts(client: QdrantClient, collection: str) -> None:
-    """Ensure all pending async upserts are committed.
+    """Best-effort sync for pending async upserts.
     
-    Call this after a batch of async upserts to ensure data is persisted
-    before reading or querying.
+    Call this after a batch of async upserts (INDEX_UPSERT_ASYNC=1) to improve
+    likelihood that data is visible for subsequent reads.
+    
+    IMPORTANT: Qdrant's wait=False semantics mean upserts are "confirmed received"
+    but not necessarily "applied". This function performs operations that encourage
+    the server to process pending writes, but cannot guarantee immediate consistency.
+    
+    For strict consistency requirements:
+    - Use wait=True (INDEX_UPSERT_ASYNC=0) during upserts, or
+    - Add application-level retry logic for read-after-write scenarios
+    
+    For remote deployments, network latency may increase the window between
+    upsert confirmation and data visibility.
+    
+    Args:
+        client: Qdrant client instance
+        collection: Collection name
     """
     if not collection:
         return
     try:
-        # Force a sync operation to ensure all pending writes are flushed
+        # 1. Get collection info (lightweight metadata read)
         client.get_collection(collection)
+        
+        # 2. Perform a minimal scroll to encourage segment processing
+        # This touches actual data, which helps flush pending writes
+        client.scroll(
+            collection_name=collection,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
     except Exception as e:
         logger.debug(f"flush_upserts: {e}")
 
