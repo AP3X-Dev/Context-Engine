@@ -1078,7 +1078,7 @@ def recreate_collection_qdrant(*, qdrant_url: str, api_key: Optional[str], colle
 
         # Also delete the graph collection if it exists
         # Graph collections are tightly coupled to their main collection
-        # The decision to recreate happens during ingest (based on INDEX_GRAPH_EDGES)
+        # Graph edges are always indexed (Qdrant flat graph is always on)
         if get_graph_collection_name_t is not None:
             graph_name = get_graph_collection_name_t(name)
             try:

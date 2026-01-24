@@ -1,118 +1,221 @@
-"""Elbow detection utilities for adaptive threshold computation.
+"""Elbow detection for adaptive threshold computation.
 
-Implements the Kneedle algorithm (Satopaa et al. 2011) for finding elbow points
-in score curves. Used for adaptive threshold computation in hybrid search.
+Mathematical approaches:
+1. Curvature-based detection - finds point of maximum bending (2nd derivative)
+2. Multi-changepoint detection - finds multiple quality tiers via recursive segmentation
+3. Kneedle fallback - perpendicular distance method for edge cases
 
-Ported from ChunkHound to Context-Engine.
-
-Usage:
-    from scripts.hybrid.elbow_detection import compute_elbow_threshold, find_elbow_kneedle
-    
-    # With raw scores
-    scores = [0.95, 0.88, 0.45, 0.42, 0.40]
-    threshold = compute_elbow_threshold(scores)
-    
-    # With search results (dicts with 'score' or 'rerank_score' keys)
-    results = [{"score": 0.95}, {"score": 0.88}, {"score": 0.45}]
-    threshold = compute_elbow_threshold(results)
-    
-    # Filter results by elbow threshold
-    filtered = [r for r in results if r.get("score", 0) >= threshold]
+Curvature formula: κ(i) = |f''(i)| / (1 + f'(i)²)^(3/2)
+where f'(i) and f''(i) are discrete derivatives using central differences.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Sequence, Union
+from typing import Sequence, Union, List, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
-def find_elbow_kneedle(sorted_scores: Sequence[float]) -> int | None:
-    """Find elbow point in score curve using simplified Kneedle algorithm.
+def _discrete_curvature(y: np.ndarray) -> np.ndarray:
+    """Compute discrete curvature using central differences.
+    
+    κ(i) = |y''(i)| / (1 + y'(i)²)^(3/2)
+    
+    First derivative:  y'(i) = (y[i+1] - y[i-1]) / 2
+    Second derivative: y''(i) = y[i+1] - 2*y[i] + y[i-1]
+    """
+    n = len(y)
+    if n < 3:
+        return np.zeros(n)
+    
+    curvature = np.zeros(n)
+    
+    for i in range(1, n - 1):
+        y_prime = (y[i + 1] - y[i - 1]) / 2.0
+        y_double_prime = y[i + 1] - 2.0 * y[i] + y[i - 1]
+        
+        denominator = (1.0 + y_prime ** 2) ** 1.5
+        if denominator > 1e-10:
+            curvature[i] = abs(y_double_prime) / denominator
+    
+    return curvature
 
-    Implementation based on Kneedle algorithm (Satopaa et al. 2011):
-    1. Normalize scores to [0,1]
-    2. Draw line from first to last point
-    3. Find point with maximum perpendicular distance to line
-    4. That's the elbow/knee point
 
+def _segment_cost(y: np.ndarray) -> float:
+    """Compute segment cost as negative log-likelihood under Gaussian model.
+    
+    Cost = n * log(variance) where variance = Σ(y - mean)² / n
+    Lower cost = more homogeneous segment.
+    """
+    if len(y) < 2:
+        return 0.0
+    variance = np.var(y)
+    if variance < 1e-10:
+        return 0.0
+    return len(y) * np.log(variance)
+
+
+def find_elbow_curvature(sorted_scores: Sequence[float]) -> int | None:
+    """Find elbow using maximum curvature (2nd derivative method).
+    
+    More mathematically rigorous than perpendicular distance:
+    - Curvature measures local bending intensity
+    - Invariant to linear transformation of axes
+    - Maximum curvature = point of diminishing returns
+    
     Args:
-        sorted_scores: Scores sorted DESCENDING (highest to lowest)
-
+        sorted_scores: Scores sorted DESCENDING
+        
     Returns:
-        Index of elbow point (0-based array index), or None if no clear elbow detected.
-        Return value can be used to threshold: scores[:elbow_idx+1] are above elbow.
+        Index of elbow point, or None if no significant elbow
+    """
+    if len(sorted_scores) < 4:
+        return None
+    
+    scores = np.array(sorted_scores, dtype=np.float64)
+    
+    min_s, max_s = scores.min(), scores.max()
+    if max_s - min_s < 1e-10:
+        return None
+    
+    normalized = (scores - min_s) / (max_s - min_s)
+    
+    x = np.linspace(0, 1, len(normalized))
+    
+    curvature = _discrete_curvature(normalized)
+    
+    search_start = 1
+    search_end = len(curvature) - 1
+    if search_end <= search_start:
+        return None
+    
+    max_idx = search_start + int(np.argmax(curvature[search_start:search_end]))
+    max_curvature = curvature[max_idx]
+    
+    if max_curvature < 0.1:
+        logger.debug(f"Curvature: No significant elbow (max_κ={max_curvature:.4f} < 0.1)")
+        return None
+    
+    logger.debug(
+        f"Curvature: Found elbow at index {max_idx} "
+        f"(κ={max_curvature:.4f}, score={sorted_scores[max_idx]:.3f})"
+    )
+    return max_idx
 
-    Examples:
-        >>> scores = [0.95, 0.92, 0.88, 0.45, 0.42, 0.40]  # Clear drop at index 2
-        >>> find_elbow_kneedle(scores)
-        2  # Select first 3 items (indices 0, 1, 2)
 
-        >>> scores = [0.5, 0.5, 0.5, 0.5]  # All identical
-        >>> find_elbow_kneedle(scores)
-        None  # No elbow
+def find_changepoints(
+    sorted_scores: Sequence[float],
+    max_changepoints: int = 3,
+    min_segment_size: int = 2,
+) -> List[int]:
+    """Find multiple changepoints using recursive binary segmentation.
+    
+    Uses BIC penalty: β = log(n) to prevent overfitting.
+    
+    Args:
+        sorted_scores: Scores sorted DESCENDING
+        max_changepoints: Maximum number of changepoints to find
+        min_segment_size: Minimum segment size
+        
+    Returns:
+        List of changepoint indices (sorted), empty if none found
+    """
+    if len(sorted_scores) < 2 * min_segment_size:
+        return []
+    
+    scores = np.array(sorted_scores, dtype=np.float64)
+    n = len(scores)
+    
+    penalty = np.log(n)
+    
+    def find_best_split(start: int, end: int) -> Tuple[int, float]:
+        """Find best split point in segment [start, end)."""
+        if end - start < 2 * min_segment_size:
+            return -1, 0.0
+        
+        segment = scores[start:end]
+        base_cost = _segment_cost(segment)
+        
+        best_idx = -1
+        best_gain = 0.0
+        
+        for split in range(start + min_segment_size, end - min_segment_size + 1):
+            left_cost = _segment_cost(scores[start:split])
+            right_cost = _segment_cost(scores[split:end])
+            
+            gain = base_cost - (left_cost + right_cost) - penalty
+            
+            if gain > best_gain:
+                best_gain = gain
+                best_idx = split
+        
+        return best_idx, best_gain
+    
+    changepoints = []
+    segments = [(0, n)]
+    
+    while len(changepoints) < max_changepoints and segments:
+        best_segment_idx = -1
+        best_split = -1
+        best_gain = 0.0
+        
+        for seg_idx, (start, end) in enumerate(segments):
+            split, gain = find_best_split(start, end)
+            if gain > best_gain:
+                best_gain = gain
+                best_split = split
+                best_segment_idx = seg_idx
+        
+        if best_split == -1:
+            break
+        
+        changepoints.append(best_split)
+        
+        start, end = segments.pop(best_segment_idx)
+        segments.append((start, best_split))
+        segments.append((best_split, end))
+    
+    return sorted(changepoints)
 
-        >>> scores = [0.9, 0.8]  # Too few points
-        >>> find_elbow_kneedle(scores)
-        None  # Need at least 3 points
+
+def find_elbow_kneedle(sorted_scores: Sequence[float]) -> int | None:
+    """Find elbow using perpendicular distance (Kneedle algorithm).
+    
+    Fallback method when curvature-based detection fails.
     """
     if len(sorted_scores) < 3:
-        logger.debug("Kneedle: Too few points (<3), cannot detect elbow")
-        return None  # Need at least 3 points for elbow
+        return None
 
-    # Extract scores as numpy array
-    scores = np.array(sorted_scores)
+    scores = np.array(sorted_scores, dtype=np.float64)
+    
+    min_score, max_score = scores.min(), scores.max()
+    if max_score - min_score < 1e-10:
+        return None
 
-    # Normalize scores to [0, 1]
-    min_score = scores.min()
-    max_score = scores.max()
-    if max_score == min_score:
-        logger.debug("Kneedle: All scores identical, no elbow")
-        return None  # All scores identical, no elbow
+    normalized = (scores - min_score) / (max_score - min_score)
+    x = np.linspace(0, 1, len(normalized))
 
-    normalized_scores = (scores - min_score) / (max_score - min_score)
+    x1, y1 = x[0], normalized[0]
+    x2, y2 = x[-1], normalized[-1]
 
-    # X-axis: normalized positions [0, 1]
-    x = np.linspace(0, 1, len(normalized_scores))
-
-    # Draw line from first point to last point
-    # Line equation: y = mx + b
-    x1, y1 = x[0], normalized_scores[0]
-    x2, y2 = x[-1], normalized_scores[-1]
-
-    # Handle vertical line case (shouldn't happen with normalized x)
-    if x2 == x1:
-        logger.debug("Kneedle: Vertical line case, no elbow")
+    if abs(x2 - x1) < 1e-10:
         return None
 
     m = (y2 - y1) / (x2 - x1)
     b = y1 - m * x1
 
-    # Compute perpendicular distance from each point to line
-    # Formula: |mx - y + b| / sqrt(m^2 + 1)
-    numerator = np.abs(m * x - normalized_scores + b)
-    denominator = np.sqrt(m**2 + 1)
+    numerator = np.abs(m * x - normalized + b)
+    denominator = np.sqrt(m ** 2 + 1)
     distances = numerator / denominator
 
-    # Find point with maximum distance (that's the elbow)
     elbow_idx = int(np.argmax(distances))
 
-    # Validate elbow is significant (distance > 1% of normalized range)
     if distances[elbow_idx] < 0.01:
-        logger.debug(
-            f"Kneedle: Elbow not significant (distance={distances[elbow_idx]:.4f} < 0.01)"
-        )
-        return None  # Elbow not significant enough
+        return None
 
-    logger.debug(
-        f"Kneedle: Found elbow at index {elbow_idx} "
-        f"(distance={distances[elbow_idx]:.4f}, score={sorted_scores[elbow_idx]:.3f})"
-    )
-
-    # Return 0-based index (for array slicing: scores[:elbow_idx+1])
     return elbow_idx
 
 
@@ -120,54 +223,31 @@ def compute_elbow_threshold(
     chunks_or_scores: Union[Sequence[dict], Sequence[float]],
     score_key: str = "score",
     fallback_score_key: str = "rerank_score",
+    method: str = "curvature",
 ) -> float:
-    """Compute elbow threshold from chunks or scores using Kneedle algorithm.
-
-    Uses the Kneedle algorithm (Satopaa et al. 2011) to detect the elbow point
-    in the score distribution. Falls back to median if Kneedle fails to find
-    a significant elbow.
-
+    """Compute elbow threshold using specified method.
+    
     Args:
-        chunks_or_scores: Either:
-            - List of chunks (dicts with score_key)
-            - List of raw float scores
-        score_key: Primary key to extract scores from dicts (default: "score")
-        fallback_score_key: Fallback key if primary not found (default: "rerank_score")
-
-    Returns:
-        Threshold value (score at elbow point, or median if no elbow)
-
-    Examples:
-        >>> chunks = [{'score': 0.95}, {'score': 0.88}]
-        >>> compute_elbow_threshold(chunks)
-        0.88
-
-        >>> scores = [0.95, 0.88, 0.45, 0.42]
-        >>> compute_elbow_threshold(scores)
-        0.45
+        chunks_or_scores: List of chunks (dicts) or raw scores
+        score_key: Primary score key for dicts
+        fallback_score_key: Fallback score key
+        method: "curvature" (default), "kneedle", or "changepoint"
         
-        >>> # With rerank scores
-        >>> chunks = [{'rerank_score': 0.95}, {'rerank_score': 0.45}]
-        >>> compute_elbow_threshold(chunks, score_key="rerank_score")
-        0.45
+    Returns:
+        Threshold value at elbow point
     """
-    # Handle empty input
     if not chunks_or_scores:
-        return 0.5  # Default threshold
+        return 0.5
 
-    # Extract scores from chunks or use raw scores
     if isinstance(chunks_or_scores[0], dict):
-        # Type narrowing: if first element is dict, all are dicts
-        chunk_list: Sequence[dict] = chunks_or_scores  # type: ignore[assignment]
+        chunk_list: Sequence[dict] = chunks_or_scores  # type: ignore
         scores = []
         for c in chunk_list:
-            # Try primary key, then fallback, then 0.0
             score = c.get(score_key)
             if score is None:
                 score = c.get(fallback_score_key, 0.0)
             scores.append(float(score))
     else:
-        # Type narrowing: if first element is not dict, all are floats
         scores = [float(s) for s in chunks_or_scores]
 
     if not scores:
@@ -175,24 +255,71 @@ def compute_elbow_threshold(
 
     sorted_scores = sorted(scores, reverse=True)
 
-    # Try Kneedle algorithm first
-    elbow_idx = find_elbow_kneedle(sorted_scores)
-    if elbow_idx is not None and elbow_idx < len(sorted_scores):
-        threshold = float(sorted_scores[elbow_idx])
-        logger.debug(
-            f"Elbow threshold: {threshold:.3f} (Kneedle at index {elbow_idx} "
-            f"of {len(scores)} scores)"
-        )
-        return threshold
+    elbow_idx = None
+    
+    if method == "curvature":
+        elbow_idx = find_elbow_curvature(sorted_scores)
+        if elbow_idx is None:
+            elbow_idx = find_elbow_kneedle(sorted_scores)
+    elif method == "changepoint":
+        changepoints = find_changepoints(sorted_scores, max_changepoints=1)
+        if changepoints:
+            elbow_idx = changepoints[0]
+    else:
+        elbow_idx = find_elbow_kneedle(sorted_scores)
 
-    # Fallback to median if Kneedle fails
+    if elbow_idx is not None and 0 <= elbow_idx < len(sorted_scores):
+        return float(sorted_scores[elbow_idx])
+
     median_idx = len(sorted_scores) // 2
-    threshold = float(sorted_scores[median_idx])
-    logger.debug(
-        f"Elbow threshold: {threshold:.3f} (median fallback, "
-        f"Kneedle found no significant elbow in {len(scores)} scores)"
+    return float(sorted_scores[median_idx])
+
+
+def compute_tier_thresholds(
+    chunks_or_scores: Union[Sequence[dict], Sequence[float]],
+    score_key: str = "score",
+    fallback_score_key: str = "rerank_score",
+    max_tiers: int = 3,
+) -> List[float]:
+    """Compute multiple quality tier thresholds.
+    
+    Uses changepoint detection to find natural breaks in score distribution.
+    
+    Args:
+        chunks_or_scores: List of chunks or raw scores
+        score_key: Primary score key
+        fallback_score_key: Fallback score key
+        max_tiers: Maximum number of tiers (changepoints + 1)
+        
+    Returns:
+        List of threshold values (descending), one per tier boundary
+    """
+    if not chunks_or_scores:
+        return []
+
+    if isinstance(chunks_or_scores[0], dict):
+        chunk_list: Sequence[dict] = chunks_or_scores  # type: ignore
+        scores = []
+        for c in chunk_list:
+            score = c.get(score_key)
+            if score is None:
+                score = c.get(fallback_score_key, 0.0)
+            scores.append(float(score))
+    else:
+        scores = [float(s) for s in chunks_or_scores]
+
+    if not scores:
+        return []
+
+    sorted_scores = sorted(scores, reverse=True)
+    
+    changepoints = find_changepoints(
+        sorted_scores, 
+        max_changepoints=max_tiers - 1,
+        min_segment_size=max(2, len(sorted_scores) // 10)
     )
-    return threshold
+    
+    return [float(sorted_scores[cp]) for cp in changepoints]
 
 
 def filter_by_elbow(
@@ -200,55 +327,37 @@ def filter_by_elbow(
     score_key: str = "score",
     fallback_score_key: str = "rerank_score",
     min_results: int = 1,
+    method: str = "curvature",
 ) -> list[dict]:
-    """Filter results using elbow detection for adaptive thresholding.
+    """Filter results using elbow detection.
     
     Args:
-        results: List of result dicts with score fields
-        score_key: Primary key to extract scores (default: "score")
-        fallback_score_key: Fallback key if primary not found (default: "rerank_score")
-        min_results: Minimum number of results to return (default: 1)
+        results: List of result dicts
+        score_key: Primary score key
+        fallback_score_key: Fallback score key
+        min_results: Minimum results to return
+        method: Detection method ("curvature", "kneedle", "changepoint")
         
     Returns:
-        Filtered list of results above elbow threshold
-        
-    Example:
-        >>> results = [
-        ...     {"id": 1, "score": 0.95},
-        ...     {"id": 2, "score": 0.88},
-        ...     {"id": 3, "score": 0.45},  # <- elbow here
-        ...     {"id": 4, "score": 0.42},
-        ... ]
-        >>> filtered = filter_by_elbow(results)
-        >>> len(filtered)
-        3  # Only items above elbow threshold (0.45)
+        Filtered results above elbow threshold
     """
     if not results:
         return []
     
-    threshold = compute_elbow_threshold(results, score_key, fallback_score_key)
+    threshold = compute_elbow_threshold(
+        results, score_key, fallback_score_key, method
+    )
     
-    filtered = []
-    for r in results:
+    def get_score(r: dict) -> float:
         score = r.get(score_key)
         if score is None:
             score = r.get(fallback_score_key, 0.0)
-        if float(score) >= threshold:
-            filtered.append(r)
+        return float(score)
     
-    # Ensure minimum results
+    filtered = [r for r in results if get_score(r) >= threshold]
+    
     if len(filtered) < min_results and len(results) >= min_results:
-        # Return top min_results by score
-        def _get_score(x):
-            score = x.get(score_key)
-            if score is None:
-                score = x.get(fallback_score_key, 0.0)
-            return float(score)
-        sorted_results = sorted(
-            results,
-            key=_get_score,
-            reverse=True
-        )
+        sorted_results = sorted(results, key=get_score, reverse=True)
         return sorted_results[:min_results]
     
     return filtered if filtered else results[:min_results]

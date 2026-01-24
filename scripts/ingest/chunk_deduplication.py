@@ -4,14 +4,21 @@ Two-stage deduplication:
 1. Exact content matching via hash table (O(n))
 2. Substring detection via sorted interval scan (O(n log n))
 
-Ported from ChunkHound to Context-Engine.
+Specificity scoring uses weighted formula:
+  score = w_type * type_weight + w_size * log(line_count) + w_name * has_name
+  
+where:
+  - type_weight: structural importance (definition > block > comment)
+  - log(line_count): information content (more lines = more context)
+  - has_name: named symbols are more referenceable
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict
-from typing import Sequence, TypeVar
+from typing import Sequence, TypeVar, Dict, Any
 
 import xxhash
 
@@ -19,27 +26,28 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=dict)
 
-# Specificity ranking (higher = more specific, keep over lower)
-CONCEPT_SPECIFICITY = {
-    # Context-Engine chunk types
-    "function": 4,
-    "method": 4,
-    "class": 4,
-    "interface": 4,
-    "struct": 4,
-    "enum": 4,
-    "type_alias": 3,
-    "import": 3,
-    "comment": 2,
-    "block": 1,
-    "array": 1,
-    "structure": 0,
-    # CAST+ concept types (from concept_extractor) - lowercase to match get_chunk_specificity()
-    "definition": 4,
-    "import": 3,
-    "comment": 2,
-    "block": 1,
-    # Note: "structure" already defined above
+TYPE_WEIGHTS: Dict[str, float] = {
+    "function": 1.0,
+    "method": 1.0,
+    "class": 1.0,
+    "interface": 1.0,
+    "struct": 1.0,
+    "enum": 1.0,
+    "definition": 1.0,
+    "type_alias": 0.8,
+    "type": 0.8,
+    "import": 0.6,
+    "comment": 0.4,
+    "docstring": 0.4,
+    "block": 0.3,
+    "array": 0.2,
+    "structure": 0.1,
+}
+
+SPECIFICITY_WEIGHTS = {
+    "type": 0.5,
+    "size": 0.3,
+    "name": 0.2,
 }
 
 
@@ -48,19 +56,58 @@ def normalize_content(content: str) -> str:
     return content.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
-def get_chunk_specificity(chunk: dict) -> int:
-    """Get specificity ranking for chunk's type. Higher = more specific."""
+def _extract_type_name(chunk: dict) -> str:
+    """Extract normalized type name from chunk."""
     chunk_type = chunk.get("chunk_type") or chunk.get("concept") or chunk.get("type", "")
     if isinstance(chunk_type, str):
-        type_name = chunk_type.lower()
+        return chunk_type.lower()
     elif hasattr(chunk_type, "value"):
-        type_name = str(chunk_type.value).lower()
+        return str(chunk_type.value).lower()
     elif hasattr(chunk_type, "name"):
-        type_name = chunk_type.name.lower()
-    else:
-        type_name = str(chunk_type).lower() if chunk_type else ""
+        return chunk_type.name.lower()
+    return str(chunk_type).lower() if chunk_type else ""
+
+
+def compute_specificity_score(chunk: dict) -> float:
+    """Compute specificity score using weighted formula.
     
-    return CONCEPT_SPECIFICITY.get(type_name, -1)
+    score = w_type * type_weight + w_size * log(1 + line_count) + w_name * has_name
+    
+    Higher score = more specific, should be kept over lower-scoring duplicates.
+    """
+    type_name = _extract_type_name(chunk)
+    type_weight = TYPE_WEIGHTS.get(type_name, 0.0)
+    
+    start_line = chunk.get("start_line", 0)
+    end_line = chunk.get("end_line", 0)
+    line_count = max(1, end_line - start_line + 1)
+    size_score = math.log(1 + line_count) / math.log(1000)
+    
+    has_name = 1.0 if chunk.get("name") or chunk.get("symbol") else 0.0
+    
+    score = (
+        SPECIFICITY_WEIGHTS["type"] * type_weight +
+        SPECIFICITY_WEIGHTS["size"] * min(1.0, size_score) +
+        SPECIFICITY_WEIGHTS["name"] * has_name
+    )
+    
+    return score
+
+
+def get_chunk_specificity(chunk: dict) -> int:
+    """Get integer specificity ranking (legacy interface, 0-4 scale)."""
+    type_name = _extract_type_name(chunk)
+    weight = TYPE_WEIGHTS.get(type_name, 0.0)
+    
+    if weight >= 0.9:
+        return 4
+    elif weight >= 0.7:
+        return 3
+    elif weight >= 0.5:
+        return 2
+    elif weight >= 0.3:
+        return 1
+    return 0
 
 
 def deduplicate_chunks(

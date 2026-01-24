@@ -1161,106 +1161,106 @@ def _index_single_file_inner(
         ]
         upsert_points(client, collection, points)
 
-        # Emit graph edges for symbol relationships
+        # Emit graph edges for symbol relationships (always on - Qdrant flat graph)
+        # Neo4j takes precedence when NEO4J_GRAPH=1 is set
         # Always try symbol-level edges first, fall back to file-level if no symbol_calls
         try:
-            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
-                graph_coll = ensure_graph_collection(client, collection)
-                # Delete old edges for this file before upserting new ones
-                delete_edges_by_path(client, graph_coll, str(file_path), repo=repo_tag)
+            graph_coll = ensure_graph_collection(client, collection)
+            # Delete old edges for this file before upserting new ones
+            delete_edges_by_path(client, graph_coll, str(file_path), repo=repo_tag)
 
-                all_edges = []
-                if symbol_calls:
-                    # Symbol-level edges: use AST-extracted caller→callee relationships
-                    for caller, callees in symbol_calls.items():
-                        if not caller or not callees:
-                            continue
-                        start_line = None
-                        end_line = None
-                        sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
-                        if sym_info is not None:
-                            try:
-                                start_line = int(getattr(sym_info, "start_line", 0) or 0)
-                                end_line = int(getattr(sym_info, "end_line", 0) or 0)
-                            except Exception:
-                                start_line = None
-                                end_line = None
-                        # Get caller_point_id from symbol_path mapping
-                        caller_pid = symbol_path_to_point_id.get(caller)
-                        all_edges.extend(
-                            _extract_call_edges_compat(
-                                symbol_path=caller,
-                                calls=callees,
-                                path=str(file_path),
-                                repo=repo_tag,
-                                start_line=start_line,
-                                end_line=end_line,
-                                language=language,
-                                caller_point_id=caller_pid,
-                                import_paths=import_map,
-                                collection=collection,
-                                qdrant_client=client,
-                            )
-                        )
-                    if imports:
-                        # For file-level imports, use first point ID if available
-                        file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
-                        all_edges.extend(
-                            _extract_import_edges_compat(
-                                symbol_path=str(file_path),
-                                imports=imports,
-                                path=str(file_path),
-                                repo=repo_tag,
-                                language=language,
-                                caller_point_id=file_pid,
-                                collection=collection,
-                                qdrant_client=client,
-                            )
-                        )
-                else:
-                    # File-level fallback: emit file→symbol edges
-                    source_file_path = str(file_path)
-                    # Use first point ID for file-level edges
-                    file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
-                    if calls:
-                        all_edges.extend(_extract_call_edges_compat(
-                            symbol_path=source_file_path,
-                            calls=calls,
-                            path=source_file_path,
+            all_edges = []
+            if symbol_calls:
+                # Symbol-level edges: use AST-extracted caller→callee relationships
+                for caller, callees in symbol_calls.items():
+                    if not caller or not callees:
+                        continue
+                    start_line = None
+                    end_line = None
+                    sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
+                    if sym_info is not None:
+                        try:
+                            start_line = int(getattr(sym_info, "start_line", 0) or 0)
+                            end_line = int(getattr(sym_info, "end_line", 0) or 0)
+                        except Exception:
+                            start_line = None
+                            end_line = None
+                    # Get caller_point_id from symbol_path mapping
+                    caller_pid = symbol_path_to_point_id.get(caller)
+                    all_edges.extend(
+                        _extract_call_edges_compat(
+                            symbol_path=caller,
+                            calls=callees,
+                            path=str(file_path),
                             repo=repo_tag,
+                            start_line=start_line,
+                            end_line=end_line,
+                            language=language,
+                            caller_point_id=caller_pid,
+                            import_paths=import_map,
+                            collection=collection,
+                            qdrant_client=client,
+                        )
+                    )
+                if imports:
+                    # For file-level imports, use first point ID if available
+                    file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
+                    all_edges.extend(
+                        _extract_import_edges_compat(
+                            symbol_path=str(file_path),
+                            imports=imports,
+                            path=str(file_path),
+                            repo=repo_tag,
+                            language=language,
                             caller_point_id=file_pid,
+                            collection=collection,
+                            qdrant_client=client,
+                        )
+                    )
+            else:
+                # File-level fallback: emit file→symbol edges
+                source_file_path = str(file_path)
+                # Use first point ID for file-level edges
+                file_pid = next(iter(symbol_path_to_point_id.values()), None) if symbol_path_to_point_id else None
+                if calls:
+                    all_edges.extend(_extract_call_edges_compat(
+                        symbol_path=source_file_path,
+                        calls=calls,
+                        path=source_file_path,
+                        repo=repo_tag,
+                        caller_point_id=file_pid,
+                        import_paths=import_map,
+                        collection=collection,
+                        qdrant_client=client,
+                    ))
+                if imports:
+                    all_edges.extend(_extract_import_edges_compat(
+                        symbol_path=source_file_path,
+                        imports=imports,
+                        path=source_file_path,
+                        repo=repo_tag,
+                        caller_point_id=file_pid,
+                        collection=collection,
+                        qdrant_client=client,
+                    ))
+
+            # Extract inheritance edges (INHERITS_FROM) for all classes
+            if inheritance_map:
+                for class_name, base_classes in inheritance_map.items():
+                    if class_name and base_classes:
+                        all_edges.extend(extract_inheritance_edges(
+                            class_name=class_name,
+                            base_classes=base_classes,
+                            path=str(file_path),
+                            repo=repo_tag,
+                            language=language,
                             import_paths=import_map,
                             collection=collection,
                             qdrant_client=client,
                         ))
-                    if imports:
-                        all_edges.extend(_extract_import_edges_compat(
-                            symbol_path=source_file_path,
-                            imports=imports,
-                            path=source_file_path,
-                            repo=repo_tag,
-                            caller_point_id=file_pid,
-                            collection=collection,
-                            qdrant_client=client,
-                        ))
 
-                # Extract inheritance edges (INHERITS_FROM) for all classes
-                if inheritance_map:
-                    for class_name, base_classes in inheritance_map.items():
-                        if class_name and base_classes:
-                            all_edges.extend(extract_inheritance_edges(
-                                class_name=class_name,
-                                base_classes=base_classes,
-                                path=str(file_path),
-                                repo=repo_tag,
-                                language=language,
-                                import_paths=import_map,
-                                collection=collection,
-                                qdrant_client=client,
-                            ))
-
-                if all_edges:
-                    upsert_edges(client, graph_coll, all_edges)
+            if all_edges:
+                upsert_edges(client, graph_coll, all_edges)
         except Exception as e:
             # Don't fail indexing if graph edges fail
             logger.warning(f"Failed to emit graph edges for {file_path}: {e}")
@@ -2162,99 +2162,99 @@ def process_file_with_smart_reindexing(
     if all_points:
         _upsert_points_fn(client, current_collection, all_points)
 
-        # Emit graph edges for symbol relationships
+        # Emit graph edges for symbol relationships (always on - Qdrant flat graph)
+        # Neo4j takes precedence when NEO4J_GRAPH=1 is set
         # Always try symbol-level edges first, fall back to file-level if no symbol_calls
         try:
-            if os.environ.get("INDEX_GRAPH_EDGES", "1").lower() in {"1", "true", "yes", "on"}:
-                graph_coll = ensure_graph_collection(client, current_collection)
-                delete_edges_by_path(client, graph_coll, fp, repo=per_file_repo)
+            graph_coll = ensure_graph_collection(client, current_collection)
+            delete_edges_by_path(client, graph_coll, fp, repo=per_file_repo)
 
-                all_edges = []
-                if symbol_calls:
-                    # Symbol-level edges: use AST-extracted caller→callee relationships
-                    for caller, callees in symbol_calls.items():
-                        if not caller or not callees:
-                            continue
-                        start_line = None
-                        sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
-                        if sym_info is not None:
-                            try:
-                                start_line = int(getattr(sym_info, "start_line", 0) or 0)
-                            except Exception:
-                                start_line = None
-                        # Get caller_point_id from symbol_path mapping
-                        caller_pid = symbol_path_to_point_id_sr.get(caller)
-                        all_edges.extend(
-                            _extract_call_edges_compat(
-                                symbol_path=caller,
-                                calls=callees,
-                                path=fp,
-                                repo=per_file_repo,
-                                start_line=start_line,
-                                language=language,
-                                caller_point_id=caller_pid,
-                                import_paths=import_map,
-                            )
+            all_edges = []
+            if symbol_calls:
+                # Symbol-level edges: use AST-extracted caller→callee relationships
+                for caller, callees in symbol_calls.items():
+                    if not caller or not callees:
+                        continue
+                    start_line = None
+                    sym_info = symbol_meta_by_path.get(caller) or symbol_meta_by_name.get(caller)
+                    if sym_info is not None:
+                        try:
+                            start_line = int(getattr(sym_info, "start_line", 0) or 0)
+                        except Exception:
+                            start_line = None
+                    # Get caller_point_id from symbol_path mapping
+                    caller_pid = symbol_path_to_point_id_sr.get(caller)
+                    all_edges.extend(
+                        _extract_call_edges_compat(
+                            symbol_path=caller,
+                            calls=callees,
+                            path=fp,
+                            repo=per_file_repo,
+                            start_line=start_line,
+                            language=language,
+                            caller_point_id=caller_pid,
+                            import_paths=import_map,
                         )
-                    if imports:
-                        # For file-level imports, use first point ID if available
-                        file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
-                        all_edges.extend(
-                            _extract_import_edges_compat(
-                                symbol_path=fp,
-                                imports=imports,
-                                path=fp,
-                                repo=per_file_repo,
-                                language=language,
-                                caller_point_id=file_pid,
-                            )
-                        )
-                else:
-                    # File-level fallback: emit file→symbol edges
-                    meta0 = {}
-                    try:
-                        if all_points and hasattr(all_points[0], "payload"):
-                            meta0 = all_points[0].payload.get("metadata", {}) or {}
-                    except Exception:
-                        meta0 = {}
-                    file_calls = meta0.get("calls", []) or []
-                    file_imports = meta0.get("imports", []) or []
-                    file_import_map = meta0.get("import_map", {}) or {}
-                    # Use first point ID for file-level edges
+                    )
+                if imports:
+                    # For file-level imports, use first point ID if available
                     file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
-                    if file_calls:
-                        all_edges.extend(_extract_call_edges_compat(
+                    all_edges.extend(
+                        _extract_import_edges_compat(
                             symbol_path=fp,
-                            calls=file_calls,
+                            imports=imports,
                             path=fp,
                             repo=per_file_repo,
+                            language=language,
                             caller_point_id=file_pid,
-                            import_paths=file_import_map,
-                        ))
-                    if file_imports:
-                        all_edges.extend(_extract_import_edges_compat(
-                            symbol_path=fp,
-                            imports=file_imports,
+                        )
+                    )
+            else:
+                # File-level fallback: emit file→symbol edges
+                meta0 = {}
+                try:
+                    if all_points and hasattr(all_points[0], "payload"):
+                        meta0 = all_points[0].payload.get("metadata", {}) or {}
+                except Exception:
+                    meta0 = {}
+                file_calls = meta0.get("calls", []) or []
+                file_imports = meta0.get("imports", []) or []
+                file_import_map = meta0.get("import_map", {}) or {}
+                # Use first point ID for file-level edges
+                file_pid = next(iter(symbol_path_to_point_id_sr.values()), None) if symbol_path_to_point_id_sr else None
+                if file_calls:
+                    all_edges.extend(_extract_call_edges_compat(
+                        symbol_path=fp,
+                        calls=file_calls,
+                        path=fp,
+                        repo=per_file_repo,
+                        caller_point_id=file_pid,
+                        import_paths=file_import_map,
+                    ))
+                if file_imports:
+                    all_edges.extend(_extract_import_edges_compat(
+                        symbol_path=fp,
+                        imports=file_imports,
+                        path=fp,
+                        repo=per_file_repo,
+                        caller_point_id=file_pid,
+                    ))
+
+            # Extract inheritance edges (INHERITS_FROM) for all classes
+            if inheritance_map:
+                for class_name, base_classes in inheritance_map.items():
+                    if class_name and base_classes:
+                        all_edges.extend(extract_inheritance_edges(
+                            class_name=class_name,
+                            base_classes=base_classes,
                             path=fp,
                             repo=per_file_repo,
-                            caller_point_id=file_pid,
+                            language=language,
+                            import_paths=import_map,
                         ))
 
-                # Extract inheritance edges (INHERITS_FROM) for all classes
-                if inheritance_map:
-                    for class_name, base_classes in inheritance_map.items():
-                        if class_name and base_classes:
-                            all_edges.extend(extract_inheritance_edges(
-                                class_name=class_name,
-                                base_classes=base_classes,
-                                path=fp,
-                                repo=per_file_repo,
-                                language=language,
-                                import_paths=import_map,
-                            ))
-
-                if all_edges:
-                    upsert_edges(client, graph_coll, all_edges)
+            if all_edges:
+                upsert_edges(client, graph_coll, all_edges)
         except Exception as e:
             logger.warning(f"Failed to emit graph edges for {fp}: {e}")
 
