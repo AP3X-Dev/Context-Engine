@@ -52,7 +52,7 @@ class VueMapping(TypeScriptMapping):
     def __init__(self) -> None:
         """Initialize Vue mapping (delegates to TypeScript for script parsing)."""
         super().__init__()
-        self.language = Language.VUE  # Override to VUE
+        self.language = "vue"  # Override to VUE
 
     # Section extraction patterns
     SCRIPT_PATTERN = re.compile(

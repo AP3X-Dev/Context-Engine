@@ -190,7 +190,7 @@ class SearchOptimizedChunker:
             return [self._content_to_result(content, 1, len(content.splitlines()))]
         
         if self.config.deduplicate:
-            chunks = self._deduplicate(chunks)
+            chunks = self._deduplicate_v2(chunks, language)
         
         chunks = self._split_oversized(chunks, content)
         chunks = self._merge_compatible(chunks, content)
@@ -322,13 +322,21 @@ class SearchOptimizedChunker:
         return ConceptType.BLOCK  # Default
     
     def _deduplicate(self, chunks: List[SemanticChunk]) -> List[SemanticChunk]:
-        """Remove chunks with identical content."""
+        """Remove chunks with identical content (legacy, hash-based)."""
         result = []
         for chunk in chunks:
             if chunk.content_hash not in self._seen_hashes:
                 self._seen_hashes.add(chunk.content_hash)
                 result.append(chunk)
         return result
+    
+    def _deduplicate_v2(self, chunks: List[SemanticChunk], language: str) -> List[SemanticChunk]:
+        """Remove chunks using O(n log n) deduplication with substring detection."""
+        try:
+            from scripts.ingest.chunk_deduplication import deduplicate_semantic_chunks
+            return deduplicate_semantic_chunks(chunks, language)
+        except ImportError:
+            return self._deduplicate(chunks)
     
     def _split_oversized(self, chunks: List[SemanticChunk], content: str) -> List[SemanticChunk]:
         """Split chunks that exceed size limits."""

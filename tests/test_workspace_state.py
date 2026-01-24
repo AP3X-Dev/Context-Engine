@@ -442,29 +442,34 @@ class TestConfigDrift:
     """Tests for indexing config drift detection."""
 
     def test_get_indexing_config_snapshot_includes_graph_edges(self, ws_module, monkeypatch):
-        """Verify index_graph_edges key exists in snapshot with default value True."""
-        # Clear any existing env vars to test defaults
-        monkeypatch.delenv("INDEX_GRAPH_EDGES", raising=False)
+        """Verify index_graph_edges key exists in snapshot and is always True.
 
+        Symbol graph (Qdrant flat graph) is always on - this value is no longer
+        configurable via env var. Use NEO4J_GRAPH=1 to enable Neo4j backend instead.
+        """
         snapshot = ws_module.get_indexing_config_snapshot()
 
         assert "index_graph_edges" in snapshot, "index_graph_edges should be in config snapshot"
-        assert snapshot["index_graph_edges"] is True, "Default value for index_graph_edges should be True"
+        assert snapshot["index_graph_edges"] is True, "index_graph_edges should always be True (always on)"
 
-    def test_get_indexing_config_snapshot_respects_env_var(self, ws_module, monkeypatch):
-        """Verify INDEX_GRAPH_EDGES env var is respected in snapshot."""
-        # Test with False
+    def test_get_indexing_config_snapshot_graph_edges_always_true(self, ws_module, monkeypatch):
+        """Verify index_graph_edges is always True regardless of env var (now unconditional)."""
+        # Even with env var set to 0, index_graph_edges should be True (always on)
         monkeypatch.setenv("INDEX_GRAPH_EDGES", "0")
         snapshot = ws_module.get_indexing_config_snapshot()
-        assert snapshot["index_graph_edges"] is False, "INDEX_GRAPH_EDGES=0 should set index_graph_edges to False"
+        assert snapshot["index_graph_edges"] is True, "index_graph_edges should always be True (env var ignored)"
 
-        # Test with True
+        # Same with env var set to 1
         monkeypatch.setenv("INDEX_GRAPH_EDGES", "1")
         snapshot = ws_module.get_indexing_config_snapshot()
-        assert snapshot["index_graph_edges"] is True, "INDEX_GRAPH_EDGES=1 should set index_graph_edges to True"
+        assert snapshot["index_graph_edges"] is True, "index_graph_edges should always be True"
 
     def test_config_drift_classifies_graph_edges_as_recreate(self, ws_module):
-        """Verify that changing INDEX_GRAPH_EDGES triggers recreate drift."""
+        """Verify that changing index_graph_edges triggers recreate drift.
+
+        Note: index_graph_edges is now always True, but drift rules still exist
+        for backwards compatibility with existing indexes that may have False.
+        """
         from scripts import indexing_admin
 
         # Verify the drift rule exists and is classified as "recreate"
@@ -473,23 +478,15 @@ class TestConfigDrift:
         assert indexing_admin.CONFIG_DRIFT_RULES["index_graph_edges"] == "recreate", \
             "index_graph_edges drift should be classified as 'recreate'"
 
-    def test_config_drift_graph_edges_true_to_false(self, ws_module):
-        """Verify drift from True->False is classified as recreate."""
+    def test_config_drift_graph_edges_legacy_false_to_true(self, ws_module):
+        """Verify drift from legacy False->True is classified as recreate.
+
+        This handles migration from old indexes where graph edges were disabled.
+        """
         from scripts import indexing_admin
 
-        old_config = {"index_graph_edges": True}
-        new_config = {"index_graph_edges": False}
-
-        # The actual drift detection is more complex, but we can verify the rule
-        rule = indexing_admin.CONFIG_DRIFT_RULES.get("index_graph_edges")
-        assert rule == "recreate", "Changing index_graph_edges should require recreate"
-
-    def test_config_drift_graph_edges_false_to_true(self, ws_module):
-        """Verify drift from False->True is classified as recreate."""
-        from scripts import indexing_admin
-
-        old_config = {"index_graph_edges": False}
-        new_config = {"index_graph_edges": True}
+        old_config = {"index_graph_edges": False}  # Legacy: was disabled
+        new_config = {"index_graph_edges": True}   # Now: always on
 
         # The actual drift detection is more complex, but we can verify the rule
         rule = indexing_admin.CONFIG_DRIFT_RULES.get("index_graph_edges")

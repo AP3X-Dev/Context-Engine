@@ -37,6 +37,7 @@ const SETTINGS_SCHEMA = {
       { key: 'mcpWindsurfEnabled', label: 'Windsurf', type: 'boolean', description: 'Write MCP config for Windsurf/Codeium' },
       { key: 'mcpAugmentEnabled', label: 'Augment Code', type: 'boolean', description: 'Write MCP config for Augment' },
       { key: 'mcpAntigravityEnabled', label: 'Antigravity', type: 'boolean', description: 'Write MCP config for Google Antigravity' },
+      { key: 'mcpCursorEnabled', label: 'Cursor', type: 'boolean', description: 'Write MCP config for Cursor (~/.cursor/mcp.json)' },
       { key: 'autoWriteMcpConfigOnStartup', label: 'Auto-write on Startup', type: 'boolean', description: 'Automatically write MCP configs when extension activates' },
     ]
   },
@@ -179,13 +180,14 @@ class SettingsWebviewProvider {
   _getHtmlContent(webview) {
     const nonce = getNonce();
     const values = this._getAllSettings();
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'assets', 'logo.jpeg'));
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://microsoft.github.io; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://microsoft.github.io; img-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <title>Context Engine Settings</title>
   <link href="https://microsoft.github.io/vscode-codicons/dist/codicon.css" rel="stylesheet">
   <style>${this._getStyles()}</style>
@@ -194,7 +196,7 @@ class SettingsWebviewProvider {
   <div class="settings-container">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="logo"><span class="codicon codicon-settings-gear"></span></div>
+        <img src="${logoUri}" alt="Context Engine" class="logo-img">
         <h1>Settings</h1>
       </div>
       <nav class="nav-list">
@@ -328,16 +330,11 @@ class SettingsWebviewProvider {
       gap: 10px;
       border-bottom: 1px solid var(--border-subtle);
     }
-    .sidebar-header .logo {
+    .sidebar-header .logo-img {
       width: 28px;
       height: 28px;
-      background: linear-gradient(135deg, var(--accent), #8b5cf6);
       border-radius: var(--radius-md);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-size: 14px;
+      object-fit: cover;
     }
     .sidebar-header h1 {
       font-size: 14px;

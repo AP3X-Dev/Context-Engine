@@ -34,7 +34,7 @@ except ImportError:
     TSNode = None
 
 
-class JavaScriptMapping(BaseMapping, JSFamilyExtraction):
+class JavaScriptMapping(JSFamilyExtraction, BaseMapping):
     """JavaScript language mapping for tree-sitter parsing.
 
     Provides JavaScript-specific queries and extraction methods for:

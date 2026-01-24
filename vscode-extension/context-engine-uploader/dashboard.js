@@ -95,13 +95,14 @@ class DashboardViewProvider {
   _getHtmlContent(webview) {
     const state = this._getState();
     const nonce = getNonce();
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'assets', 'logo.jpeg'));
     
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://microsoft.github.io; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://microsoft.github.io; img-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <title>Context Engine Dashboard</title>
   <link href="https://microsoft.github.io/vscode-codicons/dist/codicon.css" rel="stylesheet">
   <style>
@@ -110,7 +111,7 @@ class DashboardViewProvider {
 </head>
 <body>
   <div class="dashboard">
-    ${this._getHeaderHtml(state)}
+    ${this._getHeaderHtml(state, logoUri)}
     ${this._getSetupCardHtml(state)}
     ${this._getQuickActionsHtml(state)}
     ${this._getIntegrationsHtml(state)}
@@ -213,14 +214,11 @@ class DashboardViewProvider {
       letter-spacing: -0.01em;
     }
 
-    .header .logo {
+    .header .logo-img {
       width: 18px;
       height: 18px;
-      background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #8b5cf6));
       border-radius: var(--radius-sm);
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      object-fit: cover;
     }
 
     .header .stats {
@@ -515,14 +513,14 @@ class DashboardViewProvider {
   `;
   }
 
-  _getHeaderHtml(state) {
+  _getHeaderHtml(state, logoUri) {
     const isActive = state.statusMode === 'indexing' || state.statusMode === 'watching';
     const statusText = state.statusMode === 'indexing' ? 'Indexing' : state.statusMode === 'watching' ? 'Watching' : 'Idle';
     const statusClass = isActive ? 'active' : 'idle';
     return `
     <div class="header">
       <h1>
-        <span class="logo"><i class="codicon codicon-database" style="font-size:12px;color:#fff;"></i></span>
+        <img src="${logoUri}" alt="Context Engine" class="logo-img">
         Context Engine
       </h1>
       <div class="stats">

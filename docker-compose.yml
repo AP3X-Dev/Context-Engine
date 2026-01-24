@@ -453,9 +453,12 @@ services:
       - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
       # Pattern vectors for structural code similarity
       - PATTERN_VECTORS=${PATTERN_VECTORS:-}
-      # Graph edges for symbol relationships
-      - INDEX_GRAPH_EDGES=${INDEX_GRAPH_EDGES:-1}
+      # Graph edges for symbol relationships (always on)
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
+      # Defer pseudo-tag generation to watcher worker for faster initial indexing
+      - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
+      # Parallel indexing - number of worker threads (default: 4, use -1 for CPU count)
+      - INDEX_WORKERS=${INDEX_WORKERS:-4}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
@@ -514,12 +517,13 @@ services:
       - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
       # Pattern vectors for structural code similarity
       - PATTERN_VECTORS=${PATTERN_VECTORS:-}
-      # Graph edges for symbol relationships
-      - INDEX_GRAPH_EDGES=${INDEX_GRAPH_EDGES:-1}
+      # Graph edges for symbol relationships (always on - Qdrant flat graph)
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
       - GRAPH_BACKFILL_ENABLED=${GRAPH_BACKFILL_ENABLED:-1}
-      # Neo4j graph backend (when set, edges go to Neo4j instead of Qdrant _graph collection)
+      # Neo4j graph backend (optional - takes precedence over Qdrant flat graph)
       - NEO4J_GRAPH=${NEO4J_GRAPH:-}
+      # Defer pseudo-tag generation - watcher runs backfill worker thread
+      - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw

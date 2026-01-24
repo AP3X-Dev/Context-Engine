@@ -467,14 +467,28 @@ def validate_bundle_format(bundle_path: Path) -> Dict[str, Any]:
                 if not any(req_file in member for member in members):
                     raise ValueError(f"Missing required file: {req_file}")
 
-            # Extract and validate manifest
+            # Extract and validate manifest - look for root-level manifest.json only
+            # The bundle structure is {bundle_id}/manifest.json at the root
             manifest_member = None
+            manifest_candidates = [m for m in members if m.endswith("manifest.json")]
+            logger.debug(f"[upload_service] Bundle members: {members[:20]}...")
+            logger.debug(f"[upload_service] Manifest candidates: {manifest_candidates}")
+            
+            # Prefer root-level manifest (exactly one path component before manifest.json)
             for member in members:
-                if member.endswith("manifest.json"):
+                if member.endswith("/manifest.json") and member.count("/") == 1:
                     manifest_member = member
                     break
+            
+            # Fallback: if no root-level manifest, try any manifest.json (but NOT in files/ subdirs)
+            if not manifest_member:
+                for member in members:
+                    if member.endswith("manifest.json") and "/files/" not in member:
+                        manifest_member = member
+                        break
 
             if not manifest_member:
+                logger.error(f"[upload_service] No valid manifest.json found. Candidates were: {manifest_candidates}")
                 raise ValueError("manifest.json not found in bundle")
 
             manifest_file = tar.extractfile(manifest_member)
@@ -482,11 +496,13 @@ def validate_bundle_format(bundle_path: Path) -> Dict[str, Any]:
                 raise ValueError("Cannot extract manifest.json")
 
             manifest = json.loads(manifest_file.read().decode('utf-8'))
+            logger.debug(f"[upload_service] Parsed manifest keys: {list(manifest.keys())}")
 
             # Validate manifest structure
             required_fields = ["version", "bundle_id", "workspace_path", "created_at", "sequence_number"]
             for field in required_fields:
                 if field not in manifest:
+                    logger.error(f"[upload_service] Manifest missing field '{field}'. Got keys: {list(manifest.keys())}")
                     raise ValueError(f"Missing required field in manifest: {field}")
 
             return manifest

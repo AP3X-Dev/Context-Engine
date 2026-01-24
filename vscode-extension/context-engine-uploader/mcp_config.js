@@ -20,6 +20,13 @@ function getDefaultAntigravityMcpPath() {
   return path.join(home, '.gemini', 'antigravity', 'mcp_config.json');
 }
 
+function getDefaultCursorMcpPath() {
+  const home = (process.platform === 'win32')
+    ? (process.env.USERPROFILE || os.homedir())
+    : os.homedir();
+  return path.join(home, '.cursor', 'mcp.json');
+}
+
 function createMcpConfigManager(deps) {
   const vscode = deps.vscode;
   const log = deps.log;
@@ -99,6 +106,56 @@ function createMcpConfigManager(deps) {
       'Wrote Antigravity mcp_config.json at',
       'Context Engine Uploader: failed to write Antigravity mcp_config.json.',
       'Failed to write Antigravity mcp_config.json'
+    );
+
+    return success;
+  }
+
+  async function writeCursorMcpServers(configPath, indexerUrl, memoryUrl, transportMode, serverMode = 'bridge', workspaceHint) {
+    try {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    } catch (error) {
+      log(`Failed to ensure Cursor MCP directory: ${error instanceof Error ? error.message : String(error)}`);
+      vscode.window.showErrorMessage('Context Engine Uploader: failed to prepare Cursor MCP directory.');
+      return false;
+    }
+
+    const config = loadJsonConfigOrDefault(
+      configPath,
+      { mcpServers: {} },
+      'Context Engine Uploader: existing Cursor mcp.json is invalid JSON; not modified.',
+      'Failed to parse Cursor mcp.json'
+    );
+    if (!config) {
+      return false;
+    }
+    ensureMcpServersObject(config);
+
+    const servers = config.mcpServers;
+    const mode = (typeof transportMode === 'string' ? transportMode.trim() : 'sse-remote') || 'sse-remote';
+
+    log(`Preparing to write Cursor mcp.json at ${configPath} with indexerUrl=${indexerUrl || '""'} memoryUrl=${memoryUrl || '""'}`);
+
+    applyMcpServersUpdate(servers, {
+      serverMode,
+      transportMode: mode,
+      indexerUrl,
+      memoryUrl,
+      bridgeWorkspace: resolveBridgeWorkspacePath() || workspaceHint || '',
+      bridgeHttpUrl: () => resolveBridgeHttpUrl(),
+      makeBridgeHttpServer: (url) => ({ type: 'http', url }),
+      makeDirectHttpServer: (url) => ({ type: 'http', url }),
+      makeRemoteSseServer: (url) => makeMcpRemoteServer(url, { allowHttpForNonLocal: true, useCmdOnWindows: true }),
+      deleteContextEngineInDirect: true,
+    });
+
+    const success = writeJsonConfig(
+      configPath,
+      config,
+      'Context Engine Uploader: Cursor MCP config updated. Restart Cursor to reload MCP servers.',
+      'Wrote Cursor mcp.json at',
+      'Context Engine Uploader: failed to write Cursor mcp.json.',
+      'Failed to write Cursor mcp.json'
     );
 
     return success;
@@ -715,6 +772,7 @@ function createMcpConfigManager(deps) {
     const windsurfEnabled = settings.get('mcpWindsurfEnabled', false);
     const augmentEnabled = settings.get('mcpAugmentEnabled', false);
     const antigravityEnabled = settings.get('mcpAntigravityEnabled', false);
+    const cursorEnabled = settings.get('mcpCursorEnabled', false);
     const claudeHookEnabled = settings.get('claudeHookEnabled', false);
     const isLinux = process.platform === 'linux';
 
@@ -722,10 +780,10 @@ function createMcpConfigManager(deps) {
     const wantsClaude = targets ? targets.includes('claude') : claudeEnabled;
     const wantsWindsurf = targets ? targets.includes('windsurf') : windsurfEnabled;
     const wantsAugment = targets ? targets.includes('augment') : augmentEnabled;
-
     const wantsAntigravity = targets ? targets.includes('antigravity') : antigravityEnabled;
+    const wantsCursor = targets ? targets.includes('cursor') : cursorEnabled;
 
-    if (!wantsClaude && !wantsWindsurf && !wantsAugment && !wantsAntigravity && !claudeHookEnabled) {
+    if (!wantsClaude && !wantsWindsurf && !wantsAugment && !wantsAntigravity && !wantsCursor && !claudeHookEnabled) {
       vscode.window.showInformationMessage('Context Engine Uploader: MCP config writing is disabled in settings.');
       return;
     }
@@ -797,6 +855,13 @@ function createMcpConfigManager(deps) {
       const result = await writeAntigravityMcpServers(agPath, indexerUrl, memoryUrl, transportMode, serverMode, workspaceHint);
       wroteAny = wroteAny || result;
     }
+    if (wantsCursor) {
+      const customPath = (settings.get('cursorMcpPath') || '').trim();
+      const cursorPath = customPath || getDefaultCursorMcpPath();
+      const workspaceHint = getWorkspaceFolderPath();
+      const result = await writeCursorMcpServers(cursorPath, indexerUrl, memoryUrl, transportMode, serverMode, workspaceHint);
+      wroteAny = wroteAny || result;
+    }
     if (claudeHookEnabled) {
       const root = getWorkspaceFolderPath();
       if (!root) {
@@ -839,4 +904,5 @@ module.exports = {
   getDefaultWindsurfMcpPath,
   getDefaultAugmentMcpPath,
   getDefaultAntigravityMcpPath,
+  getDefaultCursorMcpPath,
 };

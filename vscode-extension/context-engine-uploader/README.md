@@ -61,7 +61,10 @@ MCP bridge (ctx-mcp-bridge) & MCP config lifecycle
   - **Centralized logging & health:** when the bridge process runs once per workspace you get a single stream of logs (`Context Engine Upload` output) and a single port to probe for health checks instead of multiple MCP child processes per IDE.
 - When you run **`Write MCP Config`**, the extension:
   - Writes `.mcp.json` in the workspace for Claude Code.
-  - Optionally writes Windsurf’s `mcp_config.json` (when `mcpWindsurfEnabled=true`).
+  - Optionally writes Windsurf's `mcp_config.json` (when `mcpWindsurfEnabled=true`).
+  - Optionally writes Augment's `settings.json` (when `mcpAugmentEnabled=true`).
+  - Optionally writes Antigravity's `mcp_config.json` (when `mcpAntigravityEnabled=true`).
+  - Optionally writes Cursor's `~/.cursor/mcp.json` (when `mcpCursorEnabled=true`).
   - Optionally scaffolds `ctx_config.json` + `.env` (when `scaffoldCtxConfig=true`).
 - The effective wiring mode is determined by the two MCP settings:
   - `mcpServerMode = bridge`, `mcpTransportMode = sse-remote` → **bridge-stdio**.
@@ -77,6 +80,18 @@ MCP bridge (ctx-mcp-bridge) & MCP config lifecycle
   - The resulting HTTP URL (`http://127.0.0.1:<mcpBridgePort>/mcp`) is written into `.mcp.json` and Windsurf’s `mcp_config.json` as the `context-engine` server URL.
   - In **stdio or direct modes**, the HTTP bridge is **not** auto-started; only the explicit `Start MCP HTTP Bridge` command will launch it.
 - Bridge settings are **workspace-scoped**, so different workspaces can choose different modes and ports (e.g., one workspace using stdio bridge, another using HTTP bridge on a different port).
+
+Cursor Integration
+------------------
+
+Enable `mcpCursorEnabled` in settings to write MCP config to `~/.cursor/mcp.json`.
+
+**Caveats:**
+- Cursor uses a **global** MCP config at `~/.cursor/mcp.json` (not per-project like Claude's `.mcp.json`).
+- After updating the config, you must **restart Cursor** for changes to take effect.
+- Cursor's MCP support requires the `http` transport mode. Set `mcpTransportMode` to `http`.
+- If using bridge mode, ensure the HTTP bridge is running (`autoStartMcpBridge=true`).
+- Custom config path: set `cursorMcpPath` to override the default `~/.cursor/mcp.json` location.
 
 Optional auth with the MCP bridge (PoC)
 --------------------------------------

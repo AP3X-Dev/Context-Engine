@@ -158,42 +158,78 @@ class BaseMapping(ABC):
             expr = expr[:max_length - 3] + "..."
         return expr if expr else "expr"
 
-    def find_child_by_type(self, node: Any, node_type: str) -> Optional[Any]:
-        """Find first child of specified type."""
-        if not TREE_SITTER_AVAILABLE or node is None:
+    # -------------------------------------------------------------------------
+    # Constant extraction (UPPER_SNAKE_CASE pattern)
+    # -------------------------------------------------------------------------
+
+    def extract_constants(
+        self, concept: ConceptType, captures: Dict[str, Any], content: bytes
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Extract constants from definition captures.
+        
+        Override in language-specific mappings for custom constant detection.
+        Default implementation detects UPPER_SNAKE_CASE patterns.
+        
+        Returns:
+            List of {"name": str, "value": str} dicts, or None if not a constant
+        """
+        import re
+        
+        if concept != ConceptType.DEFINITION:
             return None
-        for i in range(node.child_count):
-            child = node.child(i)
-            if child and child.type == node_type:
-                return child
+        
+        name = self.extract_name(concept, captures, content)
+        if not name:
+            return None
+        
+        if not re.match(r"^_?[A-Z][A-Z0-9_]*$", name):
+            return None
+        
+        text = self.extract_content(concept, captures, content)
+        value = ""
+        
+        for pattern in [
+            r"=\s*(.+?)(?:\n|$)",
+            r":\s*\w+\s*=\s*(.+?)(?:\n|$)",
+        ]:
+            match = re.search(pattern, text)
+            if match:
+                value = match.group(1).strip()
+                break
+        
+        if len(value) > MAX_CONSTANT_VALUE_LENGTH:
+            value = value[:MAX_CONSTANT_VALUE_LENGTH] + "..."
+        
+        return [{"name": name, "value": value}]
+
+    # -------------------------------------------------------------------------
+    # Import resolution (override per-language)
+    # -------------------------------------------------------------------------
+
+    def resolve_import_path(
+        self, import_text: str, base_dir: str, source_file: str
+    ) -> Optional[str]:
+        """Resolve import statement to actual file path.
+        
+        Override in language-specific mappings. Default returns None.
+        
+        Args:
+            import_text: The import statement text
+            base_dir: Base directory of the project
+            source_file: Path to the file containing the import
+        
+        Returns:
+            Resolved file path, or None if cannot resolve
+        """
         return None
 
-    def find_children_by_type(self, node: Any, node_type: str) -> List[Any]:
-        """Find all children of specified type."""
-        if not TREE_SITTER_AVAILABLE or node is None:
-            return []
-        return [node.child(i) for i in range(node.child_count) 
-                if node.child(i) and node.child(i).type == node_type]
-
-    def get_node_line_range(self, node: Any) -> tuple:
-        """Get (start_line, end_line) 1-based."""
-        if not TREE_SITTER_AVAILABLE or node is None:
-            return (1, 1)
-        return (node.start_point[0] + 1, node.end_point[0] + 1)
-
-    def get_node_byte_range(self, node: Any) -> tuple:
-        """Get (start_byte, end_byte)."""
-        if not TREE_SITTER_AVAILABLE or node is None:
-            return (0, 0)
-        return (node.start_byte, node.end_byte)
-
-    def walk_tree(self, node: Any) -> Iterator[Any]:
-        """Walk all nodes depth-first."""
-        if not TREE_SITTER_AVAILABLE or node is None:
-            return
-        yield node
-        for i in range(node.child_count):
-            child = node.child(i)
-            if child:
-                yield from self.walk_tree(child)
+    def get_import_module(self, import_text: str) -> Optional[str]:
+        """Extract module name from import statement.
+        
+        Override in language-specific mappings.
+        
+        Returns:
+            Module name, or None if cannot parse
+        """
+        return None
 

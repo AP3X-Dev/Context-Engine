@@ -246,6 +246,23 @@ from scripts.hybrid_ranking import (
 )
 
 # ---------------------------------------------------------------------------
+# Elbow detection for adaptive filtering
+# ---------------------------------------------------------------------------
+# Lazy import to avoid hard numpy dependency when feature is disabled
+_filter_by_elbow = None
+
+def _get_filter_by_elbow():
+    """Lazy load filter_by_elbow to avoid numpy import when disabled."""
+    global _filter_by_elbow
+    if _filter_by_elbow is None:
+        from scripts.hybrid.elbow_detection import filter_by_elbow
+        _filter_by_elbow = filter_by_elbow
+    return _filter_by_elbow
+
+# Environment variable for elbow filtering (opt-in)
+ELBOW_FILTER_ENABLED = _env_truthy(os.environ.get("HYBRID_ELBOW_FILTER"), False)
+
+# ---------------------------------------------------------------------------
 # Re-exports from hybrid_expand
 # ---------------------------------------------------------------------------
 from scripts.hybrid_expand import (
@@ -3011,6 +3028,24 @@ def _run_hybrid_search_impl(
         if why is not None:
             item["why"] = why
         items.append(item)
+
+    # Apply elbow detection filter if enabled (adaptive threshold based on score distribution)
+    if ELBOW_FILTER_ENABLED and items:
+        original_count = len(items)
+        # Use rerank_score if available, otherwise use score
+        items = _get_filter_by_elbow()(
+            items,
+            score_key="rerank_score",
+            fallback_score_key="score",
+            min_results=max(1, limit // 2) if limit > 0 else 0,  # Keep at least half the requested limit
+        )
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(
+                f"Elbow filter: {original_count} -> {len(items)} results "
+                f"(threshold based on curvature method)"
+            )
+        _dt("elbow_filter")
+
     if _USE_CACHE and cache_key is not None:
         if UNIFIED_CACHE_AVAILABLE:
             _RESULTS_CACHE.set(cache_key, items)

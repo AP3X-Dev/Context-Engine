@@ -43,7 +43,7 @@ class TSXMapping(TypeScriptMapping):
     def __init__(self):
         """Initialize TSX mapping."""
         # Initialize with TSX language instead of TypeScript
-        BaseMapping.__init__(self, Language.TSX)
+        BaseMapping.__init__(self, "tsx")
 
     def get_function_query(self) -> str:
         """Get tree-sitter query for TSX function definitions including typed React components.

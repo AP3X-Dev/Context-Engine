@@ -146,11 +146,9 @@ class GoMapping(BaseMapping):
 
         elif concept == ConceptType.IMPORT:
             return """
-            (import_declaration
-                (import_spec
-                    path: (interpreted_string_literal) @import_path
-                ) @import_spec
-            ) @definition
+            (import_spec
+                path: (interpreted_string_literal) @import_path
+            ) @import
 
             (package_clause
                 (package_identifier) @package_name
