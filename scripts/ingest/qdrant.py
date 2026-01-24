@@ -855,9 +855,18 @@ def delete_points_by_path(client: QdrantClient, collection: str, file_path: str)
 
 
 def upsert_points(
-    client: QdrantClient, collection: str, points: List[models.PointStruct]
+    client: QdrantClient, collection: str, points: List[models.PointStruct],
+    *, wait: bool = None
 ):
     """Upsert points with retry and batching.
+
+    Args:
+        client: Qdrant client instance
+        collection: Collection name
+        points: List of points to upsert
+        wait: Whether to wait for upsert to complete. Default is controlled by
+              INDEX_UPSERT_ASYNC env var (0=sync/wait, 1=async/no-wait).
+              Async mode is faster but may cause read-after-write issues.
 
     Raises:
         ValueError: If collection is None or empty.
@@ -878,6 +887,11 @@ def upsert_points(
         backoff = float(os.environ.get("INDEX_UPSERT_BACKOFF", "0.5") or 0.5)
     except Exception:
         backoff = 0.5
+    
+    # Determine wait mode: explicit param > env var > default (sync)
+    if wait is None:
+        async_mode = os.environ.get("INDEX_UPSERT_ASYNC", "0").strip().lower() in {"1", "true", "yes", "on"}
+        wait = not async_mode
 
     failed_count = 0
     for i in range(0, len(points), max(1, bsz)):
@@ -885,12 +899,12 @@ def upsert_points(
         attempt = 0
         while True:
             try:
-                client.upsert(collection_name=collection, points=batch, wait=True)
+                client.upsert(collection_name=collection, points=batch, wait=wait)
                 break
             except Exception as e:
                 attempt += 1
                 if attempt >= retries:
-                    # Final fallback: try smaller sub-batches
+                    # Final fallback: try smaller sub-batches (always sync for reliability)
                     sub_size = max(1, bsz // 4)
                     sub_failed = 0
                     for j in range(0, len(batch), sub_size):
@@ -901,7 +915,6 @@ def upsert_points(
                             )
                         except Exception as sub_e:
                             sub_failed += len(sub)
-                            # Log individual sub-batch failures for debugging
                             print(f"[UPSERT_WARNING] Sub-batch upsert failed ({len(sub)} points): {sub_e}", flush=True)
                     if sub_failed > 0:
                         failed_count += sub_failed
@@ -915,6 +928,45 @@ def upsert_points(
 
     if failed_count > 0:
         print(f"[UPSERT_SUMMARY] Total {failed_count}/{len(points)} points failed to upsert", flush=True)
+
+
+def flush_upserts(client: QdrantClient, collection: str) -> None:
+    """Best-effort sync for pending async upserts.
+    
+    Call this after a batch of async upserts (INDEX_UPSERT_ASYNC=1) to improve
+    likelihood that data is visible for subsequent reads.
+    
+    IMPORTANT: Qdrant's wait=False semantics mean upserts are "confirmed received"
+    but not necessarily "applied". This function performs operations that encourage
+    the server to process pending writes, but cannot guarantee immediate consistency.
+    
+    For strict consistency requirements:
+    - Use wait=True (INDEX_UPSERT_ASYNC=0) during upserts, or
+    - Add application-level retry logic for read-after-write scenarios
+    
+    For remote deployments, network latency may increase the window between
+    upsert confirmation and data visibility.
+    
+    Args:
+        client: Qdrant client instance
+        collection: Collection name
+    """
+    if not collection:
+        return
+    try:
+        # 1. Get collection info (lightweight metadata read)
+        client.get_collection(collection)
+        
+        # 2. Perform a minimal scroll to encourage segment processing
+        # This touches actual data, which helps flush pending writes
+        client.scroll(
+            collection_name=collection,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.debug(f"flush_upserts: {e}")
 
 
 def hash_id(text: str, path: str, start: int, end: int) -> int:
