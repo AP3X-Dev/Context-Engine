@@ -844,30 +844,105 @@ def multi_granular_query(
 # Module exports
 # ---------------------------------------------------------------------------
 
+def find_similar_chunks(
+    client,
+    chunk_id: str,
+    collection: str,
+    vec_name: str,
+    limit: int = 20,
+    threshold: float | None = None,
+    path_filter: str | None = None,
+) -> List[Dict[str, Any]]:
+    """Find chunks similar to a given chunk by retrieving its vector and searching.
+    
+    Used for multi-hop search expansion - given a high-scoring chunk,
+    find its nearest neighbors in the vector space.
+    
+    Args:
+        client: QdrantClient instance
+        chunk_id: ID of the chunk to find similar chunks for
+        collection: Collection name
+        vec_name: Vector name to use for similarity
+        limit: Maximum number of similar chunks to return
+        threshold: Optional minimum similarity score
+        path_filter: Optional path prefix to filter results
+    
+    Returns:
+        List of similar chunks with score, content, path, and full payload
+    """
+    try:
+        points = client.retrieve(
+            collection_name=collection,
+            ids=[chunk_id],
+            with_vectors=[vec_name],
+        )
+    except Exception:
+        points = client.retrieve(
+            collection_name=collection,
+            ids=[chunk_id],
+            with_vectors=True,
+        )
+    
+    if not points:
+        return []
+    
+    point = points[0]
+    vector = point.vector
+    if isinstance(vector, dict):
+        vector = vector.get(vec_name)
+    if not vector:
+        return []
+    
+    must_not = [models.HasIdCondition(has_id=[chunk_id])]
+    must = []
+    
+    if path_filter:
+        must.append(models.FieldCondition(
+            key="metadata.path",
+            match=models.MatchText(text=path_filter),
+        ))
+    
+    flt = models.Filter(must=must, must_not=must_not) if must or must_not else None
+    
+    try:
+        results = client.search(
+            collection_name=collection,
+            query_vector=(vec_name, vector),
+            query_filter=flt,
+            limit=limit,
+            score_threshold=threshold,
+            with_payload=True,
+        )
+    except TypeError:
+        results = client.search(
+            collection_name=collection,
+            query_vector=vector,
+            query_filter=flt,
+            limit=limit,
+            score_threshold=threshold,
+            with_payload=True,
+        )
+    
+    output = []
+    for r in results:
+        md = (r.payload or {}).get("metadata", {})
+        output.append({
+            "chunk_id": str(r.id),
+            "score": r.score,
+            "similarity": r.score,
+            "content": md.get("text", ""),
+            "path": md.get("path", ""),
+            "start_line": md.get("start_line"),
+            "end_line": md.get("end_line"),
+            "symbol": md.get("symbol"),
+            "kind": md.get("kind"),
+            "payload": r.payload,
+        })
+    
+    return output
+
+
 __all__ = [
-    # Pool availability flag
-    "_POOL_AVAILABLE",
-    # Connection pooling
-    "get_qdrant_client",
-    "return_qdrant_client",
-    "pooled_qdrant_client",
-    # Thread executor
-    "_QUERY_EXECUTOR",
-    "_EXECUTOR_LOCK",
-    "_get_query_executor",
-    # Point coercion
-    "_coerce_points",
-    # Legacy search
-    "_legacy_vector_search",
-    # Collection caching
-    "_ENSURED_COLLECTIONS",
-    "_get_client_endpoint",
-    "_ensure_collection",
-    "clear_ensured_collections",
-    # Collection name resolution
-    "_collection",
-    # Filter sanitization
-    "_sanitize_filter_obj",
     # Lexical vector functions
     "_split_ident_lex",
     "lex_hash_vector",
@@ -877,6 +952,7 @@ __all__ = [
     "sparse_lex_query",
     "dense_query",
     "multi_granular_query",
+    "find_similar_chunks",
     # Multi-granular config
     "MULTI_GRANULAR_VECTORS",
     "ENTITY_DENSE_NAME",

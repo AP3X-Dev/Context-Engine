@@ -35,7 +35,7 @@ except ImportError:
     # TSNode is already defined in TYPE_CHECKING block
 
 
-class TypeScriptMapping(BaseMapping, JSFamilyExtraction):
+class TypeScriptMapping(JSFamilyExtraction, BaseMapping):
     """TypeScript language mapping for tree-sitter parsing.
 
     This mapping handles TypeScript-specific AST patterns including:
@@ -171,6 +171,12 @@ class TypeScriptMapping(BaseMapping, JSFamilyExtraction):
         elif concept == ConceptType.COMMENT:
             return """
             (comment) @definition
+            """
+        elif concept == ConceptType.IMPORT:
+            return """
+            (import_statement
+                source: (string) @import_path
+            ) @import
             """
         return None
 

@@ -26,6 +26,19 @@ import logging
 
 logger = logging.getLogger("ast_analyzer")
 
+# ---------------------------------------------------------------------------
+# Language Mappings Integration
+# ---------------------------------------------------------------------------
+# Context-Engine's unified concept-based extraction supporting 32 languages.
+# Uses declarative tree-sitter queries organized by semantic concept type:
+#   DEFINITION, BLOCK, COMMENT, IMPORT, STRUCTURE
+_LANGUAGE_MAPPINGS_AVAILABLE = False
+try:
+    from scripts.ingest.language_mappings import get_mapping, supported_languages as lm_supported_languages, ConceptType
+    _LANGUAGE_MAPPINGS_AVAILABLE = True
+except ImportError:
+    pass
+
 # Optional tree-sitter support - tree-sitter 0.25+ API
 _TS_LANGUAGES: Dict[str, Any] = {}
 _TS_AVAILABLE = False
@@ -131,6 +144,27 @@ class CodeSymbol:
     parent: Optional[str] = None  # Parent class/module
     complexity: int = 0  # Cyclomatic complexity estimate
     content_hash: Optional[str] = None
+    concept: Optional[str] = None  # Universal concept type (definition, block, comment, etc.)
+
+
+@dataclass
+class ConceptUnit:
+    """A semantic code unit with universal concept classification.
+    
+    Context-Engine's 5 universal concepts for language-agnostic analysis:
+    - DEFINITION: functions, classes, types, constants
+    - BLOCK: control flow, scoped regions
+    - COMMENT: comments, docstrings
+    - IMPORT: import/include statements
+    - STRUCTURE: file-level organization
+    """
+    concept: str  # definition, block, comment, import, structure
+    name: str
+    content: str
+    start_line: int
+    end_line: int
+    kind: str = ""  # More specific: function, class, if, for, etc.
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -223,7 +257,13 @@ class ASTAnalyzer:
                 logger.error(f"Failed to read {file_path}: {e}")
                 return self._empty_analysis()
         
-        # Route to appropriate analyzer
+        # Use language mappings (32 languages, declarative queries)
+        if _LANGUAGE_MAPPINGS_AVAILABLE and self.use_tree_sitter:
+            result = self._analyze_with_mapping(content, file_path, language)
+            if result and (result.get("symbols") or result.get("imports")):
+                return result
+        
+        # Fallback to legacy per-language analyzers
         if language == "python":
             return self._analyze_python(content, file_path)
         elif language in ("javascript", "typescript") and self.use_tree_sitter:
@@ -396,6 +436,497 @@ class ASTAnalyzer:
             "local": list(set(local))
         }
     
+    # ---- Language Mappings Analysis (unified, concept-based) ----
+    
+    def _analyze_with_mapping(self, content: str, file_path: str, language: str) -> Dict[str, Any]:
+        """Analyze code using language mappings (concept-based extraction).
+        
+        This uses the declarative tree-sitter queries from language_mappings
+        to extract symbols, imports, and calls. Supports 34 languages.
+        """
+        if not _LANGUAGE_MAPPINGS_AVAILABLE:
+            return self._empty_analysis()
+        
+        try:
+            mapping = get_mapping(language)
+        except (TypeError, Exception) as e:
+            logger.debug(f"Mapping instantiation failed for {language}: {e}")
+            return self._empty_analysis()
+        
+        if not mapping:
+            return self._empty_analysis()
+        
+        # Get parser for this language
+        parser = self._get_ts_parser(language)
+        if not parser:
+            return self._empty_analysis()
+        
+        try:
+            tree = parser.parse(content.encode("utf-8"))
+            root = tree.root_node
+        except Exception as e:
+            logger.debug(f"Tree-sitter parse failed for {language}: {e}")
+            return self._empty_analysis()
+        
+        content_bytes = content.encode("utf-8")
+        symbols: List[CodeSymbol] = []
+        imports: List[ImportReference] = []
+        calls: List[CallReference] = []
+        
+        # Get tree-sitter language object for queries
+        ts_lang = _TS_LANGUAGES.get(language) or _TS_LANGUAGES.get(self._normalize_lang(language))
+        if not ts_lang:
+            return self._empty_analysis()
+        
+        try:
+            from tree_sitter import Query, QueryCursor
+        except ImportError:
+            return self._empty_analysis()
+        
+        # Extract DEFINITION concepts -> symbols
+        def_query_str = mapping.get_query_for_concept(ConceptType.DEFINITION)
+        if def_query_str:
+            try:
+                query = Query(ts_lang, def_query_str)
+                cursor = QueryCursor(query)
+                seen_ranges: Set[Tuple[int, int]] = set()
+                
+                for match in cursor.matches(root):
+                    _, captures_dict = match
+                    main_node = None
+                    name_node = None
+                    
+                    for capture_name, nodes in captures_dict.items():
+                        if not nodes:
+                            continue
+                        node = nodes[0]
+                        if capture_name in ("definition", "function_def", "class_def", 
+                                           "method_def", "type_def", "const_def"):
+                            main_node = node
+                        elif capture_name in ("name", "function_name", "class_name", 
+                                             "method_name", "type_name", "const_name"):
+                            name_node = node
+                        elif main_node is None:
+                            main_node = node
+                    
+                    if main_node is None:
+                        continue
+                    
+                    range_key = (main_node.start_byte, main_node.end_byte)
+                    if range_key in seen_ranges:
+                        continue
+                    seen_ranges.add(range_key)
+                    
+                    # Extract name
+                    if name_node:
+                        name = content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+                    else:
+                        name = self._extract_name_from_ts_node(main_node, content_bytes)
+                    
+                    # Infer kind from node type
+                    kind = self._node_type_to_kind(main_node.type)
+                    
+                    # Extract docstring if available
+                    docstring = self._extract_ts_docstring(main_node, content_bytes)
+                    
+                    # Extract signature
+                    signature = self._extract_ts_signature(main_node, content_bytes, name, kind)
+                    
+                    # Extract decorators (for Python, etc.)
+                    decorators = self._extract_ts_decorators(main_node, content_bytes)
+                    
+                    # Determine parent
+                    parent = self._find_ts_parent_name(main_node, content_bytes)
+                    
+                    symbols.append(CodeSymbol(
+                        name=name,
+                        kind=kind,
+                        start_line=main_node.start_point[0] + 1,
+                        end_line=main_node.end_point[0] + 1,
+                        path=f"{parent}.{name}" if parent else name,
+                        docstring=docstring,
+                        signature=signature,
+                        decorators=decorators,
+                        parent=parent,
+                    ))
+            except Exception as e:
+                logger.debug(f"DEFINITION query failed for {language}: {e}")
+        
+        # Extract IMPORT concepts -> imports
+        import_query_str = mapping.get_query_for_concept(ConceptType.IMPORT)
+        if import_query_str:
+            try:
+                query = Query(ts_lang, import_query_str)
+                cursor = QueryCursor(query)
+                seen_ranges: Set[Tuple[int, int]] = set()
+                
+                for match in cursor.matches(root):
+                    _, captures_dict = match
+                    main_node = None
+                    path_node = None
+                    
+                    for capture_name, nodes in captures_dict.items():
+                        if not nodes:
+                            continue
+                        node = nodes[0]
+                        # Look for import path specifically
+                        if capture_name in ("import_path", "path", "module", "source"):
+                            path_node = node
+                        # Look for import statement container
+                        elif capture_name in ("import", "import_from", "import_statement", 
+                                             "import_spec", "import_declaration",
+                                             "include", "require", "use", "definition"):
+                            if main_node is None or node.start_byte < main_node.start_byte:
+                                main_node = node
+                    
+                    # Use path_node if available for cleaner import text
+                    import_node = path_node or main_node
+                    if import_node is None:
+                        continue
+                    
+                    range_key = (import_node.start_byte, import_node.end_byte)
+                    if range_key in seen_ranges:
+                        continue
+                    seen_ranges.add(range_key)
+                    
+                    import_text = content_bytes[import_node.start_byte:import_node.end_byte].decode("utf-8", errors="replace")
+                    module, names, is_from = self._parse_import_text(import_text, language)
+                    
+                    # If path_node was used directly, the text might be just the path
+                    if not module and path_node:
+                        module = import_text.strip().strip('"\'')
+                    
+                    if module:
+                        imports.append(ImportReference(
+                            module=module,
+                            names=names,
+                            line=import_node.start_point[0] + 1,
+                            is_from=is_from,
+                        ))
+            except Exception as e:
+                logger.debug(f"IMPORT query failed for {language}: {e}")
+        
+        # Extract calls by walking the tree for call expressions
+        calls = self._extract_calls_from_tree(root, content_bytes, symbols, language)
+        
+        # Extract all concepts for comprehensive analysis
+        concepts: List[ConceptUnit] = []
+        for concept_type in ConceptType:
+            query_str = mapping.get_query_for_concept(concept_type)
+            if not query_str:
+                continue
+            try:
+                query = Query(ts_lang, query_str)
+                cursor = QueryCursor(query)
+                seen: Set[Tuple[int, int]] = set()
+                
+                for match in cursor.matches(root):
+                    _, captures_dict = match
+                    main_node = None
+                    name_node = None
+                    
+                    for cname, nodes in captures_dict.items():
+                        if not nodes:
+                            continue
+                        node = nodes[0]
+                        if cname in ("definition", "block", "import", "comment", "structure"):
+                            main_node = node
+                        elif cname == "name" or cname.endswith("_name"):
+                            name_node = node
+                        elif main_node is None:
+                            main_node = node
+                    
+                    if main_node is None:
+                        continue
+                    
+                    rkey = (main_node.start_byte, main_node.end_byte)
+                    if rkey in seen:
+                        continue
+                    seen.add(rkey)
+                    
+                    if name_node:
+                        name = content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+                    else:
+                        name = self._extract_name_from_ts_node(main_node, content_bytes)
+                    
+                    unit_content = content_bytes[main_node.start_byte:main_node.end_byte].decode("utf-8", errors="replace")
+                    
+                    concepts.append(ConceptUnit(
+                        concept=concept_type.value,
+                        name=name,
+                        content=unit_content,
+                        start_line=main_node.start_point[0] + 1,
+                        end_line=main_node.end_point[0] + 1,
+                        kind=self._node_type_to_kind(main_node.type),
+                    ))
+            except Exception as e:
+                logger.debug(f"{concept_type.value} query failed for {language}: {e}")
+        
+        return {
+            "symbols": symbols,
+            "imports": imports,
+            "calls": calls,
+            "concepts": concepts,  # All semantic units by concept type
+            "language": language,
+        }
+    
+    def _normalize_lang(self, language: str) -> str:
+        """Normalize language name to tree-sitter key."""
+        lang = language.lower().strip()
+        aliases = {
+            "js": "javascript", "jsx": "javascript",
+            "ts": "typescript", "tsx": "typescript",
+            "c++": "cpp", "cxx": "cpp",
+            "c#": "csharp", "cs": "csharp",
+            "shell": "bash", "sh": "bash",
+        }
+        return aliases.get(lang, lang)
+    
+    def _extract_name_from_ts_node(self, node, content_bytes: bytes) -> str:
+        """Extract name from tree-sitter node."""
+        # Try field 'name' first
+        if hasattr(node, 'child_by_field_name'):
+            name_node = node.child_by_field_name('name')
+            if name_node:
+                return content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+        
+        # Look for identifier child
+        for i in range(node.child_count):
+            child = node.child(i)
+            if child and child.type in ("identifier", "name", "type_identifier"):
+                return content_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+        
+        return f"anonymous_{node.start_point[0] + 1}"
+    
+    def _node_type_to_kind(self, node_type: str) -> str:
+        """Map tree-sitter node type to symbol kind."""
+        mapping = {
+            # Functions
+            "function_definition": "function",
+            "async_function_definition": "function",
+            "function_declaration": "function",
+            "arrow_function": "function",
+            "function_item": "function",
+            "generator_function_declaration": "function",
+            # Methods
+            "method_definition": "method",
+            "method_declaration": "method",
+            # Classes
+            "class_definition": "class",
+            "class_declaration": "class",
+            "class_specifier": "class",
+            # Structs (Go, Rust, C/C++)
+            "struct_item": "struct",
+            "struct_specifier": "struct",
+            "type_declaration": "struct",  # Go uses this for struct/interface
+            "type_spec": "struct",
+            # Interfaces
+            "interface_declaration": "interface",
+            "interface_type": "interface",
+            # Types
+            "type_alias_declaration": "type",
+            "type_item": "type",
+            # Enums
+            "enum_declaration": "enum",
+            "enum_item": "enum",
+            # Rust-specific
+            "impl_item": "impl",
+            "trait_item": "trait",
+            "mod_item": "module",
+            # Constants/Variables
+            "const_item": "constant",
+            "const_declaration": "constant",
+            "variable_declaration": "variable",
+            "lexical_declaration": "variable",
+            # Imports
+            "import_statement": "import",
+            "import_declaration": "import",
+            "import_spec": "import",
+            # Comments
+            "comment": "comment",
+            "block_comment": "comment",
+            "line_comment": "comment",
+            # Control flow (for BLOCK concepts)
+            "if_statement": "if",
+            "for_statement": "for",
+            "while_statement": "while",
+            "try_statement": "try",
+            "switch_statement": "switch",
+            "match_expression": "match",
+        }
+        return mapping.get(node_type, "symbol")
+    
+    def _extract_ts_docstring(self, node, content_bytes: bytes) -> Optional[str]:
+        """Extract docstring from node body."""
+        body = node.child_by_field_name('body') if hasattr(node, 'child_by_field_name') else None
+        if not body:
+            return None
+        
+        for i in range(min(2, body.child_count)):
+            child = body.child(i)
+            if child and child.type == "expression_statement":
+                for j in range(child.child_count):
+                    expr = child.child(j)
+                    if expr and expr.type == "string":
+                        text = content_bytes[expr.start_byte:expr.end_byte].decode("utf-8", errors="replace")
+                        # Strip quotes
+                        if text.startswith('"""') or text.startswith("'''"):
+                            return text[3:-3].strip()
+                        elif text.startswith('"') or text.startswith("'"):
+                            return text[1:-1].strip()
+        return None
+    
+    def _extract_ts_signature(self, node, content_bytes: bytes, name: str, kind: str) -> str:
+        """Build signature from node."""
+        if kind in ("function", "method"):
+            params_node = node.child_by_field_name('parameters') if hasattr(node, 'child_by_field_name') else None
+            if params_node:
+                params_text = content_bytes[params_node.start_byte:params_node.end_byte].decode("utf-8", errors="replace")
+                return f"def {name}{params_text}"
+            return f"def {name}()"
+        elif kind == "class":
+            return f"class {name}"
+        return name
+    
+    def _extract_ts_decorators(self, node, content_bytes: bytes) -> List[str]:
+        """Extract decorators from preceding siblings."""
+        decorators = []
+        prev = node.prev_sibling
+        while prev and prev.type == "decorator":
+            dec_text = content_bytes[prev.start_byte:prev.end_byte].decode("utf-8", errors="replace")
+            dec_name = dec_text.lstrip("@").split("(")[0]
+            decorators.insert(0, dec_name)
+            prev = prev.prev_sibling
+        return decorators
+    
+    def _find_ts_parent_name(self, node, content_bytes: bytes) -> Optional[str]:
+        """Find parent class/module name."""
+        parent = node.parent
+        while parent:
+            if parent.type in ("class_definition", "class_declaration", "class_specifier",
+                              "impl_item", "module"):
+                name_node = parent.child_by_field_name('name') if hasattr(parent, 'child_by_field_name') else None
+                if name_node:
+                    return content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+            parent = parent.parent
+        return None
+    
+    def _parse_import_text(self, text: str, language: str) -> Tuple[str, List[str], bool]:
+        """Parse import statement text to extract module and names."""
+        text = text.strip()
+        
+        # Python: from X import Y or import X
+        if language == "python":
+            if text.startswith("from "):
+                match = re.match(r"from\s+([\w.]+)\s+import\s+(.+)", text)
+                if match:
+                    module = match.group(1)
+                    names_str = match.group(2)
+                    names = [n.strip().split(" as ")[0] for n in names_str.split(",")]
+                    return module, names, True
+            elif text.startswith("import "):
+                match = re.match(r"import\s+([\w.]+)", text)
+                if match:
+                    return match.group(1), [], False
+        
+        # JavaScript/TypeScript: import X from 'Y' or require('Y')
+        elif language in ("javascript", "typescript", "jsx", "tsx"):
+            if "from" in text:
+                match = re.search(r"from\s+['\"]([^'\"]+)['\"]", text)
+                if match:
+                    return match.group(1), [], True
+            elif "require" in text:
+                match = re.search(r"require\s*\(\s*['\"]([^'\"]+)['\"]", text)
+                if match:
+                    return match.group(1), [], False
+        
+        # Go: import "path"
+        elif language == "go":
+            match = re.search(r'"([^"]+)"', text)
+            if match:
+                return match.group(1), [], False
+        
+        # Rust: use path::to::module
+        elif language == "rust":
+            match = re.match(r"use\s+([\w:]+)", text)
+            if match:
+                return match.group(1), [], False
+        
+        # Java/Kotlin: import package.Class;
+        elif language in ("java", "kotlin"):
+            match = re.match(r"import\s+([\w.]+);?", text)
+            if match:
+                return match.group(1), [], False
+        
+        # C/C++: #include <header> or #include "header"
+        elif language in ("c", "cpp"):
+            match = re.search(r'#include\s*[<"]([^>"]+)[>"]', text)
+            if match:
+                return match.group(1), [], False
+        
+        # C#: using Namespace;
+        elif language == "csharp":
+            match = re.match(r"using\s+([\w.]+);?", text)
+            if match:
+                return match.group(1), [], False
+        
+        # Generic: try to find quoted string
+        match = re.search(r"['\"]([^'\"]+)['\"]", text)
+        if match:
+            return match.group(1), [], False
+        
+        return "", [], False
+    
+    def _extract_calls_from_tree(self, root, content_bytes: bytes, symbols: List[CodeSymbol], language: str) -> List[CallReference]:
+        """Walk tree to extract function calls."""
+        calls: List[CallReference] = []
+        symbol_ranges = [(s.start_line, s.end_line, s.path or s.name) for s in symbols]
+        
+        def find_enclosing_symbol(line: int) -> str:
+            for start, end, path in symbol_ranges:
+                if start <= line <= end:
+                    return path
+            return ""
+        
+        def walk(node):
+            node_type = node.type
+            
+            # Call expressions
+            if node_type in ("call", "call_expression", "function_call", "method_call"):
+                func_node = node.child_by_field_name('function') if hasattr(node, 'child_by_field_name') else None
+                if not func_node:
+                    # Try first child
+                    for i in range(node.child_count):
+                        child = node.child(i)
+                        if child and child.type in ("identifier", "member_expression", "attribute"):
+                            func_node = child
+                            break
+                
+                if func_node:
+                    callee = content_bytes[func_node.start_byte:func_node.end_byte].decode("utf-8", errors="replace")
+                    # Clean up callee (get last part of attribute access)
+                    if "." in callee:
+                        callee = callee.split(".")[-1]
+                    
+                    line = node.start_point[0] + 1
+                    caller = find_enclosing_symbol(line)
+                    
+                    calls.append(CallReference(
+                        caller=caller,
+                        callee=callee,
+                        line=line,
+                        context="call",
+                    ))
+            
+            # Recurse
+            for i in range(node.child_count):
+                child = node.child(i)
+                if child:
+                    walk(child)
+        
+        walk(root)
+        return calls
+
     # ---- Python-specific analysis (using ast module) ----
 
     def _analyze_python(self, content: str, file_path: str) -> Dict[str, Any]:

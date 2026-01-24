@@ -58,17 +58,14 @@ class TerminationChecker:
         """
         self.iteration += 1
         
-        # 1. Time limit
         if self.elapsed() >= self.config.time_limit:
             logger.debug(f"Termination: time limit {self.config.time_limit}s reached")
             return True, "time_limit"
         
-        # 2. Result limit
         if len(results) >= self.config.result_limit:
             logger.debug(f"Termination: result limit {self.config.result_limit} reached")
             return True, "result_limit"
         
-        # 3. Insufficient high-scoring candidates
         high_scoring = [r for r in results if r.get(score_key, 0) > 0]
         if len(high_scoring) < self.config.min_candidates_for_expansion:
             logger.debug(
@@ -77,11 +74,9 @@ class TerminationChecker:
             )
             return True, "insufficient_candidates"
         
-        # Sort by score descending
         sorted_results = sorted(results, key=lambda x: -x.get(score_key, 0))
         top_n = sorted_results[:self.config.top_n_to_track]
         
-        # 4. Score degradation - track specific chunks across iterations
         if self.tracked_chunk_scores:
             max_drop = 0.0
             for chunk_id, prev_score in self.tracked_chunk_scores.items():
@@ -99,14 +94,11 @@ class TerminationChecker:
                 )
                 return True, "score_degradation"
         
-        # Update tracked scores for next iteration
         self.tracked_chunk_scores.clear()
         for r in top_n:
             chunk_id = r.get(id_key)
             if chunk_id:
                 self.tracked_chunk_scores[chunk_id] = r.get(score_key, 0)
-        
-        # 5. Minimum relevance - stop if top-N min score too low
         if top_n:
             min_score = min(r.get(score_key, 0) for r in top_n)
             if min_score < self.config.min_relevance_score:

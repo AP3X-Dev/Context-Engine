@@ -36,7 +36,7 @@ class SvelteMapping(TypeScriptMapping):
     def __init__(self) -> None:
         """Initialize Svelte mapping (delegates to TypeScript for script parsing)."""
         super().__init__()
-        self.language = Language.SVELTE  # Override to SVELTE
+        self.language = "svelte"  # Override to SVELTE
 
     # Section extraction patterns
     SCRIPT_PATTERN = re.compile(

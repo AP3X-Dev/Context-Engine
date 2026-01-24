@@ -46,7 +46,7 @@ class JSXMapping(JavaScriptMapping):
         """Initialize JSX mapping."""
         # Initialize with JSX language instead of JavaScript
         super().__init__()
-        self.language = Language.JSX
+        self.language = "jsx"
 
     def get_function_query(self) -> str:
         """Get tree-sitter query for JSX function definitions including React components.

@@ -79,6 +79,7 @@ def _get_redis_client():
             return _REDIS_CLIENT
         try:
             import redis  # type: ignore
+            from redis.connection import ConnectionPool
         except Exception as e:
             logger.warning(f"Redis backend enabled but redis package not available: {e}")
             return None
@@ -86,26 +87,49 @@ def _get_redis_client():
         try:
             socket_timeout = float(os.environ.get("CODEBASE_STATE_REDIS_SOCKET_TIMEOUT", "2") or 2)
             connect_timeout = float(os.environ.get("CODEBASE_STATE_REDIS_CONNECT_TIMEOUT", "2") or 2)
+            max_connections = int(os.environ.get("CODEBASE_STATE_REDIS_MAX_CONNECTIONS", "10") or 10)
         except Exception:
             socket_timeout = 2.0
             connect_timeout = 2.0
+            max_connections = 10
         try:
             client = redis.Redis.from_url(
                 url,
                 decode_responses=True,
                 socket_timeout=socket_timeout,
                 socket_connect_timeout=connect_timeout,
+                max_connections=max_connections,
+                retry_on_timeout=True,
             )
             try:
                 client.ping()
             except Exception as e:
                 logger.warning(f"Redis backend enabled but ping failed: {e}")
                 return None
+            logger.info(f"Redis client initialized (max_connections={max_connections})")
             _REDIS_CLIENT = client
             return _REDIS_CLIENT
         except Exception as e:
             logger.warning(f"Redis backend enabled but connection failed: {e}")
             return None
+
+
+def _redis_retry(fn, retries: int = 2, delay: float = 0.1):
+    """Retry a Redis operation on transient failures."""
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            # Retry on timeout/connection errors, not on logic errors
+            if any(x in err_str for x in ("timeout", "connection", "reset", "broken pipe")):
+                if attempt < retries:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+            raise
+    raise last_err  # type: ignore
 
 
 def _redis_get_json(kind: str, path: Path) -> Optional[Dict[str, Any]]:
@@ -114,7 +138,7 @@ def _redis_get_json(kind: str, path: Path) -> Optional[Dict[str, Any]]:
         return None
     key = _redis_key_for_path(kind, path)
     try:
-        raw = client.get(key)
+        raw = _redis_retry(lambda: client.get(key))
     except Exception as e:
         logger.debug(f"Redis get failed for {key}: {e}")
         return None
@@ -141,7 +165,7 @@ def _redis_set_json(kind: str, path: Path, obj: Dict[str, Any]) -> bool:
         logger.debug(f"Failed to JSON serialize redis payload for {key}: {e}")
         return False
     try:
-        client.set(key, payload)
+        _redis_retry(lambda: client.set(key, payload))
         return True
     except Exception as e:
         logger.debug(f"Redis set failed for {key}: {e}")
@@ -154,7 +178,7 @@ def _redis_exists(kind: str, path: Path) -> bool:
         return False
     key = _redis_key_for_path(kind, path)
     try:
-        return bool(client.exists(key))
+        return bool(_redis_retry(lambda: client.exists(key)))
     except Exception as e:
         logger.debug(f"Redis exists failed for {key}: {e}")
         return False
@@ -179,7 +203,7 @@ def _redis_get_json_by_key(key: str) -> Optional[Dict[str, Any]]:
     if client is None:
         return None
     try:
-        raw = client.get(key)
+        raw = _redis_retry(lambda: client.get(key))
     except Exception as e:
         logger.debug(f"Redis get failed for {key}: {e}")
         return None
@@ -201,7 +225,7 @@ def _redis_delete(kind: str, path: Path) -> bool:
         return False
     key = _redis_key_for_path(kind, path)
     try:
-        client.delete(key)
+        _redis_retry(lambda: client.delete(key))
         return True
     except Exception as e:
         logger.debug(f"Redis delete failed for {key}: {e}")
@@ -226,19 +250,22 @@ def _redis_lock(kind: str, path: Path):
         wait_ms = 2000
     deadline = time.time() + (wait_ms / 1000.0)
     acquired = False
+    attempts = 0
     while time.time() < deadline:
+        attempts += 1
         try:
             if client.set(lock_key, token, nx=True, px=ttl_ms):
                 acquired = True
                 break
         except Exception as e:
-            logger.debug(f"Redis lock set failed for {lock_key}: {e}")
+            logger.warning(f"Redis lock set failed for {lock_key}: {e}")
             break
         time.sleep(0.05)
     if not acquired:
-        logger.debug(f"Redis lock not acquired for {lock_key}, proceeding without lock")
+        logger.info(f"Redis lock not acquired for {lock_key} after {attempts} attempts, proceeding without lock")
         yield
         return
+    logger.info(f"Redis lock acquired for {lock_key} (attempts={attempts}, ttl={ttl_ms}ms)")
     try:
         yield
     finally:
@@ -249,8 +276,9 @@ def _redis_lock(kind: str, path: Path):
                 lock_key,
                 token,
             )
+            logger.debug(f"Redis lock released for {lock_key}")
         except Exception as e:
-            logger.debug(f"Redis lock release failed for {lock_key}: {e}")
+            logger.warning(f"Redis lock release failed for {lock_key}: {e}")
 
 
 def is_staging_enabled() -> bool:

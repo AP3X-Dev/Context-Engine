@@ -523,6 +523,7 @@ Useful for Kubernetes deployments where a shared filesystem is not reliable.
 | CODEBASE_STATE_REDIS_LOCK_WAIT_MS | Redis lock wait in ms | 2000 |
 | CODEBASE_STATE_REDIS_SOCKET_TIMEOUT | Redis socket timeout in seconds | 2 |
 | CODEBASE_STATE_REDIS_CONNECT_TIMEOUT | Redis connect timeout in seconds | 2 |
+| CODEBASE_STATE_REDIS_MAX_CONNECTIONS | Redis connection pool size limit | 10 |
 
 ### Semantic Expansion
 
