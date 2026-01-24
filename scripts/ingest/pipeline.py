@@ -1298,7 +1298,7 @@ def index_repo(
     if recreate:
         skip_unchanged = False
         dedupe = False
-        print("[index_repo] Recreate mode: skipping cache checks and deduplication (collection is fresh)")
+        logger.info("[index_repo] Recreate mode: skipping cache checks and deduplication (collection is fresh)")
 
     fast_fs = _env_truthy(os.environ.get("INDEX_FS_FASTPATH"), False)
     if skip_unchanged and not recreate and fast_fs and get_cached_file_meta is not None:
