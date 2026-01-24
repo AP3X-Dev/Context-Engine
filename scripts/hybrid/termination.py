@@ -259,21 +259,18 @@ def mann_whitney_u(x: Sequence[float], y: Sequence[float]) -> Tuple[float, float
     combined = [(v, 0) for v in x] + [(v, 1) for v in y]
     combined.sort(key=lambda t: t[0])
     
-    ranks = {}
     i = 0
+    rank_list = []
     while i < len(combined):
         j = i
         while j < len(combined) and combined[j][0] == combined[i][0]:
             j += 1
         avg_rank = (i + j + 1) / 2.0
         for k in range(i, j):
-            val = combined[k][0]
-            if val not in ranks:
-                ranks[val] = []
-            ranks[val].append(avg_rank)
+            rank_list.append((combined[k][0], combined[k][1], avg_rank))
         i = j
-    
-    r1 = sum(ranks[v][0] if len(ranks[v]) == 1 else ranks[v].pop(0) for v in x)
+
+    r1 = sum(rank for val, group, rank in rank_list if group == 0)
     
     u1 = r1 - nx * (nx + 1) / 2
     u2 = nx * ny - u1

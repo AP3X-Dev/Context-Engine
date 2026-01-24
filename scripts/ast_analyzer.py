@@ -883,10 +883,15 @@ class ASTAnalyzer:
         symbol_ranges = [(s.start_line, s.end_line, s.path or s.name) for s in symbols]
         
         def find_enclosing_symbol(line: int) -> str:
+            best_match = ""
+            best_span = float("inf")
             for start, end, path in symbol_ranges:
                 if start <= line <= end:
-                    return path
-            return ""
+                    span = end - start
+                    if span < best_span:
+                        best_span = span
+                        best_match = path
+            return best_match
         
         def walk(node):
             node_type = node.type
