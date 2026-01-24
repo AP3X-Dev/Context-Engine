@@ -8,7 +8,8 @@
   },
   "type": "module",
   "scripts": {
-    "start": "node bin/ctxce.js"
+    "start": "node bin/ctxce.js",
+    "postinstall": "chmod +x bin/ctxce.js 2>/dev/null || true"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.3",
