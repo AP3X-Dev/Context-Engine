@@ -3042,7 +3042,7 @@ def _run_hybrid_search_impl(
         if os.environ.get("DEBUG_HYBRID_SEARCH"):
             logger.debug(
                 f"Elbow filter: {original_count} -> {len(items)} results "
-                f"(threshold based on Kneedle algorithm)"
+                f"(threshold based on curvature method)"
             )
         _dt("elbow_filter")
 

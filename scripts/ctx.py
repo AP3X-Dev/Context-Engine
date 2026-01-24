@@ -1069,35 +1069,35 @@ def fetch_context(query: str, **filters) -> Tuple[str, str]:
         sys.stderr.write("[DEBUG] repo_search returned no data\n")
         sys.stderr.flush()
         return "", "Context retrieval returned no data."
-	    
-	    def _extract_hits(payload: dict, *, label: str) -> list:
-	        """Extract hits from MCP response, handling TOON-encoded strings.
-	        
-	        Prefers results_json when available, falls back to results, and
-	        attempts TOON decode if the value is a string.
-	        """
-	        hits_val = payload.get("results_json") or payload.get("results") or []
-	        if isinstance(hits_val, str):
-	            raw_hits = hits_val
-	            # Prefer preserved structured results_json when present
-	            if isinstance(payload.get("results_json"), list):
-	                hits_val = payload["results_json"]
-	            else:
-	                try:
-	                    from toon import decode as toon_decode  # type: ignore[import-untyped]
-	                    decoded = toon_decode(raw_hits)
-	                    decoded_hits = decoded.get("results") or []
-	                    hits_val = decoded_hits if isinstance(decoded_hits, list) else []
-	                except Exception:
-	                    sys.stderr.write(
-	                        f"[DEBUG] {label} returned TOON-formatted string results but could not decode; "
-	                        "treating as no results. Hint: install 'toon' or set TOON_ENABLED=0.\n"
-	                    )
-	                    sys.stderr.flush()
-	                    hits_val = []
-	        return hits_val if isinstance(hits_val, list) else []
-	    
-	    hits = _extract_hits(data, label="repo_search")
+
+    def _extract_hits(payload: dict, *, label: str) -> list:
+        """Extract hits from MCP response, handling TOON-encoded strings.
+
+        Prefers results_json when available, falls back to results, and
+        attempts TOON decode if the value is a string.
+        """
+        hits_val = payload.get("results_json") or payload.get("results") or []
+        if isinstance(hits_val, str):
+            raw_hits = hits_val
+            # Prefer preserved structured results_json when present
+            if isinstance(payload.get("results_json"), list):
+                hits_val = payload["results_json"]
+            else:
+                try:
+                    from toon import decode as toon_decode  # type: ignore[import-untyped]
+                    decoded = toon_decode(raw_hits)
+                    decoded_hits = decoded.get("results") or []
+                    hits_val = decoded_hits if isinstance(decoded_hits, list) else []
+                except Exception:
+                    sys.stderr.write(
+                        f"[DEBUG] {label} returned TOON-formatted string results but could not decode; "
+                        "treating as no results. Hint: install 'toon' or set TOON_ENABLED=0.\n"
+                    )
+                    sys.stderr.flush()
+                    hits_val = []
+        return hits_val if isinstance(hits_val, list) else []
+
+    hits = _extract_hits(data, label="repo_search")
     relevance = _estimate_query_result_relevance(query, hits)
     sys.stderr.write(f"[DEBUG] repo_search returned {len(hits)} hits (relevance={relevance:.3f})\n")
     sys.stderr.flush()
@@ -1144,12 +1144,12 @@ def fetch_context(query: str, **filters) -> Tuple[str, str]:
             "collection": collection_name,
         }
         memory_result = call_mcp_tool("context_search", memory_params)
-	        if "error" not in memory_result:
-	            memory_data = parse_mcp_response(memory_result)
-	            if memory_data:
-	                memory_hits = _extract_hits(memory_data, label="context_search")
-	                if memory_hits:
-	                    return format_search_results(memory_hits, include_snippets=with_snippets), "Using memories and design docs"
+        if "error" not in memory_result:
+            memory_data = parse_mcp_response(memory_result)
+            if memory_data:
+                memory_hits = _extract_hits(memory_data, label="context_search")
+                if memory_hits:
+                    return format_search_results(memory_hits, include_snippets=with_snippets), "Using memories and design docs"
         return "", "No relevant context found for the prompt."
 
     return format_search_results(hits, include_snippets=with_snippets), ""

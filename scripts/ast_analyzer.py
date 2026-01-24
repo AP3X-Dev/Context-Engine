@@ -448,7 +448,7 @@ class ASTAnalyzer:
             return self._empty_analysis()
         
         try:
-            mapping = get_mapping(language)
+            mapping = get_mapping(self._normalize_lang(language))
         except (TypeError, Exception) as e:
             logger.debug(f"Mapping instantiation failed for {language}: {e}")
             return self._empty_analysis()
