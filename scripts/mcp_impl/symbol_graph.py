@@ -91,11 +91,19 @@ def clear_graph_collection_cache() -> None:
 
 
 def _get_graph_backend():
-    """Return Neo4j graph backend when enabled, otherwise None."""
+    """Return graph backend (Neo4j or Qdrant).
+
+    Both backends are now supported through the unified GraphBackend interface:
+    - NEO4J_GRAPH=1: Uses Neo4j backend (takes precedence)
+    - Otherwise: Uses QdrantGraphBackend (default, always on)
+
+    Returns None only on error, never for Qdrant-as-default case.
+    """
     try:
         from scripts.graph_backends import get_graph_backend
         backend = get_graph_backend()
-        if backend.backend_type == "neo4j":
+        # Return any valid backend (neo4j or qdrant)
+        if backend is not None:
             return backend
     except Exception as e:
         logger.debug(f"Suppressed exception: {e} - graph backend lookup")
@@ -1371,18 +1379,10 @@ async def _symbol_graph_impl(
                     results = []
                     used_graph = True
 
-        # Fallback for callees: use _query_callees which can use metadata.calls array
-        if query_type == "callees" and not results and not used_graph and not graph_backend:
-            results = await _query_callees(
-                client=client,
-                collection=coll,
-                symbol=symbol,
-                limit=limit,
-                language=language,
-                repo=repo,
-            )
         # Fall back to legacy array field query if graph is unavailable or we opted to fallback on empty.
-        elif not results and not used_graph:
+        # Both Qdrant and Neo4j backends are now supported, so graph_backend should always be set.
+        # This fallback is for when graph returns empty or when graph backend fails to initialize.
+        if not results and not used_graph:
             if query_type == "callers":
                 # Find chunks where metadata.calls array contains the symbol (exact match)
                 results = await _query_array_field(
@@ -1405,6 +1405,16 @@ async def _symbol_graph_impl(
                     limit=limit,
                     language=language,
                     under=_norm_under(under),
+                    repo=repo,
+                )
+            elif query_type == "callees":
+                # Find callees using metadata.calls array lookup
+                results = await _query_callees(
+                    client=client,
+                    collection=coll,
+                    symbol=symbol,
+                    limit=limit,
+                    language=language,
                     repo=repo,
                 )
             elif query_type == "definition":
