@@ -1290,6 +1290,16 @@ def index_repo(
     schema_mode: str | None = None,
 ):
     """Index a repository into Qdrant."""
+    # CRITICAL OPTIMIZATION: When recreating collection, skip all cache checks and deduplication
+    # The collection is empty, so:
+    # - skip_unchanged=False: no point checking if file hash changed (nothing in DB)
+    # - dedupe=False: no point deleting existing points (collection is empty)
+    # This avoids 2 Qdrant calls per file (scroll + delete) that are wasteful for fresh collections
+    if recreate:
+        skip_unchanged = False
+        dedupe = False
+        print("[index_repo] Recreate mode: skipping cache checks and deduplication (collection is fresh)")
+
     fast_fs = _env_truthy(os.environ.get("INDEX_FS_FASTPATH"), False)
     if skip_unchanged and not recreate and fast_fs and get_cached_file_meta is not None:
         try:

@@ -344,13 +344,13 @@ def reset(
 
         # Build env vars for indexer
         indexer_env = {}
-        for var in ["INDEX_MICRO_CHUNKS", "MAX_MICRO_CHUNKS_PER_FILE", "TOKENIZER_PATH", "TOKENIZER_URL"]:
+        for var in ["INDEX_MICRO_CHUNKS", "MAX_MICRO_CHUNKS_PER_FILE", "TOKENIZER_PATH", "TOKENIZER_URL", "INDEX_WORKERS"]:
             if var in os.environ:
                 indexer_env[var] = os.environ[var]
 
-        # Defer pseudo-describe to backfill worker for much faster initial indexing
-        # The watch_index worker will backfill pseudo/tags after indexing completes
         indexer_env["PSEUDO_DEFER_TO_WORKER"] = "1"
+        if "INDEX_WORKERS" not in indexer_env:
+            indexer_env["INDEX_WORKERS"] = "4"
 
         # Run indexer detached (-d) so CLI doesn't block
         # Use --rm to auto-remove container on exit; first remove any stale container with same name

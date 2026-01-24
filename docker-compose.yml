@@ -457,6 +457,8 @@ services:
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
       # Defer pseudo-tag generation to watcher worker for faster initial indexing
       - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
+      # Parallel indexing - number of worker threads (default: 4, use -1 for CPU count)
+      - INDEX_WORKERS=${INDEX_WORKERS:-4}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
