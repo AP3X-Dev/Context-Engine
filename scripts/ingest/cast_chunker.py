@@ -181,7 +181,7 @@ class CASTPlusChunker:
     # Deduplication
     # -------------------------------------------------------------------------
     def _deduplicate_chunks(self, chunks: List[SemanticChunk]) -> List[SemanticChunk]:
-        """Remove chunks with identical content, keeping most specific."""
+        """Remove chunks with identical content, keeping most specific (legacy)."""
         if not self.config.deduplicate or not chunks:
             return chunks
 
@@ -189,7 +189,6 @@ class CASTPlusChunker:
         for chunk in chunks:
             key = chunk.content.strip()
             if key in seen_content:
-                # Keep the more specific one (DEFINITION > BLOCK > COMMENT)
                 existing = seen_content[key]
                 priority = {ConceptType.DEFINITION: 3, ConceptType.BLOCK: 2,
                            ConceptType.COMMENT: 1, ConceptType.IMPORT: 2,
@@ -200,6 +199,18 @@ class CASTPlusChunker:
                 seen_content[key] = chunk
 
         return list(seen_content.values())
+
+    def _deduplicate_chunks_v2(
+        self, chunks: List[SemanticChunk], language: str
+    ) -> List[SemanticChunk]:
+        """O(n log n) deduplication with substring detection."""
+        if not self.config.deduplicate or not chunks:
+            return chunks
+        try:
+            from scripts.ingest.chunk_deduplication import deduplicate_semantic_chunks
+            return deduplicate_semantic_chunks(chunks, language)
+        except ImportError:
+            return self._deduplicate_chunks(chunks)
 
     # -------------------------------------------------------------------------
     # Merge Logic
@@ -604,8 +615,8 @@ class CASTPlusChunker:
                 parent=None,
             )]
 
-        # Step 2: Deduplicate
-        chunks = self._deduplicate_chunks(chunks)
+        # Step 2: Deduplicate (O(n log n) with substring detection)
+        chunks = self._deduplicate_chunks_v2(chunks, language)
 
         # Step 3: Group by concept type
         by_concept: Dict[ConceptType, List[SemanticChunk]] = {}

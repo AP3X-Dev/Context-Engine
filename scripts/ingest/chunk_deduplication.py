@@ -187,3 +187,49 @@ def _find_overlapping(sorted_chunks: list[T], query_start: int, query_end: int) 
         overlapping.append(chunk)
 
     return overlapping
+
+
+def deduplicate_semantic_chunks(
+    chunks: Sequence,
+    language: str | None = None,
+) -> list:
+    """Deduplicate SemanticChunk objects using O(n log n) algorithm.
+    
+    Converts SemanticChunk dataclass objects to dicts, deduplicates,
+    and returns the original objects.
+    
+    Args:
+        chunks: List of SemanticChunk objects (with content, start_line, end_line, concept)
+        language: Optional language for exemptions (Vue, Haskell)
+    
+    Returns:
+        Deduplicated list of SemanticChunk objects
+    """
+    if not chunks:
+        return []
+    
+    chunk_dicts = []
+    for i, c in enumerate(chunks):
+        concept = getattr(c, "concept", None)
+        if concept is not None:
+            if hasattr(concept, "value"):
+                concept_str = concept.value
+            elif hasattr(concept, "name"):
+                concept_str = concept.name
+            else:
+                concept_str = str(concept)
+        else:
+            concept_str = ""
+        
+        chunk_dicts.append({
+            "content": getattr(c, "content", ""),
+            "start_line": getattr(c, "start_line", 0),
+            "end_line": getattr(c, "end_line", 0),
+            "concept": concept_str,
+            "_idx": i,
+        })
+    
+    deduped_dicts = deduplicate_chunks(chunk_dicts, language, content_key="content")
+    
+    kept_indices = {d["_idx"] for d in deduped_dicts}
+    return [c for i, c in enumerate(chunks) if i in kept_indices]
