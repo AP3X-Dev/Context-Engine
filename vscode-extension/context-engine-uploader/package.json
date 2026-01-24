@@ -2,7 +2,7 @@
   "name": "context-engine-uploader",
   "displayName": "Context-Engine.AI",
   "description": "Supercharge your AI coding assistants with rich codebase context. Integrates with Claude Code, Windsurf, Augment, and more via MCP.",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "publisher": "context-engine",
   "engines": {
     "vscode": "^1.85.0"
@@ -29,6 +29,7 @@
     "onCommand:contextEngineUploader.writeMcpConfigWindsurf",
     "onCommand:contextEngineUploader.writeMcpConfigAugment",
     "onCommand:contextEngineUploader.writeMcpConfigAntigravity",
+    "onCommand:contextEngineUploader.writeMcpConfigCursor",
     "onCommand:contextEngineUploader.cloneAndStartStack",
     "onCommand:contextEngineUploader.startSavedStack",
     "onCommand:contextEngineUploader.openSettings",
@@ -89,6 +90,10 @@
       {
         "command": "contextEngineUploader.writeMcpConfigAntigravity",
         "title": "Context Engine Uploader: Write MCP Config (Antigravity / mcp_config.json)"
+      },
+      {
+        "command": "contextEngineUploader.writeMcpConfigCursor",
+        "title": "Context Engine Uploader: Write MCP Config (Cursor / mcp.json)"
       },
       {
         "command": "contextEngineUploader.writeCtxConfig",
@@ -303,10 +308,16 @@
             "order": 4,
             "markdownDescription": "Write MCP config for **Google Antigravity**."
           },
-          "contextEngineUploader.autoWriteMcpConfigOnStartup": {
+          "contextEngineUploader.mcpCursorEnabled": {
             "type": "boolean",
             "default": false,
             "order": 5,
+            "markdownDescription": "Write MCP config for **Cursor** (~/.cursor/mcp.json)."
+          },
+          "contextEngineUploader.autoWriteMcpConfigOnStartup": {
+            "type": "boolean",
+            "default": false,
+            "order": 6,
             "description": "Automatically write MCP configs when extension activates."
           }
         }
@@ -502,6 +513,12 @@
             "default": "",
             "order": 9,
             "description": "Custom Antigravity mcp_config.json path."
+          },
+          "contextEngineUploader.cursorMcpPath": {
+            "type": "string",
+            "default": "",
+            "order": 10,
+            "description": "Custom Cursor mcp.json path."
           },
           "contextEngineUploader.profilesDb": {
             "type": "object",

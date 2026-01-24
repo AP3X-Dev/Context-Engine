@@ -466,8 +466,8 @@ def ensure_collection(
                         )
                         print(f"[COLLECTION_SUCCESS] Successfully updated collection {name} with missing vectors")
                     except Exception as update_e:
-                        print(
-                            f"[COLLECTION_WARNING] Cannot add missing vectors to {name} ({update_e}). "
+                        logger.debug(
+                            f"Cannot add missing vectors to {name} ({update_e}). "
                             "Continuing without them for this run."
                         )
         except Exception as e:

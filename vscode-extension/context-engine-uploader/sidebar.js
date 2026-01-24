@@ -2,7 +2,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { getDefaultWindsurfMcpPath, getDefaultAugmentMcpPath, getDefaultAntigravityMcpPath } = require('./mcp_config');
+const { getDefaultWindsurfMcpPath, getDefaultAugmentMcpPath, getDefaultAntigravityMcpPath, getDefaultCursorMcpPath } = require('./mcp_config');
 const { checkAuthStatus } = require('./auth_utils');
 
 function makeTreeItem(label, opts = {}) {
@@ -489,6 +489,9 @@ function register(context, deps) {
       const antigravityEnabled = (() => {
         try { return !!cfg.get('mcpAntigravityEnabled', false); } catch (_) { return false; }
       })();
+      const cursorEnabled = (() => {
+        try { return !!cfg.get('mcpCursorEnabled', false); } catch (_) { return false; }
+      })();
       const windsurfMcpPath = (() => {
         try {
           const custom = (cfg.get('windsurfMcpPath') || '').trim();
@@ -513,6 +516,14 @@ function register(context, deps) {
           return getDefaultAntigravityMcpPath();
         }
       })();
+      const cursorMcpPath = (() => {
+        try {
+          const custom = (cfg.get('cursorMcpPath') || '').trim();
+          return custom || getDefaultCursorMcpPath();
+        } catch (_) {
+          return getDefaultCursorMcpPath();
+        }
+      })();
 
       const bridgeMode = (() => {
         const mode = resolveMcpMode(cfg);
@@ -528,7 +539,8 @@ function register(context, deps) {
       const missingWindsurfMcpConfig = !!(windsurfEnabled && windsurfMcpPath && !pathExists(windsurfMcpPath));
       const missingAugmentMcpConfig = !!(augmentEnabled && augmentMcpPath && !pathExists(augmentMcpPath));
       const missingAntigravityMcpConfig = !!(antigravityEnabled && antigravityMcpPath && !pathExists(antigravityMcpPath));
-      const missingAnyMcpConfig = !!(missingClaudeMcpConfig || missingWindsurfMcpConfig || missingAugmentMcpConfig || missingAntigravityMcpConfig);
+      const missingCursorMcpConfig = !!(cursorEnabled && cursorMcpPath && !pathExists(cursorMcpPath));
+      const missingAnyMcpConfig = !!(missingClaudeMcpConfig || missingWindsurfMcpConfig || missingAugmentMcpConfig || missingAntigravityMcpConfig || missingCursorMcpConfig);
       const missingCtxConfig = !ctxConfigPath;
 
       const items = [
@@ -617,7 +629,7 @@ function register(context, deps) {
           description: 'Missing',
           icon: new vscode.ThemeIcon('warning'),
           command: { command: 'contextEngineUploader.writeMcpConfigSelect', title: 'Write MCP Config...' },
-          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment, Antigravity).',
+          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment, Antigravity, Cursor).',
         }));
       }
 
@@ -686,7 +698,7 @@ function register(context, deps) {
         makeTreeItem('Write MCP Config...', {
           icon: new vscode.ThemeIcon('file-code'),
           command: { command: 'contextEngineUploader.writeMcpConfigSelect', title: 'Write MCP Config...' },
-          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment, Antigravity).',
+          tooltip: 'Select which MCP config to write (All enabled, Claude, Windsurf, Augment, Antigravity, Cursor).',
         }),
         makeTreeItem('Write CTX Config (ctx_config.json)', {
           icon: new vscode.ThemeIcon('file-text'),

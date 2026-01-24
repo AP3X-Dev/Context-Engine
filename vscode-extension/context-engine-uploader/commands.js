@@ -220,6 +220,14 @@ function registerExtensionCommands(deps) {
         }
     }));
 
+    disposables.push(vscode.commands.registerCommand('contextEngineUploader.writeMcpConfigCursor', () => {
+        try {
+            requireDep(writeMcpConfig, 'writeMcpConfig')({ targets: ['cursor'] }).catch(error => handleCatch(error, 'Failed to write Cursor MCP config'));
+        } catch (error) {
+            handleCatch(error, 'Failed to write Cursor MCP config');
+        }
+    }));
+
     // Onboarding/Stack commands
     disposables.push(vscode.commands.registerCommand('contextEngineUploader.cloneAndStartStack', async () => {
         try {
