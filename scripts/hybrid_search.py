@@ -248,7 +248,16 @@ from scripts.hybrid_ranking import (
 # ---------------------------------------------------------------------------
 # Elbow detection for adaptive filtering
 # ---------------------------------------------------------------------------
-from scripts.hybrid.elbow_detection import filter_by_elbow
+# Lazy import to avoid hard numpy dependency when feature is disabled
+_filter_by_elbow = None
+
+def _get_filter_by_elbow():
+    """Lazy load filter_by_elbow to avoid numpy import when disabled."""
+    global _filter_by_elbow
+    if _filter_by_elbow is None:
+        from scripts.hybrid.elbow_detection import filter_by_elbow
+        _filter_by_elbow = filter_by_elbow
+    return _filter_by_elbow
 
 # Environment variable for elbow filtering (opt-in)
 ELBOW_FILTER_ENABLED = _env_truthy(os.environ.get("HYBRID_ELBOW_FILTER"), False)
@@ -3024,7 +3033,7 @@ def _run_hybrid_search_impl(
     if ELBOW_FILTER_ENABLED and items:
         original_count = len(items)
         # Use rerank_score if available, otherwise use score
-        items = filter_by_elbow(
+        items = _get_filter_by_elbow()(
             items,
             score_key="rerank_score",
             fallback_score_key="score",

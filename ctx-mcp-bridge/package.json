@@ -9,7 +9,7 @@
   "type": "module",
   "scripts": {
     "start": "node bin/ctxce.js",
-    "postinstall": "chmod +x bin/ctxce.js 2>/dev/null || true"
+    "postinstall": "node -e \"try{require('fs').chmodSync('bin/ctxce.js',0o755)}catch(e){}\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.3",
