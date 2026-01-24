@@ -455,6 +455,8 @@ services:
       - PATTERN_VECTORS=${PATTERN_VECTORS:-}
       # Graph edges for symbol relationships (always on)
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
+      # Defer pseudo-tag generation to watcher worker for faster initial indexing
+      - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
@@ -518,6 +520,8 @@ services:
       - GRAPH_BACKFILL_ENABLED=${GRAPH_BACKFILL_ENABLED:-1}
       # Neo4j graph backend (optional - takes precedence over Qdrant flat graph)
       - NEO4J_GRAPH=${NEO4J_GRAPH:-}
+      # Defer pseudo-tag generation - watcher runs backfill worker thread
+      - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw

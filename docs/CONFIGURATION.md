@@ -377,12 +377,26 @@ REFRAG_RUNTIME=glm  # or openai, minimax, llamacpp
 
 ### Pseudo Backfill Worker
 
-Deferred pseudo/tag generation runs asynchronously after initial indexing.
+Deferred pseudo/tag generation runs asynchronously after initial indexing. This significantly speeds up initial indexing by skipping LLM-based pseudo-tag generation during the indexer run, deferring it to a background worker thread in the watcher service.
 
 | Name | Description | Default |
 |------|-------------|---------|
 | PSEUDO_BACKFILL_ENABLED | Enable async pseudo/tag backfill worker | 0 (disabled) |
-| PSEUDO_DEFER_TO_WORKER | Skip inline pseudo, defer to backfill worker | 0 (disabled) |
+| PSEUDO_DEFER_TO_WORKER | Skip inline pseudo, defer to backfill worker | 1 (enabled) |
+| GRAPH_BACKFILL_ENABLED | Enable graph edge backfill in watcher worker | 1 (enabled) |
+
+**How it works:**
+1. When `PSEUDO_DEFER_TO_WORKER=1`, the indexer generates only base chunks (no pseudo-tags)
+2. The watcher service starts a `_start_pseudo_backfill_worker` daemon thread
+3. This thread periodically calls `pseudo_backfill_tick()` to enrich chunks with LLM-generated tags
+4. If `GRAPH_BACKFILL_ENABLED=1`, it also calls `graph_backfill_tick()` to populate symbol graph edges
+
+**Benefits:**
+- Initial indexing is 2-5x faster (no LLM calls blocking indexer)
+- Background enrichment happens continuously without blocking searches
+- Failed LLM calls don't break indexing; worker retries automatically
+
+**Recommended for production:** Enable both for fastest initial indexing with eventual enrichment.
 
 ### Adaptive Span Sizing
 
