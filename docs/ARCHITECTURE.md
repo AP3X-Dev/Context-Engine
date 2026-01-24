@@ -171,6 +171,8 @@ Tree-sitter-based multi-language AST analysis for semantic code understanding:
 - **Call Graph Construction**: Maps caller → callee relationships with enclosing function context
 - **Dependency Tracking**: Extracts imports and module dependencies
 - **Semantic Chunking**: Splits code at function/class boundaries (not arbitrary line counts)
+- **SOSC**: Search-Optimized Semantic Chunking using 34 language mappings for concept-aware chunks
+- **CAST+**: Hybrid chunking with concept-aware merging and density scoring
 
 **Supported Languages:**
 | Language | Package |
