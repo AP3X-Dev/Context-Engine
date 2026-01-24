@@ -21,6 +21,13 @@ try:
 except ImportError:
     _AST_ANALYZER_AVAILABLE = False
 
+# Import Semantic Density Chunker (SDC) - our improved token-aware chunking
+try:
+    from scripts.ingest.semantic_chunker import chunk_semantic_density, SDCConfig
+    _SDC_AVAILABLE = True
+except ImportError:
+    _SDC_AVAILABLE = False
+
 
 # Cache tokenizers loaded from TOKENIZER_JSON (or default) to avoid repeatedly
 # re-reading tokenizer.json from disk during micro-chunking.
@@ -284,3 +291,47 @@ def chunk_by_tokens(
             break
         i = i + s if s > 0 else i + 1
     return chunks
+
+
+def chunk_semantic_v2(
+    text: str,
+    language: str,
+    min_tokens: int = 200,
+    target_tokens: int = 800,
+    max_tokens: int = 1500,
+) -> List[Dict]:
+    """
+    Semantic Density Chunking (SDC) - token-aware, AST-driven chunking.
+
+    This is the improved chunking algorithm that:
+    - Uses token budgets instead of line counts
+    - Respects AST boundaries (functions, classes, methods)
+    - Merges small adjacent units for optimal density
+    - Scores chunks by information density
+
+    Args:
+        text: Source code content
+        language: Programming language
+        min_tokens: Minimum tokens per chunk (default: 200)
+        target_tokens: Target tokens per chunk (default: 800)
+        max_tokens: Maximum tokens per chunk (default: 1500)
+
+    Returns:
+        List of chunk dicts with text, start, end, symbol, kind, token_count, density_score
+    """
+    if not _SDC_AVAILABLE:
+        # Fall back to existing semantic chunking
+        return chunk_semantic(text, language)
+
+    # Check for env var overrides
+    min_tokens = int(os.environ.get("SDC_MIN_TOKENS", str(min_tokens)))
+    target_tokens = int(os.environ.get("SDC_TARGET_TOKENS", str(target_tokens)))
+    max_tokens = int(os.environ.get("SDC_MAX_TOKENS", str(max_tokens)))
+
+    config = SDCConfig(
+        min_tokens=min_tokens,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+    )
+
+    return chunk_semantic_density(text, language, config)
