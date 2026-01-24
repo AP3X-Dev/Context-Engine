@@ -61,7 +61,10 @@ MCP bridge (ctx-mcp-bridge) & MCP config lifecycle
   - **Centralized logging & health:** when the bridge process runs once per workspace you get a single stream of logs (`Context Engine Upload` output) and a single port to probe for health checks instead of multiple MCP child processes per IDE.
 - When you run **`Write MCP Config`**, the extension:
   - Writes `.mcp.json` in the workspace for Claude Code.
-  - Optionally writes Windsurf’s `mcp_config.json` (when `mcpWindsurfEnabled=true`).
+  - Optionally writes Windsurf's `mcp_config.json` (when `mcpWindsurfEnabled=true`).
+  - Optionally writes Augment's `settings.json` (when `mcpAugmentEnabled=true`).
+  - Optionally writes Antigravity's `mcp_config.json` (when `mcpAntigravityEnabled=true`).
+  - Optionally writes Cursor's `~/.cursor/mcp.json` (when `mcpCursorEnabled=true`).
   - Optionally scaffolds `ctx_config.json` + `.env` (when `scaffoldCtxConfig=true`).
 - The effective wiring mode is determined by the two MCP settings:
   - `mcpServerMode = bridge`, `mcpTransportMode = sse-remote` → **bridge-stdio**.
