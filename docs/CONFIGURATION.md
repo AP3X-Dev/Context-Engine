@@ -10,6 +10,7 @@ Complete environment variable reference for Context Engine.
 - [Core Settings](#core-settings)
 - [Embedding Models](#embedding-models)
 - [Indexing & Micro-Chunks](#indexing--micro-chunks)
+  - [Chunking Strategies](#chunking-strategies)
 - [Query Optimization](#query-optimization)
 - [Watcher Settings](#watcher-settings)
 - [Reranker](#reranker)
@@ -105,12 +106,44 @@ make reset-dev-dual  # Recreates collection and reindexes
 | USE_TREE_SITTER | Enable tree-sitter parsing (py/js/ts) | 1 (on) |
 | INDEX_USE_ENHANCED_AST | Enable advanced AST-based semantic chunking | 1 (on) |
 | INDEX_SEMANTIC_CHUNKS | Enable semantic chunking (preserve function/class boundaries) | 1 (on) |
+| INDEX_SOSC_CHUNKS | Enable SOSC chunking (concept-aware, search-optimized) | 0 (off) |
+| INDEX_CAST_CHUNKS | Enable CAST+ chunking (hybrid merging with density scoring) | 0 (off) |
+| INDEX_SDC_CHUNKS | Enable SDC chunking (semantic density chunking) | 0 (off) |
 | INDEX_CHUNK_LINES | Lines per chunk (non-micro mode) | 120 |
 | INDEX_CHUNK_OVERLAP | Overlap lines between chunks | 20 |
 | INDEX_BATCH_SIZE | Upsert batch size | 64 |
 | INDEX_PROGRESS_EVERY | Log progress every N files | 200 |
 | SMART_SYMBOL_REINDEXING | Reuse embeddings when only symbols change | 1 (enabled) |
 | MAX_CHANGED_SYMBOLS_RATIO | Threshold for full reindex vs smart update | 0.6 |
+
+### Chunking Strategies
+
+Context Engine supports multiple chunking strategies. Only one can be active at a time. Priority order (first enabled wins):
+
+1. **MICRO** (`INDEX_MICRO_CHUNKS=1`) - Token-based micro-chunking for ReFRAG. 16-token windows with 8-token stride.
+
+2. **SOSC** (`INDEX_SOSC_CHUNKS=1`) - Search-Optimized Semantic Chunking. Uses tree-sitter + language mappings to extract concept-aware chunks (DEFINITION, BLOCK, COMMENT, IMPORT, STRUCTURE). Best for search quality - clean boundaries, respects symbol structure.
+
+3. **CAST+** (`INDEX_CAST_CHUNKS=1`) - Hybrid chunking combining concept-aware grouping with density scoring. Merges compatible concepts aggressively (e.g., docstring + function). Best for token efficiency.
+
+4. **SDC** (`INDEX_SDC_CHUNKS=1`) - Semantic Density Chunking. Token-aware chunking with density scoring.
+
+5. **SEMANTIC** (`INDEX_SEMANTIC_CHUNKS=1`, default) - AST-aware chunking that preserves function/class boundaries.
+
+6. **LINE-BASED** (fallback) - Simple line-based chunking with overlap.
+
+**Recommended for search quality:** `INDEX_SOSC_CHUNKS=1`
+**Recommended for token efficiency:** `INDEX_CAST_CHUNKS=1`
+
+| SOSC Config | Description | Default |
+|-------------|-------------|---------|
+| SOSC_MAX_CHARS | Max non-whitespace chars per chunk | 1200 |
+| SOSC_MIN_CHARS | Min chars to avoid tiny fragments | 50 |
+
+| CAST+ Config | Description | Default |
+|--------------|-------------|---------|
+| CAST_MAX_SIZE | Max non-whitespace chars per chunk | 1200 |
+| CAST_MIN_SIZE | Min chars to avoid tiny fragments | 50 |
 
 ## Query Optimization
 

@@ -28,6 +28,20 @@ try:
 except ImportError:
     _SDC_AVAILABLE = False
 
+# Import Search-Optimized Semantic Chunker (SOSC) - concept-aware chunking for search
+try:
+    from scripts.ingest.search_chunker import chunk_search_optimized, SOSCConfig
+    _SOSC_AVAILABLE = True
+except ImportError:
+    _SOSC_AVAILABLE = False
+
+# Import CAST+ Hybrid Chunker - concept-aware merging with density scoring
+try:
+    from scripts.ingest.cast_chunker import chunk_cast_plus, CASTPlusConfig
+    _CAST_AVAILABLE = True
+except ImportError:
+    _CAST_AVAILABLE = False
+
 
 # Cache tokenizers loaded from TOKENIZER_JSON (or default) to avoid repeatedly
 # re-reading tokenizer.json from disk during micro-chunking.
@@ -335,3 +349,45 @@ def chunk_semantic_v2(
     )
 
     return chunk_semantic_density(text, language, config)
+
+
+def chunk_search_optimized_v1(
+    text: str,
+    language: str,
+    max_chars: int = 1200,
+    min_chars: int = 50,
+) -> List[Dict]:
+    """Search-Optimized Semantic Chunking (SOSC) - concept-aware chunking for search."""
+    if not _SOSC_AVAILABLE:
+        return chunk_semantic(text, language)
+
+    max_chars = int(os.environ.get("SOSC_MAX_CHARS", str(max_chars)))
+    min_chars = int(os.environ.get("SOSC_MIN_CHARS", str(min_chars)))
+
+    config = SOSCConfig(
+        max_chunk_chars=max_chars,
+        min_chunk_chars=min_chars,
+    )
+
+    return chunk_search_optimized(text, language, config)
+
+
+def chunk_cast_plus_v1(
+    text: str,
+    language: str,
+    max_size: int = 1200,
+    min_size: int = 50,
+) -> List[Dict]:
+    """CAST+ Hybrid Chunking - concept-aware merging with density scoring."""
+    if not _CAST_AVAILABLE:
+        return chunk_semantic(text, language)
+
+    max_size = int(os.environ.get("CAST_MAX_SIZE", str(max_size)))
+    min_size = int(os.environ.get("CAST_MIN_SIZE", str(min_size)))
+
+    config = CASTPlusConfig(
+        max_chunk_size=max_size,
+        min_chunk_size=min_size,
+    )
+
+    return chunk_cast_plus(text, language, config=config)

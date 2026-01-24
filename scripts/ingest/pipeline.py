@@ -56,7 +56,7 @@ from scripts.ingest.exclusions import (
     iter_files,
     _should_skip_explicit_file_by_excluder,
 )
-from scripts.ingest.chunking import chunk_lines, chunk_semantic, chunk_by_tokens, chunk_semantic_v2
+from scripts.ingest.chunking import chunk_lines, chunk_semantic, chunk_by_tokens, chunk_semantic_v2, chunk_search_optimized_v1, chunk_cast_plus_v1
 from scripts.ingest.symbols import (
     _extract_symbols,
     _choose_symbol_for_chunk,
@@ -802,8 +802,9 @@ def _index_single_file_inner(
     CHUNK_OVERLAP = int(os.environ.get("INDEX_CHUNK_OVERLAP", "20") or 20)
     use_micro = os.environ.get("INDEX_MICRO_CHUNKS", "0").lower() in {"1", "true", "yes", "on"}
     use_semantic = os.environ.get("INDEX_SEMANTIC_CHUNKS", "1").lower() in {"1", "true", "yes", "on"}
-    # SDC = Semantic Density Chunker (token-aware, AST-driven chunking)
     use_sdc = os.environ.get("INDEX_SDC_CHUNKS", "0").lower() in {"1", "true", "yes", "on"}
+    use_sosc = os.environ.get("INDEX_SOSC_CHUNKS", "0").lower() in {"1", "true", "yes", "on"}
+    use_cast = os.environ.get("INDEX_CAST_CHUNKS", "0").lower() in {"1", "true", "yes", "on"}
 
     if use_micro:
         try:
@@ -826,8 +827,11 @@ def _index_single_file_inner(
                     logger.debug(f"Suppressed exception: {e}")
         except Exception:
             chunks = chunk_by_tokens(text)
+    elif use_sosc:
+        chunks = chunk_search_optimized_v1(text, language)
+    elif use_cast:
+        chunks = chunk_cast_plus_v1(text, language)
     elif use_sdc:
-        # Use Semantic Density Chunker (improved token-aware chunking)
         chunks = chunk_semantic_v2(text, language)
     elif use_semantic:
         chunks = chunk_semantic(text, language, CHUNK_LINES, CHUNK_OVERLAP)
