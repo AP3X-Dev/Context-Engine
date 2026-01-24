@@ -260,7 +260,7 @@ class ASTAnalyzer:
         # Use language mappings (32 languages, declarative queries)
         if _LANGUAGE_MAPPINGS_AVAILABLE and self.use_tree_sitter:
             result = self._analyze_with_mapping(content, file_path, language)
-            if result and (result.get("symbols") or result.get("imports")):
+            if result and (result.get("symbols") or result.get("imports") or result.get("calls")):
                 return result
         
         # Fallback to legacy per-language analyzers

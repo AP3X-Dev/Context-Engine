@@ -181,21 +181,26 @@ def _deduplicate_exact_content(chunks: Sequence[T], content_key: str) -> list[T]
 def _remove_substring_overlaps(chunks: Sequence[T], content_key: str) -> list[T]:
     """Remove BLOCK chunks that are substrings of DEFINITION/STRUCTURE chunks."""
     definitions = []
+    structures = []
     blocks = []
     other = []
 
     for chunk in chunks:
         specificity = get_chunk_specificity(chunk)
+        type_name = _extract_type_name(chunk)
         if specificity == 1:  # BLOCK-like
             blocks.append(chunk)
-        elif specificity >= 3:  # DEFINITION-like
+        elif specificity >= 2:  # DEFINITION-like (includes type_alias, type)
             definitions.append(chunk)
+        elif type_name == "structure":  # STRUCTURE-like
+            structures.append(chunk)
         else:
             other.append(chunk)
 
-    definitions.sort(key=lambda c: c.get("start_line", 0))
+    containers = definitions + structures
+    containers.sort(key=lambda c: c.get("start_line", 0))
 
-    final = other + definitions
+    final = other + containers
 
     for block in blocks:
         block_content = normalize_content(
@@ -205,9 +210,9 @@ def _remove_substring_overlaps(chunks: Sequence[T], content_key: str) -> list[T]
         block_end = block.get("end_line", 0)
 
         is_substring = False
-        for definition in _find_overlapping(definitions, block_start, block_end):
+        for container in _find_overlapping(containers, block_start, block_end):
             def_content = normalize_content(
-                definition.get(content_key, "") or definition.get("content", "") or definition.get("text", "")
+                container.get(content_key, "") or container.get("content", "") or container.get("text", "")
             )
             if block_content in def_content and len(block_content) < len(def_content):
                 is_substring = True

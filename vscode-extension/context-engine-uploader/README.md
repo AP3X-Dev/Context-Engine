@@ -81,6 +81,18 @@ MCP bridge (ctx-mcp-bridge) & MCP config lifecycle
   - In **stdio or direct modes**, the HTTP bridge is **not** auto-started; only the explicit `Start MCP HTTP Bridge` command will launch it.
 - Bridge settings are **workspace-scoped**, so different workspaces can choose different modes and ports (e.g., one workspace using stdio bridge, another using HTTP bridge on a different port).
 
+Cursor Integration
+------------------
+
+Enable `mcpCursorEnabled` in settings to write MCP config to `~/.cursor/mcp.json`.
+
+**Caveats:**
+- Cursor uses a **global** MCP config at `~/.cursor/mcp.json` (not per-project like Claude's `.mcp.json`).
+- After updating the config, you must **restart Cursor** for changes to take effect.
+- Cursor's MCP support requires the `http` transport mode. Set `mcpTransportMode` to `http`.
+- If using bridge mode, ensure the HTTP bridge is running (`autoStartMcpBridge=true`).
+- Custom config path: set `cursorMcpPath` to override the default `~/.cursor/mcp.json` location.
+
 Optional auth with the MCP bridge (PoC)
 --------------------------------------
 
