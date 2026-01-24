@@ -897,9 +897,10 @@ def find_similar_chunks(
     must = []
     
     if path_filter:
+        path_filter_clean = path_filter.rstrip("/")
         must.append(models.FieldCondition(
-            key="metadata.path",
-            match=models.MatchText(text=path_filter),
+            key="metadata.path_prefix",
+            match=models.MatchValue(value=path_filter_clean),
         ))
     
     flt = models.Filter(must=must, must_not=must_not) if must or must_not else None

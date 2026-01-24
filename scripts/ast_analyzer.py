@@ -825,9 +825,10 @@ class ASTAnalyzer:
                     names = [n.strip().split(" as ")[0] for n in names_str.split(",")]
                     return module, names, True
             elif text.startswith("import "):
-                match = re.match(r"import\s+([\w.]+)", text)
-                if match:
-                    return match.group(1), [], False
+                modules_part = text[7:].strip()
+                modules = [m.strip().split(" as ")[0].strip() for m in modules_part.split(",")]
+                if modules:
+                    return modules[0], modules[1:] if len(modules) > 1 else [], False
         
         # JavaScript/TypeScript: import X from 'Y' or require('Y')
         elif language in ("javascript", "typescript", "jsx", "tsx"):
