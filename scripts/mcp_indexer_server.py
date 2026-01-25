@@ -2532,7 +2532,8 @@ async def code_search(
     RETURNS: Same schema as repo_search.
     """
     # If include_memories is requested, delegate to context_search for blending
-    if include_memories:
+    # Coerce to bool first to handle string 'false'/'0' from some clients
+    if _coerce_bool(include_memories, default=False):
         return await context_search(
             query=query,
             limit=limit,
