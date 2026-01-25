@@ -594,8 +594,8 @@ async def _context_search_impl(
             pass
 
     # First: run code search via internal repo_search for consistent behavior
-    # Note: TOON format now preserves 'results_json' for internal parsing (composability fix)
-    # so we no longer need to force output_format="json" - internal callers read results_json
+    # Note: TOON format preserves 'results_json' for internal parsing (composability fix)
+    # We explicitly set lean=False to ensure results_json is preserved for internal composition
     code_res = await repo_search_fn(
         query=queries if len(queries) > 1 else (queries[0] if queries else ""),
         limit=code_limit,
@@ -619,6 +619,7 @@ async def _context_search_impl(
         not_=not_,
         case=case,
         compact=False,
+        lean=False,  # Preserve results_json for internal composition
         repo=repo,  # Cross-codebase isolation
         session=session,
         output_format=output_format,  # Pass through caller's format preference

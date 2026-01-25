@@ -56,6 +56,7 @@ def test_repo_search_arg_normalization(monkeypatch, tmp_path):
     monkeypatch.delenv("HYBRID_IN_PROCESS", raising=False)
 
     import asyncio
+    # Note: lean=False to get args echoed in response
     res = asyncio.run(
         _call_repo_search(
             queries=["FooBar"],
@@ -73,6 +74,7 @@ def test_repo_search_arg_normalization(monkeypatch, tmp_path):
             not_glob=None,
             include_snippet=True,
             compact=True,
+            lean=False,
         )
     )
 

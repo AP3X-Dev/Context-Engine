@@ -37,19 +37,13 @@ from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 
 
-# Context variable for per-request ReFRAG config (set by context_answer, read here)
-# This allows concurrent requests to have isolated config without env var mutation
+# Placeholder for per-request ReFRAG config (currently uses env vars; see TODO below)
+# TODO: Implement contextvars-based config passing for concurrent request isolation
 def _get_contextvar_refrag_config() -> Dict[str, Any]:
-    """Try to read ReFRAG config from contextvars (set by context_answer).
-    Returns empty dict if context_answer module not available or not in request context.
+    """Placeholder for per-request config. Currently returns empty dict.
+    Config is read from env vars as fallback in _run_hybrid_search_impl.
     """
-    try:
-        from scripts.mcp_impl.context_answer import get_refrag_config
-        return get_refrag_config()
-    except ImportError:
-        return {}
-    except Exception:
-        return {}
+    return {}
 
 # Ensure /work or repo root is in sys.path for scripts imports
 _ROOT_DIR = Path(__file__).resolve().parent.parent
