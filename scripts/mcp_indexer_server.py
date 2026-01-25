@@ -589,17 +589,19 @@ def _add_auth_middleware():
     FastMCP creates its Starlette app lazily inside run(). We intercept uvicorn.run()
     to wrap the app after FastMCP creates it but before uvicorn starts serving.
     """
+    logger.info("Setting up auth header middleware...")
     try:
         import uvicorn
         _original_uvicorn_run = uvicorn.run
         
         def _patched_uvicorn_run(app, **kwargs):
+            logger.info(f"uvicorn.run() intercepted, wrapping app: {type(app).__name__}")
             wrapped_app = _AuthHeaderASGIMiddleware(app)
-            logger.info("Auth header ASGI middleware injected via uvicorn.run() patch")
+            logger.info("Auth header ASGI middleware injected successfully")
             return _original_uvicorn_run(wrapped_app, **kwargs)
         
         uvicorn.run = _patched_uvicorn_run
-        logger.debug("Patched uvicorn.run() for auth middleware injection")
+        logger.info("Patched uvicorn.run() for auth middleware injection")
     except Exception as e:
         logger.warning(f"Failed to patch uvicorn for auth middleware: {e}")
 
