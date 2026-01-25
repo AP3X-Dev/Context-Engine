@@ -730,10 +730,22 @@ def print_status_table(
         print(f"│ Last index: {last_indexed}" + " " * (46 - len(f"Last index: {last_indexed}") - 2) + "│")
 
         if warmup_info:
-            embedding_ready = warmup_info.get("embedding_ready", False)
-            reranker_ready = warmup_info.get("reranker_ready", False)
-            models_symbol = "✓" if (embedding_ready and reranker_ready) else "⚠"
-            models_text = "Ready" if (embedding_ready and reranker_ready) else "Loading"
+            # warmup_info returns status: "warm"|"warming"|"cold"|"failed"
+            warmup_status = warmup_info.get("status", "cold")
+            embedding_ready = warmup_info.get("embedding_ready", warmup_info.get("embedding_ms") is not None)
+            reranker_ready = warmup_info.get("reranker_ready", warmup_info.get("reranker_ms") is not None)
+            if warmup_status == "warm" or (embedding_ready and reranker_ready):
+                models_symbol = "✓"
+                models_text = "Ready"
+            elif warmup_status == "warming":
+                models_symbol = "⚠"
+                models_text = "Loading"
+            elif warmup_status == "failed":
+                models_symbol = "✗"
+                models_text = "Failed"
+            else:
+                models_symbol = "○"
+                models_text = "Cold"
             print(f"│ Models:     {models_symbol} {models_text}" + " " * (46 - len(f"Models:     {models_symbol} {models_text}") - 2) + "│")
 
         if workspace_info:
