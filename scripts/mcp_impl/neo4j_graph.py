@@ -164,7 +164,15 @@ async def _neo4j_graph_query_impl(
     }
     
     if output_format == "toon":
-        return _format_neo4j_graph_toon(response)
+        return {
+            "ok": True,
+            "result": _format_neo4j_graph_toon(response),
+            "total": len(results),
+            "query": query_info,
+            "backend": "neo4j",
+            "query_time_ms": round(elapsed_ms, 2),
+            "output_format": "toon",
+        }
 
     return response
 

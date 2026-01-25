@@ -1,0 +1,24 @@
+apiVersion: v2
+name: context-engine
+description: Self-hosted semantic code search and memory via MCP
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - context-engine
+  - mcp
+  - code-search
+  - semantic-search
+  - qdrant
+  - ai
+
+home: https://context-engine.ai
+sources:
+  - https://github.com/Context-Engine-AI/Context-Engine
+
+maintainers:
+  - name: Context Engine AI
+
+annotations:
+  category: AI/ML

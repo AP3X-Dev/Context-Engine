@@ -100,6 +100,7 @@ async def _repo_search_impl(
     # Response shaping
     compact: Any = None,
     output_format: Any = None,  # "json" (default) or "toon" for token-efficient format
+    lean: Any = None,  # If true, strip debug/internal fields (args echo, counters, components)
     args: Any = None,  # Compatibility shim for mcp-remote/Claude wrappers that send args/kwargs
     kwargs: Any = None,
     # Injected dependencies from facade
@@ -132,9 +133,10 @@ async def _repo_search_impl(
 
     Returns:
     - Dict with keys:
-      - results: list of {score, path, symbol, start_line, end_line, why[, components][, relations][, related_paths][, snippet]}
-      - total: int; used_rerank: bool; rerank_counters: dict
-    - If compact=true (and snippets not requested), results contain only {path,start_line,end_line}.
+      - results: list of {score, path, symbol, start_line, end_line[, snippet]}
+      - total: int; ok: bool; used_rerank: bool
+    - If compact=true, results contain only {path, start_line, end_line, symbol}.
+    - If lean=true (or LEAN_RESPONSES=1), strips debug fields: args echo, rerank_counters, components, why, null IDs.
 
     Examples:
     - path_glob=["scripts/**","**/*.py"], language="python"
@@ -1518,51 +1520,81 @@ async def _repo_search_impl(
             # Re-sort results by updated score so fname_boost affects ranking
             results = sorted(results, key=lambda x: float(x.get("score", 0)), reverse=True)
 
+    # Determine if lean mode is enabled (strips debug/internal fields for agent ROI)
+    # Default ON for better agent token efficiency; set LEAN_RESPONSES=0 to disable
+    _lean = _to_bool(lean, os.environ.get("LEAN_RESPONSES", "1").lower() not in ("0", "false", "no"))
+
+    # Compact mode: minimal result fields
     if compact:
         results = [
             {
                 "path": r.get("path", ""),
+                "symbol": r.get("symbol", ""),
                 "start_line": int(r.get("start_line") or 0),
                 "end_line": int(r.get("end_line") or 0),
             }
             for r in results
         ]
+    elif _lean:
+        # Lean mode: keep useful fields, strip debug bloat (components, why, null IDs, duplicate paths)
+        lean_results = []
+        for r in results:
+            lr = {
+                "score": round(float(r.get("score", 0)), 3),
+                "path": r.get("path", ""),
+                "symbol": r.get("symbol", ""),
+                "start_line": int(r.get("start_line") or 0),
+                "end_line": int(r.get("end_line") or 0),
+            }
+            # Keep snippet if present
+            if r.get("snippet"):
+                lr["snippet"] = r["snippet"]
+            lean_results.append(lr)
+        results = lean_results
 
-    response = {
-        "args": {
-            "queries": queries,
-            "limit": int(limit),
-            "per_path": int(per_path),
-            "include_snippet": bool(include_snippet),
-            "context_lines": int(context_lines),
-            "rerank_enabled": bool(rerank_enabled),
-            "rerank_top_n": int(rerank_top_n),
-            "rerank_return_m": int(rerank_return_m),
-            "rerank_timeout_ms": int(rerank_timeout_ms),
-            "collection": collection,
-            "language": language,
-            "under": under,
-            "kind": kind,
-            "symbol": symbol,
-            "ext": ext,
-            "not": not_,
-            "case": case,
-            "path_regex": path_regex,
-            "path_glob": path_globs,
-            "not_glob": not_globs,
-            # Echo the user-provided compact flag in args, normalized via _to_bool to respect strings like "false"/"0"
-            "compact": (_to_bool(compact_raw, compact)),
-        },
-        "used_rerank": bool(used_rerank),
-        "rerank_counters": rerank_counters,
-        "code_signals": code_signals if code_signals.get("has_code_signals") else None,
-        "total": len(results),
-        "results": results,
-        **res,
-    }
+    # Build response - lean mode strips args echo and internal counters
+    if _lean:
+        response = {
+            "ok": True,
+            "total": len(results),
+            "used_rerank": bool(used_rerank),
+            "results": results,
+        }
+    else:
+        response = {
+            "args": {
+                "queries": queries,
+                "limit": int(limit),
+                "per_path": int(per_path),
+                "include_snippet": bool(include_snippet),
+                "context_lines": int(context_lines),
+                "rerank_enabled": bool(rerank_enabled),
+                "rerank_top_n": int(rerank_top_n),
+                "rerank_return_m": int(rerank_return_m),
+                "rerank_timeout_ms": int(rerank_timeout_ms),
+                "collection": collection,
+                "language": language,
+                "under": under,
+                "kind": kind,
+                "symbol": symbol,
+                "ext": ext,
+                "not": not_,
+                "case": case,
+                "path_regex": path_regex,
+                "path_glob": path_globs,
+                "not_glob": not_globs,
+                "compact": (_to_bool(compact_raw, compact)),
+            },
+            "used_rerank": bool(used_rerank),
+            "rerank_counters": rerank_counters,
+            "code_signals": code_signals if code_signals.get("has_code_signals") else None,
+            "total": len(results),
+            "results": results,
+            **res,
+        }
 
     # Apply TOON formatting if requested or enabled globally
     # Full mode (compact=False) still saves tokens vs JSON while preserving all fields
     if _should_use_toon(output_format):
-        return _format_results_as_toon(response, compact=bool(compact))
+        return _format_results_as_toon(response, compact=bool(compact or _lean), lean=bool(_lean))
     return response

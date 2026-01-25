@@ -199,12 +199,12 @@ def test_context_answer_tier2_retry_without_gating(monkeypatch):
 
 
 
-def test_context_answer_env_lock_release_on_retrieval_exception(monkeypatch):
+def test_context_answer_env_restore_on_retrieval_exception(monkeypatch):
     # Mock embedding model to avoid loading real model
     monkeypatch.setattr(srv, "_get_embedding_model", lambda *a, **k: None)
 
     import os
-    # Force retrieval to raise and ensure env/lock are restored
+    # Force retrieval to raise and ensure env vars are restored
     prev = {k: os.environ.get(k) for k in (
         "REFRAG_MODE", "REFRAG_GATE_FIRST", "REFRAG_CANDIDATES", "COLLECTION_NAME", "MICRO_BUDGET_TOKENS"
     )}
@@ -219,10 +219,7 @@ def test_context_answer_env_lock_release_on_retrieval_exception(monkeypatch):
     )
     assert "error" in out
 
-    # Lock should be free after failure
-    assert srv._ENV_LOCK.acquire(blocking=False), "_ENV_LOCK should be released on exception"
-    srv._ENV_LOCK.release()
-
+    # Note: Locks were removed for concurrency; env restoration still happens in finally block
     # Env should be restored
     for k, v in prev.items():
         assert os.environ.get(k) == v

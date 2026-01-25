@@ -1,0 +1,173 @@
+{{- if .Values.mcpMemoryHttp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-memory-http
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-memory-http
+spec:
+  replicas: {{ .Values.mcpMemoryHttp.replicas }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: mcp-memory-http
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.labels" . | nindent 8 }}
+        component: mcp-memory-http
+    spec:
+      serviceAccountName: {{ include "context-engine.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.mcpMemoryHttp.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.mcpMemoryHttp.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.mcpMemoryHttp.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.mcpMemoryHttp.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "context-engine.selectorLabels" . | nindent 14 }}
+              component: mcp-memory-http
+      {{- end }}
+      initContainers:
+        - name: init-rerank-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /mnt/rerank_weights /mnt/rerank_events && chmod 777 /mnt/rerank_weights /mnt/rerank_events
+          volumeMounts:
+            - name: metadata-volume
+              mountPath: /mnt
+      containers:
+        - name: mcp-memory-http
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.mcpMemoryHttp.command | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcpMemoryHttp.ports.http }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.mcpMemoryHttp.ports.health }}
+              protocol: TCP
+          env:
+            - name: QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: QDRANT_URL
+            - name: COLLECTION_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: COLLECTION_NAME
+            - name: EMBEDDING_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: EMBEDDING_MODEL
+            - name: HF_HOME
+              value: /work/models/hf-cache
+            - name: XDG_CACHE_HOME
+              value: /work/models/hf-cache
+            - name: FASTMCP_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: FASTMCP_HOST
+            - name: FASTMCP_PORT
+              value: {{ .Values.mcpMemoryHttp.ports.http | quote }}
+            - name: FASTMCP_TRANSPORT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: FASTMCP_HTTP_TRANSPORT
+            - name: FASTMCP_HEALTH_PORT
+              value: {{ .Values.mcpMemoryHttp.ports.health | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "context-engine.fullname" . }}-config
+          {{- with .Values.mcpMemoryHttp.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.mcpMemoryHttp.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.mcpMemoryHttp.resources | nindent 12 }}
+          volumeMounts:
+            - name: work-volume
+              mountPath: /work
+              readOnly: true
+            - name: metadata-volume
+              mountPath: /tmp/rerank_weights
+              subPath: rerank_weights
+            - name: metadata-volume
+              mountPath: /tmp/rerank_events
+              subPath: rerank_events
+      volumes:
+        - name: work-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeRepos.name }}
+        - name: metadata-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeMetadata.name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-memory-http
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-memory-http
+spec:
+  type: {{ .Values.mcpMemoryHttp.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.mcpMemoryHttp.service.port }}
+      targetPort: http
+      protocol: TCP
+    - name: health
+      port: {{ .Values.mcpMemoryHttp.service.healthPort }}
+      targetPort: health
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: mcp-memory-http
+{{- if .Values.mcpMemoryHttp.externalService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-memory-http-external
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-memory-http
+spec:
+  type: {{ .Values.mcpMemoryHttp.externalService.type }}
+  ports:
+    - name: http
+      port: {{ .Values.mcpMemoryHttp.service.port }}
+      targetPort: http
+      nodePort: {{ .Values.mcpMemoryHttp.externalService.nodePort }}
+      protocol: TCP
+    - name: health
+      port: {{ .Values.mcpMemoryHttp.service.healthPort }}
+      targetPort: health
+      nodePort: {{ .Values.mcpMemoryHttp.externalService.healthNodePort }}
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: mcp-memory-http
+{{- end }}
+{{- end }}

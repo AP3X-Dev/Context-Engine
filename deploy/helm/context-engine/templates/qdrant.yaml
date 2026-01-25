@@ -1,0 +1,113 @@
+{{- if .Values.qdrant.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: qdrant
+spec:
+  serviceName: qdrant
+  replicas: {{ .Values.qdrant.replicas }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: qdrant
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.labels" . | nindent 8 }}
+        component: qdrant
+    spec:
+      containers:
+        - name: qdrant
+          image: {{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}
+          imagePullPolicy: {{ .Values.qdrant.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.qdrant.service.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.qdrant.service.grpcPort }}
+              protocol: TCP
+          env:
+            - name: QDRANT__SERVICE__HTTP_PORT
+              value: {{ .Values.qdrant.service.httpPort | quote }}
+            - name: QDRANT__SERVICE__GRPC_PORT
+              value: {{ .Values.qdrant.service.grpcPort | quote }}
+          {{- with .Values.qdrant.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.qdrant.resources | nindent 12 }}
+          volumeMounts:
+            - name: qdrant-storage
+              mountPath: /qdrant/storage
+  {{- if .Values.qdrant.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-storage
+        labels:
+          {{- include "context-engine.labels" . | nindent 10 }}
+          component: qdrant
+      spec:
+        accessModes:
+          {{- toYaml .Values.qdrant.persistence.accessModes | nindent 10 }}
+        storageClassName: {{ .Values.qdrant.persistence.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.persistence.size }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: qdrant
+spec:
+  type: {{ .Values.qdrant.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.qdrant.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.qdrant.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: qdrant
+{{- if .Values.qdrant.externalService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-external
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: qdrant
+spec:
+  type: {{ .Values.qdrant.externalService.type }}
+  ports:
+    - name: http
+      port: {{ .Values.qdrant.service.httpPort }}
+      targetPort: http
+      nodePort: {{ .Values.qdrant.externalService.httpNodePort }}
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.qdrant.service.grpcPort }}
+      targetPort: grpc
+      nodePort: {{ .Values.qdrant.externalService.grpcNodePort }}
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: qdrant
+{{- end }}
+{{- end }}
