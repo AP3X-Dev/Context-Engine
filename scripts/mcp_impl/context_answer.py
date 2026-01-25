@@ -750,6 +750,14 @@ def _ca_prepare_filters_and_retrieve(
         "node_modules/",
         ".git/",
         ".git",
+        # CDK/deploy build artifacts (duplicates of source files)
+        "cdk.out/",
+        "**/cdk.out/**",
+        "deploy/eks-cdk-*/cdk.out/",
+        # Build artifacts
+        "dist/",
+        "build/",
+        "*.egg-info/",
     ]
 
     def _variants(p: str) -> list[str]:
@@ -3031,7 +3039,7 @@ async def _context_answer_impl(
                     items=items,
                     collection=coll,
                     repo=repo,
-                    max_neighbors=2,
+                    max_neighbors=5,
                 )
             except Exception as e:
                 logger.debug(f"Subgraph context injection failed: {e}")

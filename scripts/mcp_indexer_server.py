@@ -295,6 +295,268 @@ from scripts.mcp_workspace import (
     _work_script,
 )
 
+TOOLS_METADATA: dict[str, dict] = {
+    "repo_search": {
+        "name": "repo_search",
+        "category": "search",
+        "primary_use": "Hybrid semantic + lexical code search",
+        "choose_when": [
+            "Finding code related to a concept",
+            "Starting a search without knowing which tool",
+            "Need flexible filtering by language/path/symbol",
+        ],
+        "choose_instead": {
+            "symbol_graph": "Need precise caller/definition relationships",
+            "context_answer": "Need an explanation, not raw results",
+            "search_tests_for": "Specifically want test files",
+        },
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "language", "under", "include_snippet"],
+            "advanced": ["rerank_enabled", "output_format", "compact", "mode"],
+        },
+        "returns": {
+            "ok": "bool",
+            "results": "list[{score, path, symbol, start_line, end_line, snippet?}]",
+            "total": "int",
+        },
+        "related_tools": ["code_search", "context_search", "info_request"],
+        "performance": {
+            "typical_latency_ms": (100, 2000),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "context_answer": {
+        "name": "context_answer",
+        "category": "answer",
+        "primary_use": "LLM-generated answers with code citations",
+        "choose_when": [
+            "Need an explanation of how code works",
+            "Asking 'how does X work?' questions",
+            "Want synthesized answer with sources",
+        ],
+        "choose_instead": {
+            "repo_search": "Want raw code results, not explanation",
+            "symbol_graph": "Need precise relationships",
+        },
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "language", "under", "include_snippet"],
+            "advanced": ["max_tokens", "temperature", "expand", "budget_tokens"],
+        },
+        "returns": {
+            "ok": "bool",
+            "answer": "str",
+            "citations": "list[{id, path, start_line, end_line}]",
+        },
+        "related_tools": ["repo_search", "context_search"],
+        "performance": {
+            "typical_latency_ms": (1000, 10000),
+            "requires_index": True,
+            "requires_decoder": True,
+        },
+    },
+    "symbol_graph": {
+        "name": "symbol_graph",
+        "category": "graph",
+        "primary_use": "AST-backed symbol relationship queries",
+        "choose_when": [
+            "Need 'who calls function X'",
+            "Need 'where is X defined'",
+            "Need 'what imports module Y'",
+            "Doing refactoring impact analysis",
+        ],
+        "choose_instead": {
+            "repo_search": "Want conceptual search, not precise relationships",
+            "search_callers_for": "Quick text search is sufficient",
+        },
+        "parameters": {
+            "essential": ["symbol", "query_type"],
+            "common": ["limit", "language", "under", "repo"],
+            "advanced": ["depth", "output_format"],
+        },
+        "returns": {
+            "ok": "bool",
+            "results": "list[{path, start_line, end_line, symbol, snippet}]",
+            "count": "int",
+        },
+        "related_tools": ["search_callers_for", "search_importers_for"],
+        "performance": {
+            "typical_latency_ms": (50, 500),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "context_search": {
+        "name": "context_search",
+        "category": "search",
+        "primary_use": "Blend code search with memory retrieval",
+        "choose_when": [
+            "Want code AND stored memories together",
+            "Searching for documented decisions",
+            "Need context from team knowledge",
+        ],
+        "choose_instead": {
+            "repo_search": "Only want code, no memories",
+            "memory_find": "Only want memories, no code",
+        },
+        "parameters": {
+            "essential": ["query"],
+            "common": ["include_memories", "memory_weight", "limit"],
+            "advanced": ["per_source_limits", "rerank_enabled"],
+        },
+        "returns": {
+            "ok": "bool",
+            "results": "list[{source, score, path|content, ...}]",
+            "total": "int",
+        },
+        "related_tools": ["repo_search", "memory_find"],
+        "performance": {
+            "typical_latency_ms": (200, 3000),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "info_request": {
+        "name": "info_request",
+        "category": "search",
+        "primary_use": "Simplified code discovery with explanations",
+        "choose_when": [
+            "Want simple single-parameter search",
+            "Need human-readable result descriptions",
+            "Building minimal integrations",
+        ],
+        "choose_instead": {
+            "repo_search": "Need full control over parameters",
+            "context_answer": "Need LLM-generated explanation",
+        },
+        "parameters": {
+            "essential": ["info_request"],
+            "common": ["limit", "language", "include_explanation"],
+            "advanced": ["include_relationships", "output_format"],
+        },
+        "returns": {
+            "ok": "bool",
+            "results": "list[{information, relevance_score, path, ...}]",
+            "summary?": "str",
+            "related_concepts?": "list[str]",
+        },
+        "related_tools": ["repo_search", "context_answer"],
+        "performance": {
+            "typical_latency_ms": (100, 2000),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "pattern_search": {
+        "name": "pattern_search",
+        "category": "search",
+        "primary_use": "Structural code pattern matching",
+        "choose_when": [
+            "Have code example, find similar",
+            "Cross-language pattern search",
+            "Find structural duplicates",
+        ],
+        "choose_instead": {
+            "repo_search": "Searching by concept, not structure",
+            "symbol_graph": "Looking for relationships",
+        },
+        "parameters": {
+            "essential": ["query"],
+            "common": ["language", "limit", "target_languages"],
+            "advanced": ["query_mode", "aroma_rerank", "min_score"],
+        },
+        "returns": {
+            "ok": "bool",
+            "results": "list[{path, start_line, end_line, score, language}]",
+            "query_mode": "str",
+        },
+        "related_tools": ["repo_search"],
+        "performance": {
+            "typical_latency_ms": (200, 3000),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "search_tests_for": {
+        "name": "search_tests_for",
+        "category": "specialized",
+        "primary_use": "Find test files for a feature/function",
+        "choose_when": ["Specifically want test files", "Looking for test coverage"],
+        "choose_instead": {"repo_search": "Want all code, not just tests"},
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "language", "under"],
+            "advanced": ["include_snippet", "compact"],
+        },
+        "returns": {"ok": "bool", "results": "list[...]", "total": "int"},
+        "related_tools": ["repo_search"],
+        "performance": {
+            "typical_latency_ms": (100, 1500),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "search_config_for": {
+        "name": "search_config_for",
+        "category": "specialized",
+        "primary_use": "Find configuration files",
+        "choose_when": ["Looking for config files", "Finding settings/options"],
+        "choose_instead": {"repo_search": "Want all code, not just config"},
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "under"],
+            "advanced": ["include_snippet", "compact"],
+        },
+        "returns": {"ok": "bool", "results": "list[...]", "total": "int"},
+        "related_tools": ["repo_search"],
+        "performance": {
+            "typical_latency_ms": (100, 1500),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "search_callers_for": {
+        "name": "search_callers_for",
+        "category": "specialized",
+        "primary_use": "Text-based search for symbol callers",
+        "choose_when": ["Quick caller search is sufficient", "No graph index available"],
+        "choose_instead": {"symbol_graph": "Need precise AST-backed callers"},
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "language"],
+            "advanced": [],
+        },
+        "returns": {"ok": "bool", "results": "list[...]", "total": "int"},
+        "related_tools": ["symbol_graph"],
+        "performance": {
+            "typical_latency_ms": (100, 1500),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+    "search_importers_for": {
+        "name": "search_importers_for",
+        "category": "specialized",
+        "primary_use": "Text-based search for module importers",
+        "choose_when": ["Quick import search is sufficient", "No graph index available"],
+        "choose_instead": {"symbol_graph": "Need precise AST-backed importers"},
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "language"],
+            "advanced": [],
+        },
+        "returns": {"ok": "bool", "results": "list[...]", "total": "int"},
+        "related_tools": ["symbol_graph"],
+        "performance": {
+            "typical_latency_ms": (100, 1500),
+            "requires_index": True,
+            "requires_decoder": False,
+        },
+    },
+}
+
 # Disable DNS rebinding protection - breaks Docker internal networking (Host: mcp:8000)
 _security_settings = (
     TransportSecuritySettings(enable_dns_rebinding_protection=False)
@@ -417,7 +679,6 @@ def _start_readyz_server():
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        # Hide expand_query when decoder is disabled
                         tools = _TOOLS_REGISTRY
                         try:
                             from scripts.refrag_llamacpp import is_decoder_enabled  # type: ignore
@@ -432,7 +693,12 @@ def _start_readyz_server():
                                 ]
                         except Exception as e:
                             logger.debug(f"Suppressed exception: {e}")
-                        payload = {"ok": True, "tools": tools}
+                        enriched = []
+                        for t in tools:
+                            name = t.get("name", "")
+                            meta = TOOLS_METADATA.get(name, {})
+                            enriched.append({**t, **meta})
+                        payload = {"ok": True, "tools": enriched, "metadata": TOOLS_METADATA}
                         self.wfile.write(_json_dumps_bytes(payload))
                     else:
                         self.send_response(404)
@@ -979,6 +1245,12 @@ async def set_session_defaults(
     mode: Any = None,
     under: Any = None,
     language: Any = None,
+    repo: Any = None,
+    compact: Any = None,
+    output_format: Any = None,
+    include_snippet: Any = None,
+    rerank_enabled: Any = None,
+    limit: Any = None,
     session: Any = None,
     ctx: Context = None,
     **kwargs,
@@ -989,6 +1261,19 @@ async def set_session_defaults(
     - If request Context is available, persist defaults per-connection so later calls on
       the same MCP session automatically use them (no token required).
     - Optionally also stores token-scoped defaults for cross-connection reuse.
+
+    Parameters:
+    - collection: Default collection name
+    - mode: Search mode hint
+    - under: Default path prefix filter
+    - language: Default language filter
+    - repo: Default repo filter for multi-repo setups
+    - compact: Default compact response mode (bool)
+    - output_format: Default output format ("json" or "toon")
+    - include_snippet: Default snippet inclusion (bool)
+    - rerank_enabled: Default reranking toggle (bool)
+    - limit: Default result limit (int)
+    - session: Session token for cross-connection reuse
     """
     try:
         _extra = _extract_kwargs_payload(kwargs)
@@ -1003,6 +1288,18 @@ async def set_session_defaults(
                 language = _extra.get("language")
             if (session is None or (isinstance(session, str) and str(session).strip() == "")) and _extra.get("session") is not None:
                 session = _extra.get("session")
+            if repo is None and _extra.get("repo") is not None:
+                repo = _extra.get("repo")
+            if compact is None and _extra.get("compact") is not None:
+                compact = _extra.get("compact")
+            if output_format is None and _extra.get("output_format") is not None:
+                output_format = _extra.get("output_format")
+            if include_snippet is None and _extra.get("include_snippet") is not None:
+                include_snippet = _extra.get("include_snippet")
+            if rerank_enabled is None and _extra.get("rerank_enabled") is not None:
+                rerank_enabled = _extra.get("rerank_enabled")
+            if limit is None and _extra.get("limit") is not None:
+                limit = _extra.get("limit")
     except Exception as e:
         logger.debug(f"Suppressed exception: {e}")
 
@@ -1015,6 +1312,23 @@ async def set_session_defaults(
                 defaults[_key] = _s
             else:
                 unset_keys.add(_key)
+    if isinstance(repo, str) and repo.strip():
+        defaults["repo"] = repo.strip()
+    elif isinstance(repo, list):
+        defaults["repo"] = repo
+    if isinstance(output_format, str) and output_format.strip():
+        defaults["output_format"] = output_format.strip()
+    if compact is not None:
+        defaults["compact"] = bool(compact) if not isinstance(compact, bool) else compact
+    if include_snippet is not None:
+        defaults["include_snippet"] = bool(include_snippet) if not isinstance(include_snippet, bool) else include_snippet
+    if rerank_enabled is not None:
+        defaults["rerank_enabled"] = bool(rerank_enabled) if not isinstance(rerank_enabled, bool) else rerank_enabled
+    if limit is not None:
+        try:
+            defaults["limit"] = int(limit)
+        except (ValueError, TypeError):
+            pass
 
     # Per-connection storage (preferred)
     try:
@@ -1119,24 +1433,91 @@ async def repo_search(
     args: Any = None,
     kwargs: Any = None,
 ) -> Dict[str, Any]:
-    """Zero-config code search over repositories (hybrid: vector + lexical RRF, rerank ON by default).
+    """Primary hybrid semantic + lexical code search across the repository.
 
-    When to use:
-    - Find relevant code spans quickly; prefer this over embedding-only search.
-    - Use context_answer when you need a synthesized explanation; use context_search to blend with memory notes.
+    PRIMARY USE: Find code spans matching a natural language concept or topic.
 
-    Key parameters:
-    - query: str or list[str]. Multiple queries are fused; accepts "queries" alias.
-    - limit: int (default 10). Total results across files.
-    - per_path: int (default 2). Max results per file.
-    - include_snippet/context_lines: return inline snippets near hits when true.
-    - rerank_*: ONNX reranker is ON by default for best relevance; timeouts fall back to hybrid.
-    - output_format: "json" (default) or "toon" for token-efficient TOON format.
-    - collection: str. Target collection; defaults to workspace state or env COLLECTION_NAME.
-    - repo: str or list[str]. Filter by repo name(s). Use "*" to search all repos.
+    CHOOSE THIS WHEN:
+    - You need to find code related to a concept (e.g., "authentication", "caching")
+    - You want to locate implementations, not just definitions
+    - You need flexible filtering by language, path, or symbol
+    - You want the best balance of recall and precision
+    - You're starting a search and aren't sure which specific tool to use
 
-    Returns:
-    - Dict with keys: results, total, used_rerank, rerank_counters
+    CHOOSE INSTEAD:
+    - symbol_graph -> when you need "who calls X" or "where is X defined" (AST-backed)
+    - context_answer -> when you need an EXPLANATION, not raw code results
+    - context_search -> when you want to blend code results with stored memories
+    - search_tests_for -> when specifically looking for test files
+    - search_config_for -> when specifically looking for config files
+    - pattern_search -> when searching by code structure/pattern across languages
+
+    QUERY EXAMPLES:
+    Good queries (natural language, conceptual):
+      "authentication middleware"     - finds auth-related code
+      "error handling with retry"     - finds retry logic
+      "database connection pooling"   - finds connection management
+      "user session management"       - finds session-related code
+      "API rate limiting"             - finds rate limit implementations
+      "caching layer implementation"  - finds cache logic
+      "websocket message handling"    - finds WS handlers
+      "file upload processing"        - finds upload logic
+
+    Bad queries (will return poor results):
+      "auth OR login OR session"      - boolean operators NOT supported
+      "def.*authenticate"             - regex NOT supported in query
+      "*.py with class User"          - glob syntax NOT for query field
+      "function"                      - too vague, be more specific
+      "get"                           - too generic
+      "the code that handles the thing" - unclear intent
+
+    ESSENTIAL PARAMETERS:
+    - query (str | list[str]): Natural language description of what you're looking for.
+      Multiple queries are fused for broader recall.
+
+    COMMON PARAMETERS:
+    - limit (int, default=10): Maximum results to return.
+    - per_path (int, default=2): Max results per file. Increase for thorough search.
+    - include_snippet (bool, default=True): Include code snippets in results.
+    - language (str): Filter by language ("python", "typescript", "go", etc.)
+    - under (str): Restrict to directory path ("scripts/", "src/api/")
+    - symbol (str): Filter by symbol name (function, class, method)
+    - path_glob (str | list[str]): File pattern filter ("**/*.py", "src/**")
+    - repo (str | list[str]): Filter by repo name(s). Use "*" for all repos.
+
+    ADVANCED PARAMETERS:
+    - rerank_enabled (bool, default=True): ONNX cross-encoder reranking for relevance.
+    - rerank_top_n (int, default=20): Candidates to rerank. Increase for benchmarks.
+    - output_format (str): "json" (default) or "toon" for token-efficient format.
+    - compact (bool, default=False): Strip verbose fields for minimal response.
+    - mode (str): "code_first", "docs_first", "balanced", or "dense" (pure embedding).
+    - not_glob (str | list[str]): Exclude paths matching pattern.
+    - not_ (str): Exclude results containing this text.
+    - case (str): "sensitive" for case-sensitive matching.
+
+    RETURNS:
+    {
+        "ok": true,
+        "results": [
+            {
+                "score": 0.85,           // Relevance score (0-1+)
+                "path": "src/auth.py",   // File path
+                "symbol": "authenticate", // Symbol name if available
+                "start_line": 42,        // Start line number
+                "end_line": 67,          // End line number
+                "snippet": "def auth..." // Code snippet (if include_snippet=true)
+            }
+        ],
+        "total": 5,                      // Total results returned
+        "used_rerank": true,             // Whether reranking was applied
+        "rerank_counters": {...}         // Reranking statistics
+    }
+
+    PERFORMANCE TIPS:
+    - Use language filter to reduce search space and improve relevance
+    - Use under filter when you know the general code area
+    - Set include_snippet=false if you only need file locations
+    - Set compact=true to reduce response size for large result sets
     """
     return await _repo_search_impl(
         query=query,
@@ -1305,14 +1686,77 @@ async def search_tests_for(
 ) -> Dict[str, Any]:
     """Find test files related to a query.
 
-    What it does:
-    - Presets common test file globs and forwards to repo_search
-    - Accepts extra filters via kwargs (e.g., language, under, case)
+    PRIMARY USE: Quickly find tests for a feature, function, or module.
+    Convenience wrapper that presets common test file patterns.
 
-    Parameters:
-    - query: str or list[str]; limit; include_snippet/context_lines; under; language; compact
+    CHOOSE THIS WHEN:
+    - You specifically want TEST files, not implementation code
+    - You're looking for tests related to a feature
+    - You want to find test coverage for a function/class
+    - You're exploring how something is tested
 
-    Returns: repo_search result shape.
+    CHOOSE INSTEAD:
+    - repo_search -> when you want ALL code, not just tests
+    - symbol_graph -> when you need "what tests call function X"
+
+    QUERY EXAMPLES:
+    Good queries (feature/function focused):
+      "user authentication"           - finds tests for auth features
+      "database connection"           - finds DB connection tests
+      "API rate limiting"             - finds rate limit tests
+      "email sending"                 - finds email-related tests
+      "input validation"              - finds validation tests
+      "UserService"                   - finds tests for UserService class
+
+    Bad queries:
+      "all tests"                     - too broad
+      "test_*.py"                     - glob pattern, use path_glob param
+      "pass"                          - assertion keyword, not meaningful
+      "def test_"                     - code fragment, use repo_search
+
+    ESSENTIAL PARAMETERS:
+    - query (str | list[str]): Natural language description of what you want tests for.
+
+    COMMON PARAMETERS:
+    - limit (int, default=10): Maximum results to return.
+    - include_snippet (bool, default=True): Include test code snippets.
+    - context_lines (int): Lines of context around matches.
+    - under (str): Restrict to directory path (e.g., "tests/unit/").
+    - language (str): Filter by language.
+    - compact (bool): Minimal response fields.
+
+    PRESET GLOBS (automatically applied):
+    - tests/**
+    - test/**
+    - **/*test*.*
+    - **/*_test.*
+    - **/Test*/**
+
+    RETURNS: Same schema as repo_search.
+    {
+        "ok": true,
+        "results": [
+            {
+                "score": 0.82,
+                "path": "tests/test_auth.py",
+                "symbol": "test_authenticate_valid_user",
+                "start_line": 45,
+                "end_line": 58,
+                "snippet": "def test_authenticate_valid_user():..."
+            }
+        ],
+        "total": 8
+    }
+
+    USAGE PATTERNS:
+    # Find tests for authentication
+    search_tests_for(query="authentication")
+
+    # Find tests in a specific directory
+    search_tests_for(query="database", under="tests/integration/")
+
+    # Find Python tests only
+    search_tests_for(query="caching", language="python")
     """
     return await _search_tests_for_impl(
         query=query,
@@ -1341,13 +1785,86 @@ async def search_config_for(
     kwargs: Any = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Find likely configuration files for a service/query.
+    """Find configuration files related to a query.
 
-    What it does:
-    - Presets config file globs (yaml/json/toml/etc.) and forwards to repo_search
-    - Accepts extra filters via kwargs
+    PRIMARY USE: Quickly find config files for a service, feature, or setting.
+    Convenience wrapper that presets common config file patterns.
 
-    Returns: repo_search result shape.
+    CHOOSE THIS WHEN:
+    - You need to find configuration for a service/feature
+    - You're looking for environment variables, settings, or options
+    - You want to find where something is configured
+    - You're debugging configuration issues
+
+    CHOOSE INSTEAD:
+    - repo_search -> when you want ALL code, not just config files
+    - search_tests_for -> when looking for test files
+
+    QUERY EXAMPLES:
+    Good queries (service/setting focused):
+      "database connection"           - finds DB config files
+      "authentication settings"       - finds auth config
+      "logging configuration"         - finds logging setup
+      "API keys"                      - finds key config (careful with secrets!)
+      "environment variables"         - finds env config
+      "redis cache"                   - finds Redis config
+      "docker compose"                - finds Docker config
+
+    Bad queries:
+      "*.yaml"                        - glob pattern, handled by presets
+      "config"                        - too vague
+      "settings"                      - too generic
+      "json"                          - file format, not a query
+
+    ESSENTIAL PARAMETERS:
+    - query (str | list[str]): Natural language description of what config you need.
+
+    COMMON PARAMETERS:
+    - limit (int, default=10): Maximum results to return.
+    - include_snippet (bool, default=True): Include config content snippets.
+    - context_lines (int): Lines of context around matches.
+    - under (str): Restrict to directory path.
+    - compact (bool): Minimal response fields.
+
+    PRESET GLOBS (automatically applied):
+    - **/*.yml, **/*.yaml
+    - **/*.json
+    - **/*.toml
+    - **/*.ini
+    - **/*.env
+    - **/*.config, **/*.conf
+    - **/*.properties
+    - **/*.csproj, **/*.props, **/*.targets
+    - **/*.xml
+    - **/appsettings*.json
+
+    RETURNS: Same schema as repo_search.
+    {
+        "ok": true,
+        "results": [
+            {
+                "score": 0.85,
+                "path": "config/database.yml",
+                "start_line": 12,
+                "end_line": 25,
+                "snippet": "database:\\n  host: localhost\\n  port: 5432..."
+            }
+        ],
+        "total": 5
+    }
+
+    USAGE PATTERNS:
+    # Find database config
+    search_config_for(query="database connection")
+
+    # Find Docker configuration
+    search_config_for(query="docker service ports")
+
+    # Find in specific directory
+    search_config_for(query="api settings", under="config/")
+
+    WARNING: Config files may contain sensitive data (API keys, passwords).
+    Be cautious about exposing results that might contain secrets.
     """
     return await _search_config_for_impl(
         query=query,
@@ -1372,14 +1889,57 @@ async def search_callers_for(
     kwargs: Any = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Heuristic search for callers/usages of a symbol.
+    """Heuristic text-based search for callers/usages of a symbol.
 
-    When to use:
-    - You want files that reference/invoke a function/class
+    PRIMARY USE: Find files that likely call or reference a function/class.
+    Uses text search, not AST analysis - faster but less precise than symbol_graph.
 
-    Notes:
-    - Thin wrapper over repo_search today; pass language or path_glob to narrow
-    - Returns repo_search result shape
+    CHOOSE THIS WHEN:
+    - You want a quick, broad search for symbol references
+    - You're okay with some false positives in exchange for speed
+    - The codebase doesn't have graph index built yet
+    - You want to find textual mentions, not just actual calls
+
+    CHOOSE INSTEAD:
+    - symbol_graph with query_type="callers" -> for PRECISE AST-backed caller analysis
+    - repo_search -> when you want full control over search parameters
+
+    QUERY EXAMPLES:
+    Good queries (symbol names):
+      "authenticate"                  - finds references to authenticate
+      "UserService"                   - finds references to UserService
+      "validate_input"                - finds references to validate_input
+      "CacheManager.get"              - finds references to CacheManager.get
+
+    Bad queries:
+      "who calls authenticate"        - use symbol_graph for this phrasing
+      "find all usages of X"          - use symbol_graph
+      "authentication"                - concept, not symbol name
+
+    ESSENTIAL PARAMETERS:
+    - query (str): Symbol name to find callers/references for.
+
+    COMMON PARAMETERS:
+    - limit (int, default=10): Maximum results to return.
+    - language (str): Filter by language for more relevant results.
+
+    RETURNS: Same schema as repo_search.
+
+    COMPARISON WITH symbol_graph:
+    | Aspect | search_callers_for | symbol_graph |
+    |--------|-------------------|--------------|
+    | Method | Text search | AST analysis |
+    | Speed | Faster | Slower |
+    | Precision | Lower (false positives) | Higher (actual calls) |
+    | Requires | Nothing special | Graph index |
+    | Use for | Quick exploration | Precise refactoring |
+
+    USAGE PATTERNS:
+    # Quick reference search
+    search_callers_for(query="authenticate", language="python")
+
+    # For precise caller analysis, prefer:
+    symbol_graph(symbol="authenticate", query_type="callers")
     """
     return await _search_callers_for_impl(
         query=query,
@@ -1401,13 +1961,61 @@ async def search_importers_for(
     kwargs: Any = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Find files likely importing or referencing a module/symbol.
+    """Heuristic text-based search for files importing a module/symbol.
 
-    What it does:
-    - Presets code globs across common languages; forwards to repo_search
-    - Accepts additional filters via kwargs (e.g., under, case)
+    PRIMARY USE: Find files that likely import a module or symbol.
+    Uses text search, not AST analysis - faster but less precise than symbol_graph.
 
-    Returns: repo_search result shape.
+    CHOOSE THIS WHEN:
+    - You want a quick search for import statements
+    - You're looking for textual import/require/use mentions
+    - The codebase doesn't have graph index built yet
+    - You want approximate results quickly
+
+    CHOOSE INSTEAD:
+    - symbol_graph with query_type="importers" -> for PRECISE AST-backed import analysis
+    - repo_search -> when you want full control over search parameters
+
+    QUERY EXAMPLES:
+    Good queries (module/symbol names):
+      "auth_utils"                    - finds imports of auth_utils
+      "CacheManager"                  - finds imports of CacheManager
+      "qdrant_client"                 - finds imports of qdrant_client
+      "express"                       - finds require('express')
+      "pandas"                        - finds import pandas
+
+    Bad queries:
+      "what imports X"                - use symbol_graph for this phrasing
+      "import statements"             - too vague
+      "from ... import"               - syntax, not a module name
+
+    ESSENTIAL PARAMETERS:
+    - query (str): Module or symbol name to find importers for.
+
+    COMMON PARAMETERS:
+    - limit (int, default=10): Maximum results to return.
+    - language (str): Filter by language for more relevant results.
+
+    PRESET GLOBS (automatically applied):
+    Code files across all common languages (*.py, *.js, *.ts, *.go, etc.)
+
+    RETURNS: Same schema as repo_search.
+
+    COMPARISON WITH symbol_graph:
+    | Aspect | search_importers_for | symbol_graph |
+    |--------|---------------------|--------------|
+    | Method | Text search | AST analysis |
+    | Speed | Faster | Slower |
+    | Precision | Lower (false positives) | Higher (actual imports) |
+    | Requires | Nothing special | Graph index |
+    | Use for | Quick exploration | Precise dependency analysis |
+
+    USAGE PATTERNS:
+    # Quick import search
+    search_importers_for(query="qdrant_client", language="python")
+
+    # For precise import analysis, prefer:
+    symbol_graph(symbol="qdrant_client", query_type="importers")
     """
     return await _search_importers_for_impl(
         query=query,
@@ -1433,35 +2041,102 @@ async def symbol_graph(
     depth: Any = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Query the symbol graph to find callers, definitions, or importers.
+    """AST-backed symbol graph queries for precise code relationships.
 
-    When to use:
-    - "Who calls X?" → query_type="callers"
-    - "Where is X defined?" → query_type="definition"
-    - "What imports Y?" → query_type="importers"
-    - "What does X call?" → query_type="callees"
+    PRIMARY USE: Find WHO CALLS a function, WHERE something is DEFINED,
+    or WHAT IMPORTS a module using the pre-built symbol graph.
 
-    Key parameters:
-    - symbol: str. The function, class, or module name to search for.
-    - query_type: str. One of "callers", "definition", "importers".
-    - limit: int (default 20). Maximum results to return.
-    - language: str (optional). Filter by programming language.
-    - under: str (optional). Filter by path prefix.
-    - repo: str (optional). Filter by repository name. Use "*" to search all repos.
-    - output_format: "json" (default) or "toon" for token-efficient format.
-    - depth: int (default 1). Multi-hop traversal depth. 2 = callers of callers, etc.
+    CHOOSE THIS WHEN:
+    - You need "who calls this function?" (callers)
+    - You need "where is this defined?" (definition)
+    - You need "what imports this module?" (importers)
+    - You need "what does this function call?" (callees)
+    - You want PRECISE relationships, not text-based fuzzy matches
+    - You're doing refactoring impact analysis
 
-    Returns:
-    - {"results": [...], "symbol": str, "query_type": str, "count": int, "depth": int}
-    - Each result includes path, start_line, end_line, symbol_path, and relevant context.
-    - Multi-hop results include "hop" (1, 2, ...) and "via" (intermediate symbol).
+    CHOOSE INSTEAD:
+    - repo_search -> when you want CONCEPTUAL search, not precise relationships
+    - search_callers_for -> convenience wrapper, uses text search (less precise)
+    - search_importers_for -> convenience wrapper, uses text search (less precise)
 
-    Example:
-    - symbol_graph(symbol="get_embedding_model", query_type="callers")
-    - symbol_graph(symbol="ASTAnalyzer", query_type="definition")
-    - symbol_graph(symbol="qdrant_client", query_type="importers")
-    - symbol_graph(symbol="my_function", query_type="callers", repo="backend")
-    - symbol_graph(symbol="authenticate", query_type="callers", depth=2)
+    QUERY EXAMPLES:
+
+    For "callers" query_type (who calls X?):
+      symbol="authenticate"          - finds all callers of authenticate()
+      symbol="UserService.get_user"  - finds callers of get_user method
+      symbol="validate_input"        - finds where validate_input is called
+
+    For "definition" query_type (where is X defined?):
+      symbol="CacheManager"          - finds CacheManager class definition
+      symbol="run_hybrid_search"     - finds function definition
+      symbol="USER_TIMEOUT"          - finds constant definition
+
+    For "importers" query_type (what imports X?):
+      symbol="auth_utils"            - finds files importing auth_utils module
+      symbol="CacheManager"          - finds files importing CacheManager
+      symbol="qdrant_client"         - finds files importing qdrant_client
+
+    For "callees" query_type (what does X call?):
+      symbol="authenticate"          - finds functions called BY authenticate
+      symbol="process_request"       - finds all functions process_request calls
+
+    ESSENTIAL PARAMETERS:
+    - symbol (str): Symbol name to analyze. Can be:
+      - Simple name: "authenticate"
+      - Qualified path: "UserService.get_user"
+      - Module name: "auth_utils"
+
+    - query_type (str, default="callers"): Type of relationship query:
+      - "callers": Find code that CALLS this symbol
+      - "definition": Find WHERE this symbol is DEFINED
+      - "importers": Find code that IMPORTS this symbol/module
+      - "callees": Find what this symbol CALLS (inverse of callers)
+
+    COMMON PARAMETERS:
+    - limit (int, default=20): Maximum results to return.
+    - depth (int, default=1): Traversal depth for multi-hop queries.
+      - depth=1: Direct relationships only
+      - depth=2: Callers of callers, callees of callees, etc.
+      - depth=3+: Use sparingly, can be expensive
+    - language (str): Filter by language.
+    - under (str): Filter by path prefix.
+    - repo (str): Filter by repository name. Use "*" for all repos.
+    - output_format (str): "json" or "toon" for token-efficient format.
+
+    RETURNS:
+    {
+        "ok": true,
+        "results": [
+            {
+                "path": "src/api/handlers.py",
+                "start_line": 142,
+                "end_line": 145,
+                "symbol": "handle_login",
+                "symbol_path": "handlers.handle_login",
+                "language": "python",
+                "snippet": "    result = authenticate(username, password)",
+                "hop": 1,           // For depth>1: which hop found this
+                "via": "authenticate"  // For depth>1: intermediate symbol
+            }
+        ],
+        "symbol": "authenticate",
+        "query_type": "callers",
+        "count": 12,
+        "depth": 1,
+        "used_graph": true,    // True if graph collection was used (fast)
+        "suggestions": [...]   // Fuzzy matches if exact symbol not found
+    }
+
+    MULTI-HOP EXAMPLE (depth=2):
+    # "Who calls the callers of authenticate?"
+    symbol_graph(symbol="authenticate", query_type="callers", depth=2)
+    # Returns both direct callers (hop=1) and callers-of-callers (hop=2)
+
+    NOTES:
+    - Graph must be indexed (run qdrant_index_root first)
+    - For fuzzy matching, suggestions are returned if exact symbol not found
+    - Hydration adds code snippets and accurate line numbers automatically
+    - Use depth>1 carefully - exponential growth in results
     """
     if not symbol or not str(symbol).strip():
         return {"error": "symbol parameter is required", "results": []}
@@ -1601,36 +2276,112 @@ async def context_answer(
     repo: Any = None,  # str, list[str], or "*" to search all repos
     kwargs: Any = None,
 ) -> Dict[str, Any]:
-    """Natural-language Q&A over the repo using retrieval + local LLM (llama.cpp).
+    """Generate LLM-powered answers with citations grounded in retrieved code.
 
-    What it does:
-    - Retrieves relevant code (hybrid vector+lexical with reranking enabled by default).
-    - Budgets/merges micro-spans, builds citations, and asks the LLM to answer.
-    - Returns a concise answer plus file/line citations.
+    PRIMARY USE: Get an EXPLANATION or ANSWER to a question, not raw search results.
+    Uses retrieval-augmented generation (RAG) with a local LLM decoder.
 
-    When to use:
-    - You need an explanation or "how to" grounded in code.
-    - Prefer repo_search for raw hits; prefer context_search to blend code + memory.
+    CHOOSE THIS WHEN:
+    - You need an EXPLANATION ("How does X work?", "What is Y?")
+    - You want a synthesized answer with source citations
+    - You're asking a question that requires understanding, not just finding
+    - You want the system to READ code and EXPLAIN it to you
 
-    Key parameters:
-    - query: str or list[str]; may be expanded if expand=true.
-    - budget_tokens: int. Token budget across code spans (defaults from MICRO_BUDGET_TOKENS).
-    - include_snippet: bool (default true). Include code snippets sent to the LLM and return them when requested.
-    - max_tokens, temperature: decoding controls.
-    - mode: "stitch" (default) or "pack" for prompt assembly.
-    - expand: bool. Use tiny local LLM to propose up to 2 alternate queries.
-    - Filters: language, under, kind, symbol, ext, path_regex, path_glob, not_glob, not_, case.
-    - repo: str or list[str]. Filter by repo name(s). Use "*" to search all repos (disable auto-filter).
-      By default, auto-detects current repo from CURRENT_REPO env and filters to it.
+    CHOOSE INSTEAD:
+    - repo_search -> when you want RAW CODE RESULTS, not explanations
+    - symbol_graph -> when you need precise "who calls X" relationships
+    - context_search -> when you want code + memories without LLM synthesis
 
-    Returns:
-    - {"answer": str, "citations": [{"path": str, "start_line": int, "end_line": int}], "query": list[str], "used": {...}}
-    - On decoder disabled/error, returns {"error": "...", "citations": [...], "query": [...]}
+    QUERY EXAMPLES:
+    Good queries (questions requiring explanation):
+      "How does the authentication system validate tokens?"
+      "What is the purpose of the CacheManager class?"
+      "Explain the error handling strategy in the API layer"
+      "How are database connections pooled in this project?"
+      "What happens when a user session expires?"
+      "Describe the data flow for user registration"
+      "How does retry logic work in the HTTP client?"
 
-    Notes:
-    - Reranking is enabled by default for optimal retrieval quality.
-    - Honors env knobs such as REFRAG_MODE, REFRAG_GATE_FIRST, MICRO_BUDGET_TOKENS, DECODER_*.
-    - Keeps answers brief (2–4 sentences) and grounded; rejects ungrounded output.
+    Bad queries (not suited for LLM answers):
+      "find authentication code"      - use repo_search for finding code
+      "list all Python files"         - use repo_search with language filter
+      "UserController"                - symbol name only, use symbol_graph
+      "src/auth.py"                   - file path, just read the file
+      "def authenticate"              - code fragment, use repo_search
+
+    ESSENTIAL PARAMETERS:
+    - query (str | list[str]): Question or topic requiring explanation.
+      Should be phrased as a question or request for explanation.
+
+    RETRIEVAL PARAMETERS:
+    - limit (int, default=15): Code spans to retrieve for context.
+    - per_path (int, default=5): Max spans per file.
+    - budget_tokens (int): Token budget for code context. Default from env.
+    - include_snippet (bool, default=True): Include code in response.
+    - language (str): Filter retrieval by language.
+    - under (str): Restrict retrieval to directory path.
+    - repo (str | list[str]): Filter by repo. Use "*" for all repos.
+
+    GENERATION PARAMETERS:
+    - max_tokens (int): Max tokens for generated answer.
+    - temperature (float): Sampling temperature (0.0-1.0). Lower = more focused.
+    - mode (str): Prompt assembly mode. "stitch" (default) or "pack".
+    - expand (bool): Use LLM to generate query expansions for better recall.
+
+    COMMON FILTER PARAMETERS (same as repo_search):
+    - symbol (str): Filter by symbol name.
+    - path_glob (str | list[str]): Filter by file pattern.
+    - not_glob (str | list[str]): Exclude file patterns.
+    - ext (str): Filter by file extension.
+
+    RETURNS:
+    {
+        "ok": true,
+        "answer": "The authentication system validates tokens by first checking
+                   the JWT signature using the secret from config [1], then
+                   verifying expiration time [2]. If valid, it extracts the
+                   user ID and loads permissions from the database [3].",
+        "citations": [
+            {
+                "id": 1,
+                "path": "src/auth/jwt.py",
+                "start_line": 45,
+                "end_line": 52,
+                "snippet": "def verify_token(token):..."  // Optional
+            },
+            {
+                "id": 2,
+                "path": "src/auth/jwt.py",
+                "start_line": 54,
+                "end_line": 58
+            },
+            {
+                "id": 3,
+                "path": "src/auth/permissions.py",
+                "start_line": 23,
+                "end_line": 31
+            }
+        ],
+        "query": ["How does authentication validate tokens"],
+        "used": {
+            "spans": 5,
+            "tokens": 1842
+        }
+    }
+
+    // On insufficient context:
+    {
+        "answer": "insufficient context",
+        "citations": [],
+        "query": [...],
+        "hint": "Try broadening your query or checking if the feature exists"
+    }
+
+    NOTES:
+    - Answers include bracketed citations like [1], [2] referencing the citations array
+    - If context is insufficient, returns "insufficient context" as the answer
+    - Local LLM decoder must be available (llama.cpp or cloud fallback)
+    - Reranking is enabled by default for optimal retrieval quality
     """
     return await _context_answer_impl(
         query=query,
@@ -1691,16 +2442,46 @@ async def code_search(
     per_source_limits: Any = None,
     kwargs: Any = None,
 ) -> Dict[str, Any]:
-    """Exact alias of repo_search (hybrid code search with reranking enabled by default).
+    """Alias of repo_search for discoverability. Use repo_search directly.
 
-    Prefer repo_search; this name exists for discoverability in some IDEs/agents.
-    Same parameters and return shape as repo_search.
-    Reranking (rerank_enabled=true) is ON by default for optimal result quality.
+    PRIMARY USE: This is an EXACT ALIAS of repo_search. Exists for discoverability
+    in IDEs and agents that might search for "code_search" instead of "repo_search".
 
-    Memory blending (opt-in):
+    CHOOSE THIS WHEN:
+    - You would use repo_search (they are identical)
+    - Your tooling expects a "code_search" function name
+
+    CHOOSE INSTEAD:
+    - repo_search -> same functionality, canonical name
+    - See repo_search docstring for full documentation
+
+    QUERY EXAMPLES:
+    Good queries (natural language, conceptual):
+      "authentication middleware"     - finds auth-related code
+      "error handling with retry"     - finds retry logic
+      "database connection setup"     - finds DB connection code
+      "user input validation"         - finds validation logic
+      "async task processing"         - finds async patterns
+
+    Bad queries (will return poor results):
+      "auth AND login"                - boolean operators NOT supported
+      "grep -r 'password'"            - not a shell command
+      "class.*Controller"             - regex NOT supported
+      "SELECT * FROM users"           - SQL query, not code search
+      "https://github.com/..."        - URL, not a search query
+
+    ESSENTIAL PARAMETERS:
+    - query (str): Natural language description of code you're looking for.
+
+    All parameters and return format are identical to repo_search.
+    See repo_search documentation for complete parameter reference.
+
+    MEMORY BLENDING (opt-in, delegates to context_search):
     - include_memories: bool. If true, blends memory results with code results.
     - memory_weight: float (default 1.0). Scales memory scores relative to code.
     - per_source_limits: dict, e.g. {"code": 5, "memory": 3}
+
+    RETURNS: Same schema as repo_search.
     """
     # If include_memories is requested, delegate to context_search for blending
     if include_memories:
@@ -1789,31 +2570,105 @@ async def info_request(
     output_format: Any = None,  # "json" (default) or "toon" for token-efficient format
     kwargs: Any = None,
 ) -> Dict[str, Any]:
-    """Simplified codebase retrieval with optional explanation mode.
+    """Simplified codebase discovery with optional explanation mode.
 
-    When to use:
-    - Simple, single-parameter code search with human-readable descriptions
-    - When you want optional explanation mode for richer context
-    - Drop-in replacement for basic codebase retrieval tools
+    PRIMARY USE: Quick, single-parameter code search with human-readable results.
+    Designed as a drop-in replacement for basic "find code about X" queries.
 
-    Key parameters:
-    - info_request: str. Natural language description of the code you're looking for.
-    - information_request: str. Alias for info_request.
-    - include_explanation: bool (default false). Add summary, primary_locations, related_concepts.
-    - include_relationships: bool (default false). Add imports_from, calls, related_paths to results.
-    - limit: int (default 10). Maximum results to return.
-    - language: str. Filter by programming language.
-    - under: str. Limit search to specific directory.
-    - repo: str or list[str]. Filter by repository name(s).
-    - output_format: "json" (default) or "toon" for token-efficient TOON format.
+    CHOOSE THIS WHEN:
+    - You want a simple, one-parameter search interface
+    - You want results with human-readable "information" descriptions
+    - You want optional explanation mode for richer context
+    - You're building a simple integration and want minimal complexity
 
-    Returns:
-    - Compact mode (default): results with information field and relevance_score alias
-    - Explanation mode: adds summary, primary_locations, related_concepts, query_understanding
+    CHOOSE INSTEAD:
+    - repo_search -> when you need full control over filtering and parameters
+    - context_answer -> when you need an LLM-generated ANSWER, not just results
+    - symbol_graph -> when you need precise call/definition relationships
 
-    Example:
-    - {"info_request": "database connection pooling"}
-    - {"info_request": "authentication middleware", "include_explanation": true}
+    QUERY EXAMPLES:
+    Good queries (natural language descriptions):
+      "database connection pooling"     - finds DB connection code
+      "authentication middleware"       - finds auth-related code
+      "error handling patterns"         - finds error handling logic
+      "user input validation"           - finds validation code
+      "caching implementation"          - finds cache logic
+      "logging configuration"           - finds logging setup
+      "API endpoint handlers"           - finds route handlers
+
+    Bad queries (too vague or wrong format):
+      "code"                           - too vague
+      "the function"                   - unspecific
+      "*.py"                           - glob pattern, use path_glob param
+      "auth|login"                     - boolean syntax not supported
+      "line 42"                        - use file reading for specific lines
+
+    ESSENTIAL PARAMETERS:
+    - info_request (str): Natural language description of code you're looking for.
+    - information_request (str): Alias for info_request.
+
+    EXPLANATION MODE PARAMETERS:
+    - include_explanation (bool, default=False): When true, adds:
+      - summary: Brief overview of what was found
+      - primary_locations: Key file paths
+      - related_concepts: Technical concepts discovered
+      - query_understanding: How the query was interpreted
+
+    - include_relationships (bool, default=False): When true, adds to each result:
+      - imports_from: Modules this code imports
+      - calls: Functions this code calls
+      - related_paths: Related files
+
+    COMMON PARAMETERS:
+    - limit (int, default=10): Maximum results to return.
+    - language (str): Filter by language ("python", "typescript", etc.)
+    - under (str): Restrict to directory path.
+    - repo (str | list[str]): Filter by repo. Use "*" for all repos.
+    - output_format (str): "json" or "toon" for token-efficient format.
+    - include_snippet (bool, default=True): Include code snippets.
+
+    RETURNS (compact mode, default):
+    {
+        "ok": true,
+        "results": [
+            {
+                "information": "Found function 'authenticate' in src/auth.py (lines 42-67)",
+                "relevance_score": 0.85,   // Alias for score
+                "score": 0.85,
+                "path": "src/auth.py",
+                "symbol": "authenticate",
+                "start_line": 42,
+                "end_line": 67
+            }
+        ],
+        "total": 5
+    }
+
+    RETURNS (explanation mode, include_explanation=True):
+    {
+        "ok": true,
+        "results": [...],
+        "summary": "Found 5 authentication-related functions across 3 files",
+        "primary_locations": ["src/auth.py", "src/middleware/auth.py"],
+        "related_concepts": ["jwt", "token", "session", "middleware"],
+        "query_understanding": "Looking for authentication implementation code",
+        "confidence": {
+            "level": "high",
+            "score": 0.82,
+            "symbol_matches": 3
+        }
+    }
+
+    USAGE PATTERNS:
+    # Simple discovery:
+    info_request(info_request="database connection")
+
+    # With explanation:
+    info_request(
+        info_request="authentication flow",
+        include_explanation=True,
+        include_relationships=True
+    )
     """
     # Resolve query from either parameter
     query = info_request or information_request
@@ -2004,29 +2859,90 @@ async def context_search(
     output_format: Any = None,
     kwargs: Any = None,
 ) -> Dict[str, Any]:
-    """Blend code search results with memory-store entries (notes, docs) for richer context.
+    """Blend code search results with memory-store entries for richer context.
 
-    When to use:
-    - You want code spans plus relevant memories in one response.
-    - Prefer repo_search for code-only; use context_answer when you need an LLM-written answer.
+    PRIMARY USE: Search code AND retrieve relevant stored memories/notes in one call.
 
-    Key parameters:
-    - query: str or list[str]
-    - include_memories: bool (opt-in). If true, queries the memory collection and merges with code results.
-    - memory_weight: float (default 1.0). Scales memory scores relative to code.
-    - per_source_limits: dict, e.g. {"code": 5, "memory": 3}
-    - All repo_search filters are supported and passed through.
-    - output_format: "json" (default) or "toon" for token-efficient TOON format.
-    - rerank_enabled: bool (default true). ONNX reranker is ON by default for better relevance.
-    - repo: str or list[str]. Filter by repo name(s). Use "*" to search all repos (disable auto-filter).
-      By default, auto-detects current repo from CURRENT_REPO env and filters to it.
+    CHOOSE THIS WHEN:
+    - You want code results PLUS relevant memories (notes, docs, decisions)
+    - You're searching for something where team knowledge might help
+    - You want to surface both implementation AND documentation/context
+    - You need to check if there are existing notes about a topic
 
-    Returns:
-    - {"results": [{"source": "code"| "memory", ...}, ...], "total": N[, "memory_note": str]}
-    - In compact mode, results are reduced to lightweight records.
+    CHOOSE INSTEAD:
+    - repo_search -> when you ONLY want code results (faster, no memory overhead)
+    - context_answer -> when you need an LLM-generated EXPLANATION
+    - memory_find -> when you ONLY want memories (no code search)
 
-    Example:
-    - include_memories=true, per_source_limits={"code": 6, "memory": 2}, path_glob="docs/**"
+    QUERY EXAMPLES:
+    Good queries (conceptual, topic-based):
+      "authentication design decisions"  - finds code + stored auth decisions
+      "API versioning strategy"          - finds API code + design notes
+      "database migration approach"      - finds migration code + notes
+      "caching invalidation policy"      - finds cache code + policy notes
+      "error handling conventions"       - finds error code + team standards
+
+    Bad queries (too narrow for memory blending):
+      "def authenticate("               - too specific, use repo_search
+      "class UserController"            - exact match, use repo_search
+      "line 42 of auth.py"              - specific location, just read the file
+      "git commit abc123"               - not a search query
+      "npm install express"             - command, not a query
+
+    ESSENTIAL PARAMETERS:
+    - query (str | list[str]): Natural language description of what you're looking for.
+
+    MEMORY BLENDING PARAMETERS:
+    - include_memories (bool, default=False): MUST SET TO TRUE to enable memory blending.
+      Without this, context_search behaves identically to repo_search.
+    - memory_weight (float, default=1.0): Scale memory scores relative to code.
+      Values >1.0 boost memories, <1.0 favor code results.
+    - per_source_limits (dict): Control results per source.
+      Example: {"code": 6, "memory": 3} returns max 6 code + 3 memory results.
+
+    COMMON PARAMETERS (same as repo_search):
+    - limit (int, default=10): Maximum total results.
+    - language (str): Filter code results by language.
+    - under (str): Restrict code search to directory path.
+    - include_snippet (bool, default=True): Include code snippets.
+    - rerank_enabled (bool, default=True): Cross-encoder reranking.
+    - output_format (str): "json" or "toon" for token-efficient format.
+    - repo (str | list[str]): Filter by repo. Use "*" for all repos.
+
+    RETURNS:
+    {
+        "ok": true,
+        "results": [
+            {
+                "source": "code",         // "code" or "memory"
+                "score": 0.85,
+                "path": "src/auth.py",    // For code results
+                "symbol": "authenticate",
+                "start_line": 42,
+                "end_line": 67,
+                "snippet": "def auth..."
+            },
+            {
+                "source": "memory",       // Memory results have different shape
+                "score": 0.78,
+                "content": "Auth uses JWT tokens with 24h expiry...",
+                "metadata": {"kind": "note", "created_at": "2024-..."}
+            }
+        ],
+        "total": 9,
+        "memory_note": "3 memories included"  // Optional note about memory results
+    }
+
+    USAGE PATTERN:
+    # To blend code + memories (recommended pattern):
+    context_search(
+        query="authentication architecture",
+        include_memories=True,
+        per_source_limits={"code": 5, "memory": 3}
+    )
+
+    # To search code only (same as repo_search):
+    context_search(query="authentication", include_memories=False)
     """
     return await _context_search_impl(
         query=query,
@@ -2112,34 +3028,110 @@ if _PATTERN_SEARCH_ENABLED:
     ) -> Dict[str, Any]:
         """Find structurally similar code patterns across all languages.
 
-        Accepts EITHER code examples OR natural language descriptions - auto-detects which.
+        PRIMARY USE: Search by CODE STRUCTURE rather than text/semantics.
+        Finds code with similar control flow, API usage, or patterns.
 
-        When to use:
-        - Find code with similar control flow (retry loops, error handling, etc.)
-        - Cross-language pattern matching (Python pattern → Go/Rust/Java matches)
-        - Detect code duplication based on structure, not syntax
-        - Search by pattern description ("retry with backoff", "resource cleanup")
+        CHOOSE THIS WHEN:
+        - You have a CODE EXAMPLE and want to find similar patterns
+        - You want to find code STRUCTURALLY similar (not just textually)
+        - You're searching across languages (Python pattern -> find in Go/Rust/Java)
+        - You want to detect code duplication based on structure
+        - You're searching for patterns like "retry with backoff", "singleton"
 
-        Key parameters:
-        - query: str. Code snippet OR natural language description of pattern.
-        - query_mode: str. "code", "description", or "auto" (default). Explicit override for detection.
-        - language: str. Language hint for code examples (also triggers code mode in auto).
-        - limit: int (default 10). Maximum results to return.
-        - min_score: float (default 0.3). Minimum similarity score threshold.
-        - include_snippet: bool (default false). Include code snippets in results.
-        - target_languages: list[str]. Filter to specific target languages.
-        - output_format: "json" (default) or "toon" for token-efficient format.
-        - compact: bool. If true with TOON, use minimal fields.
-        - aroma_rerank: bool (default true). Enable AROMA-style pruning and reranking.
-        - aroma_alpha: float (default 0.6). Weight for pruned similarity vs original score.
+        CHOOSE INSTEAD:
+        - repo_search -> when searching by CONCEPT, not structural pattern
+        - symbol_graph -> when looking for call/definition relationships
+        - context_answer -> when you need an EXPLANATION
 
-        Returns:
-        - {ok, results: [{path, start_line, end_line, score, language, ...}], total, query_signature}
+        QUERY EXAMPLES:
 
-        Examples:
-        - pattern_search(query="for i in range(3): try: ... except: time.sleep(2**i)")
-        - pattern_search(query="retry with exponential backoff", query_mode="description")
-        - pattern_search(query="if err != nil { return err }", language="go")
+        Code example mode (query_mode="code" or auto-detected):
+          "for i in range(3): try: ... except: time.sleep(2**i)"
+          "if err != nil { return err }"
+          "async function $NAME($$$) { await $EXPR; }"
+          "with open(file) as f: data = f.read()"
+          "try { ... } catch (e) { console.error(e); throw e; }"
+
+        Description mode (query_mode="description" or auto-detected):
+          "retry with exponential backoff"
+          "resource cleanup pattern"
+          "singleton implementation"
+          "factory pattern"
+          "decorator wrapping function"
+          "error handling with logging"
+          "connection pooling"
+          "rate limiting implementation"
+
+        Bad queries (wrong use case):
+          "authentication code"           - use repo_search for concepts
+          "who calls authenticate"        - use symbol_graph
+          "explain the auth flow"         - use context_answer
+          "files in src/"                 - use glob/file tools
+
+        ESSENTIAL PARAMETERS:
+        - query (str): EITHER a code example OR a natural language pattern description.
+          The mode is auto-detected, or you can force it with query_mode.
+
+        MODE CONTROL PARAMETERS:
+        - query_mode (str, default="auto"): How to interpret the query.
+          - "auto": Auto-detect if query is code or description
+          - "code": Force interpretation as code example
+          - "description": Force interpretation as pattern description
+        - language (str): Language hint for code examples. Also triggers code mode
+          in auto-detection. Example: "python", "go", "rust", "typescript"
+
+        COMMON PARAMETERS:
+        - limit (int, default=10): Maximum results to return.
+        - min_score (float, default=0.3): Minimum similarity score threshold.
+        - include_snippet (bool, default=True): Include code snippets in results.
+        - target_languages (list[str]): Filter results to specific languages.
+          Example: ["python", "go"] to find pattern only in Python and Go files.
+        - repo (str | list[str]): Filter by repo. Use "*" for all repos.
+        - output_format (str): "json" or "toon" for token-efficient format.
+        - compact (bool): Minimal response fields.
+
+        AROMA RERANKING PARAMETERS:
+        - aroma_rerank (bool, default=True): Enable AROMA-style pruning/reranking.
+          Improves precision by penalizing partial matches.
+        - aroma_alpha (float, default=0.6): Weight for pruned similarity vs original.
+          Higher values trust pruning more.
+
+        RETURNS:
+        {
+            "ok": true,
+            "results": [
+                {
+                    "path": "src/client.py",
+                    "start_line": 89,
+                    "end_line": 102,
+                    "score": 0.78,
+                    "language": "python",
+                    "snippet": "for attempt in range(max_retries):..."
+                }
+            ],
+            "total": 7,
+            "query_mode": "code",         // or "description"
+            "query_signature": "...",     // Internal: pattern signature used
+            "detection": {                // Mode detection metadata
+                "confidence": 0.95,
+                "ast_validated": true,
+                "signals": {"ast_parsed": 1.0, "nl_similarity": 0.42}
+            }
+        }
+
+        CROSS-LANGUAGE EXAMPLE:
+        # Find Go error handling similar to Python pattern
+        pattern_search(
+            query="if err != nil { return err }",
+            language="go",
+            target_languages=["python", "rust", "java"]
+        )
+
+        NOTES:
+        - Pattern vectors must be indexed (PATTERN_VECTORS=1 during indexing)
+        - Auto-detection uses AST parsing + NL embedder comparison
+        - Code mode uses structural pattern matching
+        - Description mode uses semantic search on pattern descriptions
         """
         return await _pattern_search_impl(
             query=query,

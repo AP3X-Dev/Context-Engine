@@ -62,6 +62,7 @@ SNIPPET_MAX_BYTES = safe_int(
     logger=logger,
     context="MCP_SNIPPET_MAX_BYTES",
 )
+SEARCH_COMPACT_DEFAULT = os.environ.get("SEARCH_COMPACT_DEFAULT", "0").lower() in {"1", "true", "yes", "on"}
 
 
 async def _repo_search_impl(
@@ -457,7 +458,7 @@ async def _repo_search_impl(
             repo_filter = [detected_repo]
 
     compact_raw = compact
-    compact = _to_bool(compact, False)
+    compact = _to_bool(compact, SEARCH_COMPACT_DEFAULT)
     # If snippets are requested, do not compact (we need snippet field in results)
     if include_snippet:
         compact = False
