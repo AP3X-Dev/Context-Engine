@@ -53,7 +53,7 @@ def _should_use_toon(output_format: Any) -> bool:
 # ---------------------------------------------------------------------------
 # TOON response formatting
 # ---------------------------------------------------------------------------
-def _format_results_as_toon(response: Dict[str, Any], compact: bool = False) -> Dict[str, Any]:
+def _format_results_as_toon(response: Dict[str, Any], compact: bool = False, lean: bool = False) -> Dict[str, Any]:
     """Convert response to use TOON-formatted results string instead of JSON array.
 
     Preserves structured 'results_json' for internal callers while replacing 'results'
@@ -62,11 +62,12 @@ def _format_results_as_toon(response: Dict[str, Any], compact: bool = False) -> 
     Args:
         response: Search response dict with 'results' key
         compact: If True, use more compact TOON encoding
+        lean: If True, skip results_json to reduce response size for agents
 
     Returns:
         Modified response with:
         - 'results': TOON-encoded string (for external clients)
-        - 'results_json': Original list (for internal callers to parse)
+        - 'results_json': Original list (for internal callers to parse) - omitted if lean=True
         - 'output_format': "toon" marker
     """
     try:
@@ -74,8 +75,9 @@ def _format_results_as_toon(response: Dict[str, Any], compact: bool = False) -> 
 
         results = response.get("results", [])
         if isinstance(results, list):
-            # Preserve original list for internal callers before TOON encoding
-            response["results_json"] = results
+            # Only preserve results_json if not in lean mode (saves tokens for agents)
+            if not lean:
+                response["results_json"] = results
             # Replace with TOON string for external token savings
             toon_results = encode_search_results(results, compact=compact)
             response["results"] = toon_results

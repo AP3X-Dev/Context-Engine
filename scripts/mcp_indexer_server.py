@@ -193,9 +193,6 @@ from scripts.mcp_impl.symbol_graph import (
 )
 from scripts.mcp_impl.pattern_search import _pattern_search_impl
 
-# Global lock to guard temporary env toggles used during ReFRAG retrieval/decoding
-_ENV_LOCK = threading.Lock()
-
 # Shared utilities (lex hashing, snippet highlighter)
 try:
     from scripts.utils import highlight_snippet as _do_highlight_snippet
@@ -1118,6 +1115,7 @@ async def repo_search(
     repo: Any = None,
     compact: Any = None,
     output_format: Any = None,
+    lean: Any = None,
     args: Any = None,
     kwargs: Any = None,
 ) -> Dict[str, Any]:
@@ -1170,6 +1168,7 @@ async def repo_search(
         repo=repo,
         compact=compact,
         output_format=output_format,
+        lean=lean,
         args=args,
         kwargs=kwargs,
         get_embedding_model_fn=_get_embedding_model,
@@ -1180,7 +1179,7 @@ async def repo_search(
 
 
 @mcp.tool()
-async def repo_search_compat(**arguments) -> Dict[str, Any]:
+async def repo_search_compat(arguments: Any = None, **kwargs) -> Dict[str, Any]:
     """Compatibility wrapper for repo_search (lenient argument handling).
 
     When to use:
@@ -1191,7 +1190,8 @@ async def repo_search_compat(**arguments) -> Dict[str, Any]:
     Note: Prefer calling repo_search directly when possible.
     """
     try:
-        args = arguments or {}
+        # Handle both: arguments={...} dict OR **kwargs spread
+        args = arguments if isinstance(arguments, dict) else (kwargs or {})
         # Core query: prefer explicit query, else q/text; allow queries list passthrough
         query = args.get("query") or args.get("q") or args.get("text")
         queries = args.get("queries")
@@ -1233,11 +1233,8 @@ async def repo_search_compat(**arguments) -> Dict[str, Any]:
             "mode": args.get("mode"),
             "repo": args.get("repo"),  # Cross-codebase isolation
             "output_format": args.get("output_format"),  # "json" or "toon"
-            # Alias passthroughs captured by repo_search(**kwargs)
+            "lean": args.get("lean"),  # Token optimization for agents
             "queries": queries,
-            "q": args.get("q"),
-            "text": args.get("text"),
-            "top_k": args.get("top_k"),
         }
         # Drop Nones to avoid overriding repo_search defaults unnecessarily
         clean = {k: v for k, v in forward.items() if v is not None}
@@ -1660,7 +1657,6 @@ async def context_answer(
         kwargs=kwargs,
         get_embedding_model_fn=_get_embedding_model,
         expand_query_fn=expand_query,
-        env_lock=_ENV_LOCK,
         prepare_filters_and_retrieve_fn=_ca_prepare_filters_and_retrieve,
     )
  

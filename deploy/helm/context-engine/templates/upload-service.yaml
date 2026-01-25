@@ -1,0 +1,91 @@
+{{- if .Values.uploadService.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upload-service
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: upload-service
+spec:
+  replicas: {{ .Values.uploadService.replicas }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: upload-service
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.labels" . | nindent 8 }}
+        component: upload-service
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.uploadService.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.uploadService.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.uploadService.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.uploadService.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "context-engine.selectorLabels" . | nindent 14 }}
+              component: upload-service
+      {{- end }}
+      containers:
+        - name: upload-service
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: {{ .Values.uploadService.workingDir }}
+          command:
+            {{- toYaml .Values.uploadService.command | nindent 12 }}
+          args:
+            {{- toYaml .Values.uploadService.args | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.uploadService.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.uploadService.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "context-engine.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.uploadService.resources | nindent 12 }}
+          volumeMounts:
+            - name: work-volume
+              mountPath: /work
+            - name: codebase-volume
+              mountPath: /work/.codebase
+      volumes:
+        - name: work-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeRepos.name }}
+        - name: codebase-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeMetadata.name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: upload-service
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: upload-service
+spec:
+  type: {{ .Values.uploadService.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.uploadService.service.port }}
+      targetPort: http
+      {{- if eq .Values.uploadService.service.type "NodePort" }}
+      nodePort: {{ .Values.uploadService.service.nodePort }}
+      {{- end }}
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: upload-service
+{{- end }}

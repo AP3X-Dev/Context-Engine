@@ -1,0 +1,564 @@
+# Default values for context-engine
+# This is a YAML-formatted file.
+
+# -- Global settings
+global:
+  # -- Environment name (dev, staging, prod)
+  environment: dev
+  # -- Team label for resources
+  team: ai
+  # -- Application name used in labels
+  appName: context-engine
+
+# -- Namespace configuration
+namespace:
+  # -- Create namespace
+  create: true
+  # -- Namespace name
+  name: context-engine
+
+# -- Image configuration
+image:
+  # -- Image repository
+  repository: context-engine
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (defaults to Chart appVersion)
+  tag: ""
+  # -- Image pull secrets
+  pullSecrets: []
+
+# -- Service account configuration
+serviceAccount:
+  # -- Create service account
+  create: true
+  # -- Service account name
+  name: context-engine
+  # -- Annotations for service account
+  annotations: {}
+
+# -- Common labels for all resources
+commonLabels: {}
+
+# -- Common annotations for all resources
+commonAnnotations: {}
+
+# -- Pod security context (applied to all pods)
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# -- Container security context
+containerSecurityContext: {}
+
+# -----------------------------------------------------------------------------
+# Qdrant Configuration
+# -----------------------------------------------------------------------------
+qdrant:
+  # -- Enable Qdrant
+  enabled: true
+  # -- Image configuration
+  image:
+    repository: qdrant/qdrant
+    tag: latest
+    pullPolicy: Always
+  # -- Number of replicas (StatefulSet)
+  replicas: 1
+  # -- Service configuration
+  service:
+    # -- Service type for internal access
+    type: ClusterIP
+    # -- HTTP port
+    httpPort: 6333
+    # -- gRPC port
+    grpcPort: 6334
+  # -- External service configuration
+  externalService:
+    # -- Enable external service
+    enabled: true
+    # -- Service type for external access
+    type: NodePort
+    # -- NodePort for HTTP
+    httpNodePort: 30333
+    # -- NodePort for gRPC
+    grpcNodePort: 30334
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: "1"
+      memory: 8Gi
+    limits:
+      cpu: "4"
+      memory: 24Gi
+  # -- Persistence configuration
+  persistence:
+    # -- Enable persistence
+    enabled: true
+    # -- Storage class name
+    storageClassName: gp3-sc
+    # -- Storage size
+    size: 50Gi
+    # -- Access modes
+    accessModes:
+      - ReadWriteOnce
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# -----------------------------------------------------------------------------
+# MCP Indexer HTTP Configuration
+# -----------------------------------------------------------------------------
+mcpIndexerHttp:
+  # -- Enable MCP Indexer HTTP
+  enabled: true
+  # -- Number of replicas
+  replicas: 1
+  # -- Command to run
+  command:
+    - python
+    - /app/scripts/mcp_indexer_server.py
+  # -- Container ports
+  ports:
+    http: 8001
+    health: 18001
+  # -- Service configuration
+  service:
+    type: ClusterIP
+    port: 8003
+    healthPort: 18003
+  # -- External service configuration
+  externalService:
+    enabled: true
+    type: NodePort
+    nodePort: 30806
+    healthNodePort: 30807
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 8Gi
+    limits:
+      cpu: "1"
+      memory: 16Gi
+  # -- Liveness probe
+  livenessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 120
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 6
+  # -- Readiness probe
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 6
+  # -- HPA configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  # -- Topology spread constraints
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+
+# -----------------------------------------------------------------------------
+# MCP Memory HTTP Configuration
+# -----------------------------------------------------------------------------
+mcpMemoryHttp:
+  # -- Enable MCP Memory HTTP
+  enabled: true
+  # -- Number of replicas
+  replicas: 1
+  # -- Command to run
+  command:
+    - python
+    - /app/scripts/mcp_memory_server.py
+  # -- Container ports
+  ports:
+    http: 8000
+    health: 18000
+  # -- Service configuration
+  service:
+    type: ClusterIP
+    port: 8002
+    healthPort: 18002
+  # -- External service configuration
+  externalService:
+    enabled: true
+    type: NodePort
+    nodePort: 30804
+    healthNodePort: 30805
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # -- Liveness probe
+  livenessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  # -- Readiness probe
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 10
+    periodSeconds: 5
+  # -- HPA configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  # -- Topology spread constraints
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+
+# -----------------------------------------------------------------------------
+# Upload Service Configuration
+# -----------------------------------------------------------------------------
+uploadService:
+  # -- Enable Upload Service
+  enabled: true
+  # -- Number of replicas
+  replicas: 1
+  # -- Command to run
+  command:
+    - uvicorn
+  # -- Arguments
+  args:
+    - scripts.upload_service:app
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8002"
+    - --workers
+    - "2"
+  # -- Working directory
+  workingDir: /app
+  # -- Container port
+  port: 8002
+  # -- Service configuration
+  service:
+    type: NodePort
+    port: 8002
+    nodePort: 30810
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # -- Environment variables
+  env:
+    UPLOAD_SERVICE_HOST: "0.0.0.0"
+    UPLOAD_SERVICE_PORT: "8002"
+    WORK_DIR: /work
+    MAX_BUNDLE_SIZE_MB: "100"
+    UPLOAD_TIMEOUT_SECS: "300"
+  # -- HPA configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  # -- Topology spread constraints
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+
+# -----------------------------------------------------------------------------
+# Watcher Configuration
+# -----------------------------------------------------------------------------
+watcher:
+  # -- Enable Watcher
+  enabled: true
+  # -- Number of replicas
+  replicas: 1
+  # -- Command to run
+  command:
+    - python
+    - /app/scripts/watch_index.py
+  # -- Working directory
+  workingDir: /work
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
+  # -- Environment variables (in addition to configmap)
+  env:
+    WATCH_ROOT: /work
+    WATCH_DEBOUNCE_SECS: "2.0"
+    WATCH_USE_POLLING: "1"
+    MULTI_REPO_MODE: "0"
+  # -- Init containers configuration
+  initContainers:
+    # -- Wait for Qdrant
+    waitForQdrant:
+      enabled: true
+      maxAttempts: 60
+      sleepSeconds: 5
+    # -- Initialize collection
+    initCollection:
+      enabled: true
+
+# -----------------------------------------------------------------------------
+# Learning Reranker Worker Configuration
+# -----------------------------------------------------------------------------
+learningRerankerWorker:
+  # -- Enable Learning Reranker Worker
+  enabled: true
+  # -- Number of replicas
+  replicas: 1
+  # -- Command to run
+  command:
+    - python
+    - /app/scripts/learning_reranker_worker.py
+    - --daemon
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # -- HPA configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  # -- Topology spread constraints
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+
+# -----------------------------------------------------------------------------
+# Persistence Configuration
+# -----------------------------------------------------------------------------
+persistence:
+  # -- Code repositories PVC
+  codeRepos:
+    # -- Enable PVC
+    enabled: true
+    # -- PVC name
+    name: code-repos-pvc
+    # -- Storage class
+    storageClassName: efs-sc
+    # -- Access modes
+    accessModes:
+      - ReadWriteMany
+    # -- Storage size
+    size: 50Gi
+    # -- Existing PV name (optional, for pre-provisioned volumes)
+    existingVolumeName: ""
+  # -- Code metadata PVC (.codebase directory)
+  codeMetadata:
+    enabled: true
+    name: code-metadata-pvc
+    storageClassName: efs-sc
+    accessModes:
+      - ReadWriteMany
+    size: 10Gi
+    existingVolumeName: ""
+  # -- Code models PVC (HuggingFace cache)
+  codeModels:
+    enabled: true
+    name: code-models-pvc
+    storageClassName: efs-sc
+    accessModes:
+      - ReadWriteMany
+    size: 20Gi
+    existingVolumeName: ""
+
+# -----------------------------------------------------------------------------
+# Ingress Configuration
+# -----------------------------------------------------------------------------
+ingress:
+  # -- Enable ingress
+  enabled: true
+  # -- Ingress class name
+  className: nginx
+  # -- Annotations
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+  # -- Hostname
+  host: ""
+  # -- TLS configuration
+  tls: []
+  # -- Path configurations
+  paths:
+    indexer:
+      path: /indexer(/|$)(.*)
+      pathType: ImplementationSpecific
+      servicePort: 8003
+    memory:
+      path: /memory(/|$)(.*)
+      pathType: ImplementationSpecific
+      servicePort: 8002
+    upload:
+      path: /upload(/|$)(.*)
+      pathType: ImplementationSpecific
+      servicePort: 8002
+    qdrant:
+      path: /qdrant(/|$)(.*)
+      pathType: ImplementationSpecific
+      servicePort: 6333
+  # -- Additional ingress for admin routes
+  admin:
+    enabled: true
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    path: /admin
+    pathType: Prefix
+
+# -----------------------------------------------------------------------------
+# ConfigMap Configuration
+# -----------------------------------------------------------------------------
+config:
+  # -- Collection name
+  collectionName: codebase
+  # -- Qdrant URL (auto-generated if not set)
+  qdrantUrl: ""
+  # -- Embedding model
+  embeddingModel: BAAI/bge-base-en-v1.5
+  # -- Embedding provider
+  embeddingProvider: fastembed
+  
+  # -- FastMCP settings
+  fastmcp:
+    host: "0.0.0.0"
+    port: "8000"
+    indexerPort: "8001"
+    httpPort: "8002"
+    indexerHttpPort: "8003"
+    httpTransport: http
+  
+  # -- Indexing settings
+  indexing:
+    microChunks: "1"
+    maxMicroChunksPerFile: "200"
+    chunkLines: "60"
+    chunkOverlap: "10"
+    semanticChunks: "1"
+    useEnhancedAst: "1"
+  
+  # -- Hybrid search settings
+  hybrid:
+    expand: "0"
+    inProcess: "1"
+    miniWeight: "1.0"
+    perPath: "1"
+    recencyWeight: "0.1"
+    resultsCache: "128"
+    resultsCacheEnabled: "1"
+    snippetDiskRead: "1"
+    symbolBoost: "0.35"
+  
+  # -- Reranker settings
+  reranker:
+    enabled: "1"
+    model: jinaai/jina-reranker-v2-base-multilingual
+    timeoutMs: "3000"
+    topN: "20"
+    returnM: "20"
+  
+  # -- ReFRAG settings
+  refrag:
+    mode: "1"
+    decoder: "1"
+    decoderMode: prompt
+    gateFirst: "1"
+    candidates: "200"
+    runtime: glm
+  
+  # -- GLM API settings (for decoder)
+  glm:
+    apiBase: ""
+    apiKey: ""
+    model: glm-4.7
+    modelFast: glm-4.5
+  
+  # -- Graph settings
+  graph:
+    ragEnabled: "1"
+    importOnIndex: "1"
+    contextRadius: "2"
+  
+  # -- Symbol graph
+  symbolGraph:
+    enabled: "1"
+  
+  # -- Multi-repo mode
+  multiRepoMode: "1"
+  
+  # -- Repo auto filter
+  repoAutoFilter: "1"
+  
+  # -- Memory settings
+  memory:
+    sseEnabled: "true"
+    mcpUrl: ""
+    autodetect: "1"
+  
+  # -- Authentication settings
+  auth:
+    enabled: "0"
+    sharedToken: ""
+    adminToken: ""
+  
+  # -- Additional environment variables (will be merged into configmap)
+  extraEnv: {}
+
+# -----------------------------------------------------------------------------
+# Secrets Configuration  
+# -----------------------------------------------------------------------------
+secrets:
+  # -- Create secrets
+  create: false
+  # -- Secret name
+  name: context-engine-secrets
+  # -- Secret data (base64 encoded in actual secret)
+  data: {}

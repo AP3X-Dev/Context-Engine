@@ -1,0 +1,171 @@
+{{- if .Values.watcher.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watcher
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: watcher
+spec:
+  replicas: {{ .Values.watcher.replicas }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: watcher
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.labels" . | nindent 8 }}
+        component: watcher
+    spec:
+      serviceAccountName: {{ include "context-engine.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: init-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating required directories..."
+              mkdir -p /work/.codebase/rerank_weights /work/.codebase/rerank_events
+              chmod 777 /work/.codebase/rerank_weights /work/.codebase/rerank_events
+              echo "Directories created successfully"
+          volumeMounts:
+            - name: codebase-volume
+              mountPath: /work/.codebase
+        {{- if .Values.watcher.initContainers.waitForQdrant.enabled }}
+        - name: wait-for-qdrant
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for Qdrant to be ready..."
+              max_attempts={{ .Values.watcher.initContainers.waitForQdrant.maxAttempts }}
+              attempt=0
+              until curl -sf http://qdrant:{{ .Values.qdrant.service.httpPort }}/readyz; do
+                attempt=$((attempt + 1))
+                if [ $attempt -ge $max_attempts ]; then
+                  echo "ERROR: Qdrant not ready after $max_attempts attempts"
+                  exit 1
+                fi
+                echo "Qdrant not ready (attempt $attempt/$max_attempts), retrying in {{ .Values.watcher.initContainers.waitForQdrant.sleepSeconds }}s..."
+                sleep {{ .Values.watcher.initContainers.waitForQdrant.sleepSeconds }}
+              done
+              echo "Qdrant is ready!"
+          env:
+            - name: QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: QDRANT_URL
+        {{- end }}
+        {{- if .Values.watcher.initContainers.initCollection.enabled }}
+        - name: init-collection
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Initializing Qdrant collection..."
+              cd /app
+              PYTHONPATH=/app python /app/scripts/create_indexes.py
+              echo "Collection initialized, warming caches..."
+              PYTHONPATH=/app python /app/scripts/warm_all_collections.py || echo "Cache warming skipped (optional)"
+              echo "Running health check..."
+              PYTHONPATH=/app python /app/scripts/health_check.py || echo "Health check completed"
+              echo "Initialization complete!"
+          env:
+            - name: QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: QDRANT_URL
+            - name: COLLECTION_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: COLLECTION_NAME
+            - name: HF_HOME
+              value: /work/models/hf-cache
+            - name: XDG_CACHE_HOME
+              value: /work/models/hf-cache
+            - name: HF_HUB_CACHE
+              value: /work/models/hf-cache/huggingface
+          envFrom:
+            - configMapRef:
+                name: {{ include "context-engine.fullname" . }}-config
+          volumeMounts:
+            - name: work-volume
+              mountPath: /work
+            - name: codebase-volume
+              mountPath: /work/.codebase
+            - name: models-volume
+              mountPath: /work/models
+        {{- end }}
+      containers:
+        - name: watcher
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: {{ .Values.watcher.workingDir }}
+          command:
+            {{- toYaml .Values.watcher.command | nindent 12 }}
+          env:
+            - name: QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: QDRANT_URL
+            - name: COLLECTION_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: COLLECTION_NAME
+            - name: EMBEDDING_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: EMBEDDING_MODEL
+            - name: EMBEDDING_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: EMBEDDING_PROVIDER
+            - name: HF_HOME
+              value: /work/models/hf-cache
+            - name: XDG_CACHE_HOME
+              value: /work/models/hf-cache
+            {{- range $key, $value := .Values.watcher.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "context-engine.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.watcher.resources | nindent 12 }}
+          volumeMounts:
+            - name: work-volume
+              mountPath: /work
+            - name: codebase-volume
+              mountPath: /work/.codebase
+            - name: models-volume
+              mountPath: /work/models
+      volumes:
+        - name: work-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeRepos.name }}
+        - name: codebase-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeMetadata.name }}
+        - name: models-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeModels.name }}
+{{- end }}

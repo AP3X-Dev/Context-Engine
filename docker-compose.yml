@@ -162,7 +162,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       # Lexical vector config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -374,7 +374,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       # Lexical vector config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -464,7 +464,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       # Lexical vector config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -488,6 +488,9 @@ services:
     entrypoint: [ "sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work" ]
     restart: "no" # Run once on startup, do not restart after completion
     cpus: 2.0
+    entrypoint: ["sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work"]
+    restart: "no"  # Run once on startup, do not restart after completion
+    cpus: 4.0
     networks:
       - dev-remote-network
 
@@ -526,7 +529,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       - WATCH_DEBOUNCE_SECS=${WATCH_DEBOUNCE_SECS:-1.5}
