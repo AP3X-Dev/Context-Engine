@@ -1,0 +1,4 @@
+
+# Customer-specific Helm values
+values-*.yaml
+!values-example.yaml

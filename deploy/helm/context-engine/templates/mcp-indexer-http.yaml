@@ -1,0 +1,181 @@
+{{- if .Values.mcpIndexerHttp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-indexer-http
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-indexer-http
+spec:
+  replicas: {{ .Values.mcpIndexerHttp.replicas }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: mcp-indexer-http
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.labels" . | nindent 8 }}
+        component: mcp-indexer-http
+    spec:
+      serviceAccountName: {{ include "context-engine.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.mcpIndexerHttp.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.mcpIndexerHttp.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.mcpIndexerHttp.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.mcpIndexerHttp.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "context-engine.selectorLabels" . | nindent 14 }}
+              component: mcp-indexer-http
+      {{- end }}
+      initContainers:
+        - name: init-rerank-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /work/.codebase/rerank_weights /work/.codebase/rerank_events && chmod 777 /work/.codebase/rerank_weights /work/.codebase/rerank_events
+          volumeMounts:
+            - name: codebase-volume
+              mountPath: /work/.codebase
+      containers:
+        - name: mcp-indexer-http
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.mcpIndexerHttp.command | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcpIndexerHttp.ports.http }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.mcpIndexerHttp.ports.health }}
+              protocol: TCP
+          env:
+            - name: QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: QDRANT_URL
+            - name: COLLECTION_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: COLLECTION_NAME
+            - name: EMBEDDING_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: EMBEDDING_MODEL
+            - name: HF_HOME
+              value: /work/models/hf-cache
+            - name: XDG_CACHE_HOME
+              value: /work/models/hf-cache
+            - name: HF_HUB_CACHE
+              value: /work/models/hf-cache/huggingface
+            - name: FASTMCP_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: FASTMCP_HOST
+            - name: FASTMCP_INDEXER_PORT
+              value: {{ .Values.mcpIndexerHttp.ports.http | quote }}
+            - name: FASTMCP_TRANSPORT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "context-engine.fullname" . }}-config
+                  key: FASTMCP_HTTP_TRANSPORT
+            - name: FASTMCP_HEALTH_PORT
+              value: {{ .Values.mcpIndexerHttp.ports.health | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "context-engine.fullname" . }}-config
+          {{- with .Values.mcpIndexerHttp.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.mcpIndexerHttp.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.mcpIndexerHttp.resources | nindent 12 }}
+          volumeMounts:
+            - name: work-volume
+              mountPath: /work
+            - name: codebase-volume
+              mountPath: /work/.codebase
+            - name: models-volume
+              mountPath: /work/models
+            - name: codebase-volume
+              mountPath: /tmp/rerank_weights
+              subPath: rerank_weights
+            - name: codebase-volume
+              mountPath: /tmp/rerank_events
+              subPath: rerank_events
+      volumes:
+        - name: work-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeRepos.name }}
+        - name: codebase-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeMetadata.name }}
+        - name: models-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeModels.name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-indexer-http
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-indexer-http
+spec:
+  type: {{ .Values.mcpIndexerHttp.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.mcpIndexerHttp.service.port }}
+      targetPort: http
+      protocol: TCP
+    - name: health
+      port: {{ .Values.mcpIndexerHttp.service.healthPort }}
+      targetPort: health
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: mcp-indexer-http
+{{- if .Values.mcpIndexerHttp.externalService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-indexer-http-external
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-indexer-http
+spec:
+  type: {{ .Values.mcpIndexerHttp.externalService.type }}
+  ports:
+    - name: http
+      port: {{ .Values.mcpIndexerHttp.service.port }}
+      targetPort: http
+      nodePort: {{ .Values.mcpIndexerHttp.externalService.nodePort }}
+      protocol: TCP
+    - name: health
+      port: {{ .Values.mcpIndexerHttp.service.healthPort }}
+      targetPort: health
+      nodePort: {{ .Values.mcpIndexerHttp.externalService.healthNodePort }}
+      protocol: TCP
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    component: mcp-indexer-http
+{{- end }}
+{{- end }}
