@@ -586,24 +586,32 @@ class _AuthHeaderASGIMiddleware:
 def _add_auth_middleware():
     """Wrap FastMCP's ASGI app with auth header extraction middleware.
     
-    FastMCP creates its Starlette app lazily inside run(). We intercept uvicorn.run()
-    to wrap the app after FastMCP creates it but before uvicorn starts serving.
+    FastMCP calls streamable_http_app() or sse_app() to create the Starlette app.
+    We patch these methods to wrap the returned app with our middleware.
     """
     logger.info("Setting up auth header middleware...")
     try:
-        import uvicorn
-        _original_uvicorn_run = uvicorn.run
+        # Patch streamable_http_app
+        if hasattr(mcp, "streamable_http_app"):
+            _orig_streamable = mcp.streamable_http_app
+            def _patched_streamable(*args, **kwargs):
+                app = _orig_streamable(*args, **kwargs)
+                logger.info(f"Wrapping streamable_http_app with auth middleware")
+                return _AuthHeaderASGIMiddleware(app)
+            mcp.streamable_http_app = _patched_streamable
         
-        def _patched_uvicorn_run(app, **kwargs):
-            logger.info(f"uvicorn.run() intercepted, wrapping app: {type(app).__name__}")
-            wrapped_app = _AuthHeaderASGIMiddleware(app)
-            logger.info("Auth header ASGI middleware injected successfully")
-            return _original_uvicorn_run(wrapped_app, **kwargs)
+        # Patch sse_app for SSE transport
+        if hasattr(mcp, "sse_app"):
+            _orig_sse = mcp.sse_app
+            def _patched_sse(*args, **kwargs):
+                app = _orig_sse(*args, **kwargs)
+                logger.info(f"Wrapping sse_app with auth middleware")
+                return _AuthHeaderASGIMiddleware(app)
+            mcp.sse_app = _patched_sse
         
-        uvicorn.run = _patched_uvicorn_run
-        logger.info("Patched uvicorn.run() for auth middleware injection")
+        logger.info("Patched FastMCP app factory methods for auth middleware injection")
     except Exception as e:
-        logger.warning(f"Failed to patch uvicorn for auth middleware: {e}")
+        logger.warning(f"Failed to patch FastMCP for auth middleware: {e}")
 
 
 # Capture tool registry automatically by wrapping the decorator once

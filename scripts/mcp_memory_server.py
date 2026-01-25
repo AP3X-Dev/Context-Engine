@@ -218,19 +218,27 @@ class _AuthHeaderASGIMiddleware:
 
 def _add_auth_middleware():
     """Wrap FastMCP's ASGI app with auth header extraction middleware."""
+    logger.info("Setting up auth header middleware...")
     try:
-        import uvicorn
-        _original_uvicorn_run = uvicorn.run
+        if hasattr(mcp, "streamable_http_app"):
+            _orig_streamable = mcp.streamable_http_app
+            def _patched_streamable(*args, **kwargs):
+                app = _orig_streamable(*args, **kwargs)
+                logger.info(f"Wrapping streamable_http_app with auth middleware")
+                return _AuthHeaderASGIMiddleware(app)
+            mcp.streamable_http_app = _patched_streamable
         
-        def _patched_uvicorn_run(app, **kwargs):
-            wrapped_app = _AuthHeaderASGIMiddleware(app)
-            logger.info("Auth header ASGI middleware injected via uvicorn.run() patch")
-            return _original_uvicorn_run(wrapped_app, **kwargs)
+        if hasattr(mcp, "sse_app"):
+            _orig_sse = mcp.sse_app
+            def _patched_sse(*args, **kwargs):
+                app = _orig_sse(*args, **kwargs)
+                logger.info(f"Wrapping sse_app with auth middleware")
+                return _AuthHeaderASGIMiddleware(app)
+            mcp.sse_app = _patched_sse
         
-        uvicorn.run = _patched_uvicorn_run
-        logger.debug("Patched uvicorn.run() for auth middleware injection")
+        logger.info("Patched FastMCP app factory methods for auth middleware injection")
     except Exception as e:
-        logger.warning(f"Failed to patch uvicorn for auth middleware: {e}")
+        logger.warning(f"Failed to patch FastMCP for auth middleware: {e}")
 
 
 _TOOLS_REGISTRY: list[dict] = []
