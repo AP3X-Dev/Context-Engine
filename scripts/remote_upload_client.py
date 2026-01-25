@@ -580,7 +580,10 @@ class RemoteUploadClient:
                 # Skip paths that cannot be resolved
                 continue
 
-            cached_hash = get_cached_file_hash(abs_path, self.repo_name)
+            # Translate to container path for cache lookup (cache stores container paths)
+            # This handles the case where bridge runs locally but cache was created in container
+            cache_key = self._translate_to_container_path(abs_path)
+            cached_hash = get_cached_file_hash(cache_key, self.repo_name)
 
             if not path.exists():
                 # File was deleted
@@ -631,12 +634,12 @@ class RemoteUploadClient:
                 # Unchanged (content same despite stat change)
                 changes["unchanged"].append(path)
 
-            # Update caches
+            # Update caches (use container path for cache consistency)
             try:
                 self._stat_cache[abs_path] = (getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)), stat.st_size)
             except Exception as e:
                 logger.debug(f"Suppressed exception: {e}")
-            set_cached_file_hash(abs_path, current_hash, self.repo_name)
+            set_cached_file_hash(cache_key, current_hash, self.repo_name)
 
         # Detect moves by looking for files with same content hash
         # but different paths (requires additional tracking)
@@ -662,7 +665,9 @@ class RemoteUploadClient:
         for deleted_path in deleted_files:
             try:
                 # Try to get cached hash first, fallback to file content
-                cached_hash = get_cached_file_hash(str(deleted_path), self.repo_name)
+                # Use container path for cache lookup (cache stores container paths)
+                cache_key = self._translate_to_container_path(str(deleted_path))
+                cached_hash = get_cached_file_hash(cache_key, self.repo_name)
                 if cached_hash:
                     deleted_hashes[cached_hash] = deleted_path
                     continue
@@ -777,7 +782,9 @@ class RemoteUploadClient:
                         content = f.read()
                     file_hash = hashlib.sha1(content).hexdigest()
                     content_hash = f"sha1:{file_hash}"
-                    previous_hash = get_cached_file_hash(str(path.resolve()), self.repo_name)
+                    # Use container path for cache lookup (cache stores container paths)
+                    cache_key = self._translate_to_container_path(str(path.resolve()))
+                    previous_hash = get_cached_file_hash(cache_key, self.repo_name)
 
                     # Write file to bundle
                     bundle_file_path = files_dir / "updated" / rel_path
@@ -853,7 +860,9 @@ class RemoteUploadClient:
             for path in changes["deleted"]:
                 rel_path = path.relative_to(Path(self.workspace_path)).as_posix()
                 try:
-                    previous_hash = get_cached_file_hash(str(path.resolve()), self.repo_name)
+                    # Use container path for cache lookup (cache stores container paths)
+                    cache_key = self._translate_to_container_path(str(path.resolve()))
+                    previous_hash = get_cached_file_hash(cache_key, self.repo_name)
 
                     operation = {
                         "operation": "deleted",
