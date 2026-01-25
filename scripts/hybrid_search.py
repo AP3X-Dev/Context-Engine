@@ -30,10 +30,26 @@ import json
 import math
 import logging
 import threading
+import contextvars
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, TYPE_CHECKING
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+
+
+# Context variable for per-request ReFRAG config (set by context_answer, read here)
+# This allows concurrent requests to have isolated config without env var mutation
+def _get_contextvar_refrag_config() -> Dict[str, Any]:
+    """Try to read ReFRAG config from contextvars (set by context_answer).
+    Returns empty dict if context_answer module not available or not in request context.
+    """
+    try:
+        from scripts.mcp_impl.context_answer import get_refrag_config
+        return get_refrag_config()
+    except ImportError:
+        return {}
+    except Exception:
+        return {}
 
 # Ensure /work or repo root is in sys.path for scripts imports
 _ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -820,6 +836,11 @@ def run_hybrid_search(
     mode: str | None = None,
     repo: str | list[str] | None = None,  # Filter by repo name(s); "*" to disable auto-filter
     per_query: int | None = None,  # Base candidate retrieval per query (default: adaptive)
+    # ReFRAG config - pass explicitly to avoid env var mutation (thread-safe)
+    refrag_mode: bool | None = None,
+    refrag_gate_first: bool | None = None,
+    refrag_candidates: int | None = None,
+    budget_tokens: int | None = None,
 ) -> List[Dict[str, Any]]:
     # Clear importance cache for fresh lookups
     _clear_importance_cache()
@@ -833,7 +854,11 @@ def run_hybrid_search(
         return _run_hybrid_search_impl(
             client, queries, limit, per_path, language, under, kind, symbol, ext,
             not_filter, case, path_regex, path_glob, not_glob, expand, model,
-            collection, mode, repo, per_query
+            collection, mode, repo, per_query,
+            refrag_mode=refrag_mode,
+            refrag_gate_first=refrag_gate_first,
+            refrag_candidates=refrag_candidates,
+            budget_tokens=budget_tokens,
         )
     finally:
         return_qdrant_client(client)
@@ -860,6 +885,11 @@ def _run_hybrid_search_impl(
     mode: str | None,
     repo: str | list[str] | None,
     per_query: int | None,
+    # ReFRAG config - pass explicitly to avoid env var mutation (thread-safe)
+    refrag_mode: bool | None = None,
+    refrag_gate_first: bool | None = None,
+    refrag_candidates: int | None = None,
+    budget_tokens: int | None = None,
 ) -> List[Dict[str, Any]]:
     """Internal implementation of hybrid search with provided client."""
     # Optional timing for debugging (set DEBUG_SEARCH_TIMING=1 to enable)
@@ -1525,19 +1555,32 @@ def _run_hybrid_search_impl(
     # Adaptive gating: disable for short/ambiguous queries to avoid over-filtering
     flt_gated = flt
     try:
-        gate_first = str(os.environ.get("REFRAG_GATE_FIRST", "0")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        refrag_on = str(os.environ.get("REFRAG_MODE", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        cand_n = int(os.environ.get("REFRAG_CANDIDATES", "200") or 200)
+        # Check contextvars first (set by context_answer for concurrent request isolation)
+        _cv_cfg = _get_contextvar_refrag_config()
+
+        # Use explicit parameters if provided, else contextvar, else env vars (thread-safe)
+        if refrag_gate_first is not None:
+            gate_first = refrag_gate_first
+        elif _cv_cfg.get("refrag_gate_first") is not None:
+            gate_first = _cv_cfg["refrag_gate_first"]
+        else:
+            gate_first = str(os.environ.get("REFRAG_GATE_FIRST", "0")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        if refrag_mode is not None:
+            refrag_on = refrag_mode
+        elif _cv_cfg.get("refrag_mode") is not None:
+            refrag_on = _cv_cfg["refrag_mode"]
+        else:
+            refrag_on = str(os.environ.get("REFRAG_MODE", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        if refrag_candidates is not None:
+            cand_n = refrag_candidates
+        elif _cv_cfg.get("refrag_candidates") is not None:
+            cand_n = _cv_cfg["refrag_candidates"]
+        else:
+            cand_n = int(os.environ.get("REFRAG_CANDIDATES", "200") or 200)
     except (ValueError, TypeError):
         gate_first, refrag_on, cand_n = False, False, 200
 
@@ -1781,12 +1824,8 @@ def _run_hybrid_search_impl(
     # Optional ReFRAG-style mini-vector gating: add compact-vector RRF if enabled
     # Skip in dense-preserving mode (would distort pure dense ordering)
     try:
-        if not _DENSE_PRESERVING and not _gate_first_ran and os.environ.get("REFRAG_MODE", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
+        # Use explicit refrag_on from earlier (thread-safe, already resolved from param or env)
+        if not _DENSE_PRESERVING and not _gate_first_ran and refrag_on:
             try:
                 mini_queries = [_project_mini(list(v), MINI_VEC_DIM) for v in embedded]
                 mini_sets: List[List[Any]] = [

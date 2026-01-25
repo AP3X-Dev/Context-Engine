@@ -43,7 +43,6 @@ __all__ = [
 import os
 import re
 import logging
-import threading
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -57,10 +56,6 @@ from scripts.mcp_impl.workspace import _default_collection
 from scripts.logger import safe_int, ValidationError
 
 logger = logging.getLogger(__name__)
-
-# Module-level lock for environment variable manipulation in context_answer
-# Prevents concurrent requests from clobbering each other's env changes
-_CA_ENV_LOCK = threading.Lock()
 
 # Keys to strip from citations for slim MCP output (agents only need path + rel_path)
 _VERBOSE_PATH_KEYS = ("host_path", "container_path", "client_path")
@@ -2738,8 +2733,7 @@ async def _context_answer_impl(
         from scripts.mcp_impl.admin_tools import _get_embedding_model
         get_embedding_model_fn = _get_embedding_model
 
-    # Use injected lock or fall back to module-level lock
-    _lock = env_lock if env_lock is not None else _CA_ENV_LOCK
+    del env_lock  # unused
 
     # Use injected retrieval function or fall back to module function
     _retrieve_fn = prepare_filters_and_retrieve_fn if prepare_filters_and_retrieve_fn is not None else _ca_prepare_filters_and_retrieve
@@ -2851,8 +2845,6 @@ async def _context_answer_impl(
     model = get_embedding_model_fn(model_name)
 
     # Prepare environment toggles for ReFRAG gate-first and budgeting
-    if not _lock.acquire(timeout=30.0):
-        logger.warning("env_lock timeout, potential deadlock detected")
     prev = {
         "REFRAG_MODE": os.environ.get("REFRAG_MODE"),
         "REFRAG_GATE_FIRST": os.environ.get("REFRAG_GATE_FIRST"),
@@ -3005,7 +2997,6 @@ async def _context_answer_impl(
                     logger.error(f"Failed to restore env var {k}: {e}")
             else:
                 os.environ[k] = v
-        _lock.release()
 
     if err is not None:
         return {
