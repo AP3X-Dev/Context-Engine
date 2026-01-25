@@ -586,35 +586,22 @@ class _AuthHeaderASGIMiddleware:
 def _add_auth_middleware():
     """Wrap FastMCP's ASGI app with auth header extraction middleware.
     
-    FastMCP creates its Starlette app lazily. We wrap mcp.run() to inject
-    middleware after the app is created but before uvicorn starts.
+    FastMCP creates its Starlette app lazily inside run(). We intercept uvicorn.run()
+    to wrap the app after FastMCP creates it but before uvicorn starts serving.
     """
-    _original_run = mcp.run
-    _middleware_added = [False]
-    
-    def _patched_run(*args, **kwargs):
-        if not _middleware_added[0]:
-            # FastMCP creates the app when run() is called
-            # Check if app property exists and try to wrap it
-            for attr in ("_app", "app", "_asgi_app", "_sse_app", "_http_app"):
-                try:
-                    original_app = getattr(mcp, attr, None)
-                    if original_app is not None and callable(original_app):
-                        wrapped = _AuthHeaderASGIMiddleware(original_app)
-                        setattr(mcp, attr, wrapped)
-                        logger.info(f"Auth header middleware added (wrapped mcp.{attr})")
-                        _middleware_added[0] = True
-                        break
-                except Exception as e:
-                    logger.debug(f"Could not wrap mcp.{attr}: {e}")
-            
-            if not _middleware_added[0]:
-                logger.warning("Could not add auth middleware - app not found")
+    try:
+        import uvicorn
+        _original_uvicorn_run = uvicorn.run
         
-        return _original_run(*args, **kwargs)
-    
-    mcp.run = _patched_run
-    logger.debug("Patched mcp.run() for auth middleware injection")
+        def _patched_uvicorn_run(app, **kwargs):
+            wrapped_app = _AuthHeaderASGIMiddleware(app)
+            logger.info("Auth header ASGI middleware injected via uvicorn.run() patch")
+            return _original_uvicorn_run(wrapped_app, **kwargs)
+        
+        uvicorn.run = _patched_uvicorn_run
+        logger.debug("Patched uvicorn.run() for auth middleware injection")
+    except Exception as e:
+        logger.warning(f"Failed to patch uvicorn for auth middleware: {e}")
 
 
 # Capture tool registry automatically by wrapping the decorator once
