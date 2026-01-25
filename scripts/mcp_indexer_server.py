@@ -1657,7 +1657,6 @@ async def context_answer(
         kwargs=kwargs,
         get_embedding_model_fn=_get_embedding_model,
         expand_query_fn=expand_query,
-        env_lock=_ENV_LOCK,
         prepare_filters_and_retrieve_fn=_ca_prepare_filters_and_retrieve,
     )
  
