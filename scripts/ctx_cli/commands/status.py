@@ -794,9 +794,11 @@ def print_status_table(
             print("│ " + "Model".ljust(25) + " Status".ljust(23) + "│")
             print("├" + "─" * 50 + "┤")
 
+            # Derive ready status from timing values when explicit booleans not present
+            warmup_status = warmup_info.get("status", "cold")
             models = [
-                ("Embedding", warmup_info.get("embedding_ready", False)),
-                ("Reranker", warmup_info.get("reranker_ready", False)),
+                ("Embedding", warmup_info.get("embedding_ready", warmup_info.get("embedding_ms") is not None)),
+                ("Reranker", warmup_info.get("reranker_ready", warmup_info.get("reranker_ms") is not None)),
                 ("Decoder", warmup_info.get("decoder_ready", False)),
             ]
 
