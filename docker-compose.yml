@@ -216,7 +216,7 @@ services:
     command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/learning_reranker_worker.py --daemon"]
     depends_on:
       - qdrant
-      - mcp_indexer
+      - redis
     env_file:
       - .env
     environment:

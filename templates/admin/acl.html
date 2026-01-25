@@ -1,474 +1,570 @@
 {% extends "admin/base.html" %}
 
 {% block content %}
-  <div class="card" data-staging-enabled="{{ '1' if staging_enabled else '0' }}">
-    <h2>Users</h2>
-
-    <table>
-      <tr><th>id</th><th>username</th><th>role</th></tr>
-      {% if users and users|length > 0 %}
-        {% for u in users %}
-          <tr>
-            <td>{{ u.id }}</td>
-            <td>{{ u.username }}</td>
-            <td>{{ u.role }}</td>
-          </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="3">(none)</td></tr>
-      {% endif %}
-    </table>
-
-    <h3>Create User</h3>
-    <form method="post" action="/admin/users">
-      <label>Username<br /><input name="username" /></label><br /><br />
-      <label>Password<br /><input type="password" name="password" /></label><br /><br />
-      <label>
-        Role<br />
-        <select name="role">
-          <option value="user" selected>user</option>
-          <option value="admin">admin</option>
-        </select>
-      </label>
-      <br /><br />
-      <button type="submit">Create User</button>
-    </form>
+<div class="page-header flex justify-between items-center">
+  <div>
+    <h1 class="page-title">Admin Dashboard</h1>
+    <p class="page-subtitle">Manage users, collections, and access control</p>
   </div>
+  <div class="flex gap-2">
+    <button class="btn btn-secondary" onclick="refreshAll()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      Refresh
+    </button>
+  </div>
+</div>
 
-  <div class="card">
-    <h2>Collections</h2>
+<!-- Tab Navigation -->
+<div class="tabs">
+  <button class="tab active" data-tab="collections">Collections</button>
+  <button class="tab" data-tab="users">Users</button>
+  <button class="tab" data-tab="grants">Access Control</button>
+</div>
+
+<!-- Collections Tab -->
+<div class="tab-content active" id="tab-collections">
+  <div class="card relative" id="collections-card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Collections</h2>
+        <p class="card-subtitle">Manage your indexed codebases</p>
+      </div>
+      <div class="flex gap-2">
+        <span class="badge" id="collections-count">{{ collections|length if collections else 0 }} collections</span>
+      </div>
+    </div>
 
     {% if deletion_enabled %}
-      <p class="error">
-        WARNING: Collection deletion is enabled on this server. Deleting a collection can remove server-side files under {{ work_dir }}.
-        If {{ work_dir }} is a bind mount of your only copy of code, you can lose data. Practical guidance: Standard compose: treat /work as “possibly my real repo”. Keep CTXCE_ADMIN_COLLECTION_DELETE_ENABLED=0 unless you really mean it.
-      </p>
-    {% else %}
-      <p class="muted">Collection deletion is disabled by server configuration.</p>
+    <div class="alert alert-danger" style="background: var(--danger-bg); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;">
+      <div class="flex items-center gap-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-danger"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span class="text-danger" style="font-size: 13px;">Collection deletion enabled. Deleting may remove files under {{ work_dir }}.</span>
+      </div>
+    </div>
     {% endif %}
 
-    <table
-      id="collections-table"
-      data-deletion-enabled="{{ '1' if deletion_enabled else '0' }}"
-      data-work-dir="{{ work_dir }}"
-      data-refresh-ms="{{ refresh_ms }}"
-    >
-      <thead>
-        <tr>
-          <th>id</th>
-          <th>qdrant_collection</th>
-          <th>indexing_status</th>
-          <th>mapping</th>
-          <th>applied hash</th>
-          <th>pending hash</th>
-          <th>current hash</th>
-          <th>actions</th>
-        </tr>
-      </thead>
-      <tbody id="collections-body">
-      {% if collections and collections|length > 0 %}
-        {% for c in collections %}
-          <tr
-            {% if c.needs_recreate %}
-              style="background:#f8d7da"
-            {% elif c.needs_snapshot_refresh %}
-              style="background:#fbe8c6"
-            {% elif c.needs_reindex_only %}
-              style="background:#fff3cd"
-            {% endif %}
-          >
-            <td>{{ c.id }}</td>
-            <td>
-              <div>{{ c.qdrant_collection }}</div>
-              {% if c.container_path %}
-                <div class="muted">{{ c.container_path }}</div>
-              {% endif %}
-              {% if c.repo_name %}
-                <div class="muted">repo: {{ c.repo_name }}</div>
-              {% endif %}
-            </td>
-            <td>
-              <div>{{ c.indexing_state or "idle" }}</div>
-              {% if c.indexing_started_at %}
-                <div class="muted">started {{ c.indexing_started_at }}</div>
-              {% endif %}
-              {% if c.progress_files_processed is not none %}
-                <div class="muted">
-                  {{ c.progress_files_processed }}
-                  {% if c.progress_total_files %}
-                    / {{ c.progress_total_files }}
-                  {% endif %}
-                  files
-                </div>
-              {% endif %}
-              {% if c.progress_current_file %}
-                <div class="muted small">{{ c.progress_current_file }}</div>
-              {% endif %}
-            </td>
-            <td>
-              {% if c.has_mapping %}
-                <span class="muted">ok ({{ c.mapping_count }})</span>
-              {% else %}
-                <span class="error">missing</span>
-              {% endif %}
-              {% if c.needs_recreate %}
-                <div class="error">
-                  maintenance needed — recreate
-                  {% if c.drift_recreate_keys %}
-                    <div class="small">
-                      {% for key in c.drift_recreate_keys %}
-                        <span class="badge">{{ key }}</span>
-                      {% endfor %}
-                    </div>
-                  {% endif %}
-                </div>
-              {% elif c.needs_snapshot_refresh %}
-                <div class="warning">
-                  config applied — refresh snapshot
-                  {% if c.snapshot_only_recreate_keys %}
-                    <div class="small">
-                      {% for key in c.snapshot_only_recreate_keys %}
-                        <span class="badge muted">{{ key }}</span>
-                      {% endfor %}
-                    </div>
-                  {% endif %}
-                  {% if c.snapshot_refresh_triggered %}
-                    <div class="muted small">env snapshot refreshed automatically</div>
-                  {% endif %}
-                </div>
-              {% elif c.needs_reindex_only %}
-                <div class="warning">
-                  config drift — reindex
-                  {% if c.drift_reindex_keys %}
-                    <div class="small">
-                      {% for key in c.drift_reindex_keys %}
-                        <span class="badge muted">{{ key }}</span>
-                      {% endfor %}
-                    </div>
-                  {% endif %}
-                </div>
-              {% endif %}
-            </td>
-            <td><span class="muted">{{ c.applied_indexing_hash }}</span></td>
-            <td>
-              {% if c.pending_indexing_hash %}
-                <span class="error">{{ c.pending_indexing_hash }}</span>
-              {% else %}
-                <span class="muted">—</span>
-              {% endif %}
-            </td>
-            <td><span class="muted">{{ c.current_indexing_hash }}</span></td>
-            <td>
-              {% if c.has_mapping %}
-                <form class="inline js-confirmable" data-confirm="Reindex collection {{ c.qdrant_collection }}?" method="post" action="/admin/collections/reindex">
-                  <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
-                  <button type="submit">Reindex</button>
-                </form>
-                <form class="inline js-confirmable" data-confirm="Recreate collection {{ c.qdrant_collection }}? This will recreate Qdrant collection and reindex all files." method="post" action="/admin/collections/recreate">
-                  <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
-                  <button type="submit">Recreate</button>
-                </form>
-              {% endif %}
-              {% if deletion_enabled %}
-                <form class="inline js-confirmable" data-confirm="Delete collection {{ c.qdrant_collection }}? This may delete server-side files under {{ work_dir }} if filesystem cleanup is selected." method="post" action="/admin/collections/delete">
-                  <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
-                  <label class="muted" style="display:block; margin-bottom:6px;">
-                    <input type="checkbox" name="delete_fs" value="1" />
-                    Also delete filesystem (dangerous)
-                  </label>
-                  <button type="submit">Delete</button>
-                </form>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="8">(none)</td></tr>
-      {% endif %}
-      </tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>Grants</h2>
-
-    <table>
-      <tr><th>collection</th><th>username</th><th>user_id</th><th>permission</th><th></th></tr>
-      {% if grants and grants|length > 0 %}
-        {% for g in grants %}
+    <div class="table-container">
+      <table id="collections-table" data-deletion-enabled="{{ '1' if deletion_enabled else '0' }}" data-work-dir="{{ work_dir }}" data-refresh-ms="{{ refresh_ms }}" data-staging-enabled="{{ '1' if staging_enabled else '0' }}">
+        <thead>
           <tr>
-            <td>{{ g.qdrant_collection }}</td>
-            <td>{{ g.username }}</td>
-            <td>{{ g.user_id }}</td>
-            <td>{{ g.permission }}</td>
-            <td>
-              <form method="post" action="/admin/acl/revoke">
-                <input type="hidden" name="user_id" value="{{ g.user_id }}" />
-                <input type="hidden" name="collection" value="{{ g.qdrant_collection }}" />
-                <button type="submit">Revoke</button>
-              </form>
-            </td>
+            <th>Collection</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Config</th>
+            <th class="hide-mobile">Hashes</th>
+            <th>Actions</th>
           </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="5">(none)</td></tr>
-      {% endif %}
-    </table>
-
-    <h3>Grant Collection Access</h3>
-    <form method="post" action="/admin/acl/grant">
-      <label>User ID<br /><input name="user_id" /></label><br /><br />
-      <label>
-        Collection<br />
-        <select name="collection">
+        </thead>
+        <tbody id="collections-body">
           {% if collections and collections|length > 0 %}
             {% for c in collections %}
-              <option value="{{ c.qdrant_collection }}">{{ c.qdrant_collection }}</option>
+            <tr data-collection="{{ c.qdrant_collection }}">
+              <td>
+                <div style="font-weight: 500; color: var(--text-primary);">{{ c.qdrant_collection }}</div>
+                {% if c.container_path %}
+                <div class="text-muted text-sm truncate" title="{{ c.container_path }}">{{ c.container_path }}</div>
+                {% endif %}
+                {% if c.repo_name %}
+                <div class="text-muted text-sm">{{ c.repo_name }}</div>
+                {% endif %}
+              </td>
+              <td>
+                {% if c.indexing_state == 'indexing' %}
+                <span class="badge badge-warning"><span class="badge-dot"></span>Indexing</span>
+                {% elif c.indexing_state == 'error' %}
+                <span class="badge badge-danger"><span class="badge-dot"></span>Error</span>
+                {% else %}
+                <span class="badge badge-success"><span class="badge-dot"></span>Idle</span>
+                {% endif %}
+                {% if c.indexing_started_at %}
+                <div class="text-muted text-sm" style="margin-top: 4px;">{{ c.indexing_started_at }}</div>
+                {% endif %}
+              </td>
+              <td style="min-width: 180px;">
+                {% if c.progress_files_processed is not none and c.progress_total_files %}
+                  {% set pct = ((c.progress_files_processed / c.progress_total_files) * 100)|round|int if c.progress_total_files > 0 else 0 %}
+                  <div class="progress" style="margin-bottom: 4px;">
+                    <div class="progress-bar" style="width: {{ pct }}%"></div>
+                  </div>
+                  <div class="progress-text">{{ c.progress_files_processed }} / {{ c.progress_total_files }} files ({{ pct }}%)</div>
+                {% elif c.progress_files_processed is not none %}
+                  <div class="text-muted text-sm">{{ c.progress_files_processed }} files</div>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+                {% if c.progress_current_file %}
+                <div class="text-muted text-sm truncate" style="margin-top: 2px;" title="{{ c.progress_current_file }}">{{ c.progress_current_file }}</div>
+                {% endif %}
+              </td>
+              <td>
+                {% if c.has_mapping %}
+                <span class="badge badge-success">OK ({{ c.mapping_count }})</span>
+                {% else %}
+                <span class="badge badge-danger">Missing</span>
+                {% endif %}
+                {% if c.needs_recreate %}
+                <div style="margin-top: 6px;">
+                  <span class="badge badge-danger">Needs Recreate</span>
+                  {% if c.drift_recreate_keys %}
+                  <div class="text-muted text-sm" style="margin-top: 2px;">{{ c.drift_recreate_keys|join(', ') }}</div>
+                  {% endif %}
+                </div>
+                {% elif c.needs_snapshot_refresh %}
+                <div style="margin-top: 6px;">
+                  <span class="badge badge-warning">Refresh Snapshot</span>
+                </div>
+                {% elif c.needs_reindex_only %}
+                <div style="margin-top: 6px;">
+                  <span class="badge badge-warning">Needs Reindex</span>
+                </div>
+                {% endif %}
+              </td>
+              <td class="hide-mobile">
+                <div class="font-mono text-muted text-sm" title="Applied: {{ c.applied_indexing_hash or 'none' }}">{{ (c.applied_indexing_hash or '—')[:8] }}</div>
+                {% if c.pending_indexing_hash %}
+                <div class="font-mono text-warning text-sm" title="Pending: {{ c.pending_indexing_hash }}">{{ c.pending_indexing_hash[:8] }}</div>
+                {% endif %}
+              </td>
+              <td>
+                <div class="action-group">
+                  {% if c.has_mapping %}
+                  <form class="inline-form js-confirm" data-confirm-title="Reindex Collection" data-confirm-message="Reindex {{ c.qdrant_collection }}? This will re-index all files." method="post" action="/admin/collections/reindex">
+                    <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
+                    <button type="submit" class="btn btn-ghost btn-sm" title="Reindex">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    </button>
+                  </form>
+                  <form class="inline-form js-confirm" data-confirm-title="Recreate Collection" data-confirm-message="Recreate {{ c.qdrant_collection }}? This will delete and rebuild the entire collection." method="post" action="/admin/collections/recreate">
+                    <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
+                    <button type="submit" class="btn btn-ghost btn-sm" title="Recreate">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                    </button>
+                  </form>
+                  {% endif %}
+                  {% if deletion_enabled %}
+                  <form class="inline-form js-confirm" data-confirm-title="Delete Collection" data-confirm-message="Delete {{ c.qdrant_collection }}? This cannot be undone." method="post" action="/admin/collections/delete">
+                    <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
+                    <button type="submit" class="btn btn-danger btn-sm" title="Delete">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                  </form>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
             {% endfor %}
+          {% else %}
+          <tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">No collections found</td></tr>
           {% endif %}
-        </select>
-      </label>
-      <br /><br />
-      <label>
-        Permission<br />
-        <select name="permission">
-          <option value="read" selected>read</option>
-          <option value="write">write</option>
-          <option value="admin">admin</option>
-        </select>
-      </label>
-      <br /><br />
-      <button type="submit">Grant</button>
-    </form>
-
-    <p class="muted">Collection permissions are enforced by MCP servers when CTXCE_MCP_ACL_ENFORCE=1 (and CTXCE_ACL_ALLOW_ALL=0).</p>
+        </tbody>
+      </table>
+    </div>
   </div>
-  <script>
-    (function () {
-      document.addEventListener("submit", function (event) {
-        const form = event.target && event.target.closest
-          ? event.target.closest(".js-confirmable")
-          : null;
-        if (!form) {
-          return;
-        }
-        const message = form.getAttribute("data-confirm") || "Are you sure?";
-        if (!window.confirm(message)) {
-          event.preventDefault();
-        }
-      });
+</div>
 
-      const tableEl = document.getElementById("collections-table");
-      const REFRESH_MS = Math.max(
-        1000,
-        parseInt((tableEl && tableEl.dataset && tableEl.dataset.refreshMs) || "5000", 10)
-      );
-      const bodyEl = document.getElementById("collections-body");
-      if (!bodyEl) {
-        return;
-      }
-      const stagingCard = document.querySelector(".card[data-staging-enabled]");
-      const stagingEnabled =
-        stagingCard && stagingCard.dataset && stagingCard.dataset.stagingEnabled === "1";
-      const deletionEnabled =
-        tableEl && tableEl.dataset && tableEl.dataset.deletionEnabled === "1";
-      const workDir = (tableEl && tableEl.dataset && tableEl.dataset.workDir) || "";
+<!-- Users Tab -->
+<div class="tab-content" id="tab-users" style="display: none;">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Users</h2>
+        <p class="card-subtitle">Manage user accounts</p>
+      </div>
+      <button class="btn btn-primary" onclick="toggleCreateUser()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Create User
+      </button>
+    </div>
 
-      function escapeHtml(str) {
-        return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;");
-      }
+    <!-- Create User Form (hidden by default) -->
+    <div id="create-user-form" style="display: none; margin-bottom: 24px; padding: 20px; background: var(--bg-secondary); border-radius: var(--radius); border: 1px solid var(--border);">
+      <h3 style="margin: 0 0 16px 0; font-size: 14px; font-weight: 600;">New User</h3>
+      <form method="post" action="/admin/users" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; align-items: end;">
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Username</label>
+          <input type="text" name="username" class="form-input" placeholder="Enter username" required />
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Password</label>
+          <input type="password" name="password" class="form-input" placeholder="Enter password" required />
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Role</label>
+          <select name="role" class="form-select">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="flex gap-2">
+          <button type="submit" class="btn btn-primary">Create</button>
+          <button type="button" class="btn btn-secondary" onclick="toggleCreateUser()">Cancel</button>
+        </div>
+      </form>
+    </div>
 
-      function safeValue(val) {
-        return val === null || val === undefined ? "" : val;
-      }
-
-      function renderRow(c) {
-        let highlight = "";
-        if (c.needs_recreate) {
-          highlight = ' style="background:#f8d7da"';
-        } else if (c.needs_snapshot_refresh) {
-          highlight = ' style="background:#fbe8c6"';
-        } else if (c.needs_reindex_only) {
-          highlight = ' style="background:#fff3cd"';
-        }
-        const mappingCountRaw = Number(c.mapping_count);
-        const mappingCount = Number.isFinite(mappingCountRaw) ? mappingCountRaw.toString() : "0";
-        const containerInfo = c.container_path
-          ? `<div class="muted">${escapeHtml(c.container_path)}</div>`
-          : "";
-        const repoInfo = c.repo_name ? `<div class="muted">repo: ${escapeHtml(c.repo_name)}</div>` : "";
-        const mappingInfo = c.has_mapping
-          ? `<span class="muted">ok (${escapeHtml(mappingCount)})</span>`
-          : '<span class="error">missing</span>';
-        let maintenance = "";
-        if (c.needs_recreate) {
-          const badges = (c.drift_recreate_keys || [])
-            .map((key) => `<span class="badge">${escapeHtml(key)}</span>`)
-            .join(" ");
-          maintenance = `
-            <div class="error">
-              maintenance needed — recreate
-              ${badges ? `<div class="small">${badges}</div>` : ""}
-            </div>`;
-        } else if (c.needs_snapshot_refresh) {
-          const badges = (c.snapshot_only_recreate_keys || [])
-            .map((key) => `<span class="badge muted">${escapeHtml(key)}</span>`)
-            .join(" ");
-          const refreshedNote = c.snapshot_refresh_triggered
-            ? '<div class="muted small">env snapshot refreshed automatically</div>'
-            : "";
-          maintenance = `
-            <div class="warning">
-              config applied — refresh snapshot
-              ${badges ? `<div class="small">${badges}</div>` : ""}
-              ${refreshedNote}
-            </div>`;
-        } else if (c.needs_reindex_only) {
-          const badges = (c.drift_reindex_keys || [])
-            .map((key) => `<span class="badge muted">${escapeHtml(key)}</span>`)
-            .join(" ");
-          maintenance = `
-            <div class="warning">
-              config drift — reindex
-              ${badges ? `<div class="small">${badges}</div>` : ""}
-            </div>`;
-        }
-        const started = c.indexing_started_at
-          ? `<div class="muted">started ${escapeHtml(c.indexing_started_at)}</div>`
-          : "";
-        const filesProcessed =
-          c.progress_files_processed !== null && c.progress_files_processed !== undefined
-            ? `<div class="muted">${c.progress_files_processed}${
-                c.progress_total_files ? ` / ${c.progress_total_files}` : ""
-              } files</div>`
-            : "";
-        const currentFile = c.progress_current_file
-          ? `<div class="muted small">${escapeHtml(c.progress_current_file)}</div>`
-          : "";
-        const actions = c.has_mapping
-          ? `
-            <form class="inline js-confirmable" data-confirm="Reindex collection ${escapeHtml(
-              c.qdrant_collection
-            )}?" method="post" action="/admin/collections/reindex">
-              <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-              <button type="submit">Reindex</button>
-            </form>
-            <form class="inline js-confirmable" data-confirm="Recreate collection ${escapeHtml(
-              c.qdrant_collection
-            )}? This will recreate Qdrant collection and reindex all files." method="post" action="/admin/collections/recreate">
-              <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-              <button type="submit">Recreate</button>
-            </form>
-            ${stagingEnabled && c.staging_status === 'active' ? `
-              <div style="margin: 6px 0;">
-                <div class="muted small">Staging: ${escapeHtml(c.staging_collection || "")}</div>
-                <div class="muted small">State: ${escapeHtml(c.staging_state || "unknown")}</div>
-                <form class="inline js-confirmable" data-confirm="Activate staging for ${escapeHtml(
-                  c.qdrant_collection
-                )}? This will replace the active collection with the staging collection." method="post" action="/admin/staging/activate">
-                  <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-                  <button type="submit" style="background: #28a745; color: white;">Activate</button>
-                </form>
-                <form class="inline js-confirmable" data-confirm="Abort staging for ${escapeHtml(
-                  c.qdrant_collection
-                )}? This will delete the staging collection." method="post" action="/admin/staging/abort">
-                  <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-                  <button type="submit" style="background: #dc3545; color: white;">Abort</button>
-                </form>
-              </div>
-            ` : stagingEnabled && c.staging_status === 'none' ? `
-              <form class="inline js-confirmable" data-confirm="Start staging rebuild for ${escapeHtml(
-                c.qdrant_collection
-              )}? This will create a staging collection and reindex with current configuration." method="post" action="/admin/staging/start">
-                <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-                <button type="submit" style="background: #007bff; color: white;">Start Staging</button>
-              </form>
-            ` : ''}
-            <form class="inline js-confirmable" data-confirm="Copy collection ${escapeHtml(
-              c.qdrant_collection
-            )}? This will create a full copy of the collection." method="post" action="/admin/staging/copy">
-              <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-              <button type="submit">Copy</button>
-            </form>
-          `
-          : "";
-        const deleteHtml = deletionEnabled
-          ? `
-            <form class="inline js-confirmable" data-confirm="Delete collection ${escapeHtml(
-              c.qdrant_collection
-            )}? This may delete server-side files under ${escapeHtml(workDir)} if filesystem cleanup is selected." method="post" action="/admin/collections/delete">
-              <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-              <label class="muted" style="display:block; margin-bottom:6px;">
-                <input type="checkbox" name="delete_fs" value="1" />
-                Also delete filesystem (dangerous)
-              </label>
-              <button type="submit">Delete</button>
-            </form>
-          `
-          : "";
-
-        return `
-          <tr${highlight}>
-            <td>${escapeHtml(String(safeValue(c.id)))}</td>
-            <td>
-              <div>${escapeHtml(c.qdrant_collection || "")}</div>
-              ${containerInfo}
-              ${repoInfo}
-            </td>
-            <td>
-              <div>${escapeHtml(c.indexing_state || "idle")}</div>
-              ${started}
-              ${filesProcessed}
-              ${currentFile}
-            </td>
-            <td>
-              ${mappingInfo}
-              ${maintenance}
-            </td>
-            <td><span class="muted">${escapeHtml(c.applied_indexing_hash || "")}</span></td>
-            <td>
-              ${
-                c.pending_indexing_hash
-                  ? `<span class="error">${escapeHtml(c.pending_indexing_hash)}</span>`
-                  : '<span class="muted">—</span>'
-              }
-            </td>
-            <td><span class="muted">${escapeHtml(c.current_indexing_hash || "")}</span></td>
-            <td>
-              ${actions}
-              ${deleteHtml}
-            </td>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Username</th>
+            <th>Role</th>
+            <th>Actions</th>
           </tr>
-        `;
-      }
+        </thead>
+        <tbody>
+          {% if users and users|length > 0 %}
+            {% for u in users %}
+            <tr>
+              <td class="font-mono">{{ u.id }}</td>
+              <td style="font-weight: 500; color: var(--text-primary);">{{ u.username }}</td>
+              <td>
+                {% if u.role == 'admin' %}
+                <span class="badge badge-warning">Admin</span>
+                {% else %}
+                <span class="badge">User</span>
+                {% endif %}
+              </td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm" title="Edit" disabled>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+          <tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-muted);">No users found</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
-      async function refreshCollections() {
+<!-- Grants Tab -->
+<div class="tab-content" id="tab-grants" style="display: none;">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Access Control</h2>
+        <p class="card-subtitle">Manage collection permissions</p>
+      </div>
+      <button class="btn btn-primary" onclick="toggleGrantForm()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Grant Access
+      </button>
+    </div>
+
+    <!-- Grant Form (hidden by default) -->
+    <div id="grant-form" style="display: none; margin-bottom: 24px; padding: 20px; background: var(--bg-secondary); border-radius: var(--radius); border: 1px solid var(--border);">
+      <h3 style="margin: 0 0 16px 0; font-size: 14px; font-weight: 600;">Grant Collection Access</h3>
+      <form method="post" action="/admin/acl/grant" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; align-items: end;">
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">User ID</label>
+          <input type="text" name="user_id" class="form-input" placeholder="Enter user ID" required />
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Collection</label>
+          <select name="collection" class="form-select">
+            {% if collections and collections|length > 0 %}
+              {% for c in collections %}
+              <option value="{{ c.qdrant_collection }}">{{ c.qdrant_collection }}</option>
+              {% endfor %}
+            {% endif %}
+          </select>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Permission</label>
+          <select name="permission" class="form-select">
+            <option value="read">Read</option>
+            <option value="write">Write</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="flex gap-2">
+          <button type="submit" class="btn btn-primary">Grant</button>
+          <button type="button" class="btn btn-secondary" onclick="toggleGrantForm()">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Collection</th>
+            <th>Username</th>
+            <th>User ID</th>
+            <th>Permission</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if grants and grants|length > 0 %}
+            {% for g in grants %}
+            <tr>
+              <td style="font-weight: 500; color: var(--text-primary);">{{ g.qdrant_collection }}</td>
+              <td>{{ g.username }}</td>
+              <td class="font-mono text-muted">{{ g.user_id }}</td>
+              <td>
+                {% if g.permission == 'admin' %}
+                <span class="badge badge-warning">Admin</span>
+                {% elif g.permission == 'write' %}
+                <span class="badge badge-success">Write</span>
+                {% else %}
+                <span class="badge">Read</span>
+                {% endif %}
+              </td>
+              <td>
+                <form class="inline-form js-confirm" data-confirm-title="Revoke Access" data-confirm-message="Revoke {{ g.username }}'s access to {{ g.qdrant_collection }}?" method="post" action="/admin/acl/revoke">
+                  <input type="hidden" name="user_id" value="{{ g.user_id }}" />
+                  <input type="hidden" name="collection" value="{{ g.qdrant_collection }}" />
+                  <button type="submit" class="btn btn-danger btn-sm">Revoke</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+          <tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-muted);">No grants found</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: var(--radius); border: 1px solid var(--border);">
+      <p class="text-muted text-sm" style="margin: 0;">Collection permissions are enforced when CTXCE_MCP_ACL_ENFORCE=1 and CTXCE_ACL_ALLOW_ALL=0.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Tab switching
+  const tabs = document.querySelectorAll('.tab');
+  const contents = document.querySelectorAll('.tab-content');
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      tabs.forEach(t => t.classList.remove('active'));
+      contents.forEach(c => c.style.display = 'none');
+      tab.classList.add('active');
+      document.getElementById('tab-' + target).style.display = 'block';
+    });
+  });
+
+  // Toggle forms
+  window.toggleCreateUser = function() {
+    const form = document.getElementById('create-user-form');
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  };
+
+  window.toggleGrantForm = function() {
+    const form = document.getElementById('grant-form');
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  };
+
+  // Collection refresh
+  const tableEl = document.getElementById('collections-table');
+  const bodyEl = document.getElementById('collections-body');
+  const REFRESH_MS = parseInt(tableEl?.dataset?.refreshMs || '5000', 10);
+  const deletionEnabled = tableEl?.dataset?.deletionEnabled === '1';
+  const stagingEnabled = tableEl?.dataset?.stagingEnabled === '1';
+  const workDir = tableEl?.dataset?.workDir || '/work';
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function renderRow(c) {
+    const pct = c.progress_total_files > 0 ? Math.round((c.progress_files_processed / c.progress_total_files) * 100) : 0;
+    const statusBadge = c.indexing_state === 'indexing'
+      ? '<span class="badge badge-warning"><span class="badge-dot"></span>Indexing</span>'
+      : c.indexing_state === 'error'
+      ? '<span class="badge badge-danger"><span class="badge-dot"></span>Error</span>'
+      : '<span class="badge badge-success"><span class="badge-dot"></span>Idle</span>';
+
+    const progress = c.progress_files_processed != null && c.progress_total_files
+      ? `<div class="progress" style="margin-bottom: 4px;"><div class="progress-bar" style="width: ${pct}%"></div></div>
+         <div class="progress-text">${c.progress_files_processed} / ${c.progress_total_files} files (${pct}%)</div>`
+      : c.progress_files_processed != null
+      ? `<div class="text-muted text-sm">${c.progress_files_processed} files</div>`
+      : '<span class="text-muted">—</span>';
+
+    const configBadge = c.has_mapping
+      ? `<span class="badge badge-success">OK (${c.mapping_count || 0})</span>`
+      : '<span class="badge badge-danger">Missing</span>';
+
+    let configExtra = '';
+    if (c.needs_recreate) {
+      configExtra = `<div style="margin-top: 6px;"><span class="badge badge-danger">Needs Recreate</span></div>`;
+    } else if (c.needs_snapshot_refresh) {
+      configExtra = `<div style="margin-top: 6px;"><span class="badge badge-warning">Refresh Snapshot</span></div>`;
+    } else if (c.needs_reindex_only) {
+      configExtra = `<div style="margin-top: 6px;"><span class="badge badge-warning">Needs Reindex</span></div>`;
+    }
+
+    const actions = c.has_mapping ? `
+      <form class="inline-form js-confirm" data-confirm-title="Reindex Collection" data-confirm-message="Reindex ${escapeHtml(c.qdrant_collection)}?" method="post" action="/admin/collections/reindex">
+        <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
+        <button type="submit" class="btn btn-ghost btn-sm" title="Reindex">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+      </form>
+      <form class="inline-form js-confirm" data-confirm-title="Recreate Collection" data-confirm-message="Recreate ${escapeHtml(c.qdrant_collection)}?" method="post" action="/admin/collections/recreate">
+        <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
+        <button type="submit" class="btn btn-ghost btn-sm" title="Recreate">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        </button>
+      </form>
+    ` : '';
+
+    const deleteBtn = deletionEnabled ? `
+      <form class="inline-form js-confirm" data-confirm-title="Delete Collection" data-confirm-message="Delete ${escapeHtml(c.qdrant_collection)}?" method="post" action="/admin/collections/delete">
+        <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
+        <button type="submit" class="btn btn-danger btn-sm" title="Delete">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        </button>
+      </form>
+    ` : '';
+
+    return `
+      <tr data-collection="${escapeHtml(c.qdrant_collection)}">
+        <td>
+          <div style="font-weight: 500; color: var(--text-primary);">${escapeHtml(c.qdrant_collection)}</div>
+          ${c.container_path ? `<div class="text-muted text-sm truncate" title="${escapeHtml(c.container_path)}">${escapeHtml(c.container_path)}</div>` : ''}
+          ${c.repo_name ? `<div class="text-muted text-sm">${escapeHtml(c.repo_name)}</div>` : ''}
+        </td>
+        <td>
+          ${statusBadge}
+          ${c.indexing_started_at ? `<div class="text-muted text-sm" style="margin-top: 4px;">${escapeHtml(c.indexing_started_at)}</div>` : ''}
+        </td>
+        <td style="min-width: 180px;">
+          ${progress}
+          ${c.progress_current_file ? `<div class="text-muted text-sm truncate" style="margin-top: 2px;" title="${escapeHtml(c.progress_current_file)}">${escapeHtml(c.progress_current_file)}</div>` : ''}
+        </td>
+        <td>
+          ${configBadge}
+          ${configExtra}
+        </td>
+        <td class="hide-mobile">
+          <div class="font-mono text-muted text-sm">${escapeHtml((c.applied_indexing_hash || '—').slice(0, 8))}</div>
+          ${c.pending_indexing_hash ? `<div class="font-mono text-warning text-sm">${escapeHtml(c.pending_indexing_hash.slice(0, 8))}</div>` : ''}
+        </td>
+        <td>
+          <div class="action-group">
+            ${actions}
+            ${deleteBtn}
+          </div>
+        </td>
+      </tr>
+    `;
+  }
+
+  // SSE Connection with fallback to polling
+  let eventSource = null;
+  let useSSE = true;
+
+  function connectSSE() {
+    if (!useSSE) return;
+
+    try {
+      eventSource = new EventSource('/admin/collections/stream');
+
+      eventSource.onmessage = (e) => {
         try {
-          const resp = await fetch("/admin/collections/status", { headers: { "X-Requested-With": "fetch" } });
-          if (!resp.ok) {
-            throw new Error("Failed to load status");
+          const data = JSON.parse(e.data);
+          if (data.type === 'update' && data.collection) {
+            updateSingleCollection(data.collection);
+          } else if (data.type === 'full' && Array.isArray(data.collections)) {
+            renderAllCollections(data.collections);
           }
-          const data = await resp.json();
-          if (!data || !Array.isArray(data.collections)) {
-            return;
-          }
-          if (data.collections.length === 0) {
-            bodyEl.innerHTML = '<tr><td colspan="8">(none)</td></tr>';
-            return;
-          }
-          bodyEl.innerHTML = data.collections.map(renderRow).join("");
         } catch (err) {
-          console.warn("Failed to refresh collections", err);
+          console.warn('SSE parse error:', err);
         }
-      }
+      };
 
-      refreshCollections();
-      setInterval(refreshCollections, REFRESH_MS);
-    })();
-  </script>
+      eventSource.onerror = () => {
+        console.log('SSE connection failed, falling back to polling');
+        eventSource.close();
+        useSSE = false;
+        startPolling();
+      };
+
+      eventSource.onopen = () => {
+        console.log('SSE connected');
+      };
+    } catch (err) {
+      console.log('SSE not supported, using polling');
+      useSSE = false;
+      startPolling();
+    }
+  }
+
+  function updateSingleCollection(c) {
+    const existingRow = bodyEl.querySelector(`tr[data-collection="${c.qdrant_collection}"]`);
+    if (existingRow) {
+      const newRow = document.createElement('tr');
+      newRow.innerHTML = renderRow(c).trim().replace(/^<tr[^>]*>/, '').replace(/<\/tr>$/, '');
+      newRow.dataset.collection = c.qdrant_collection;
+      existingRow.replaceWith(newRow);
+    }
+  }
+
+  function renderAllCollections(collections) {
+    if (collections.length === 0) {
+      bodyEl.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">No collections found</td></tr>';
+    } else {
+      bodyEl.innerHTML = collections.map(renderRow).join('');
+    }
+    document.getElementById('collections-count').textContent = collections.length + ' collections';
+  }
+
+  async function refreshCollections() {
+    try {
+      const resp = await fetch('/admin/collections/status', {
+        headers: { 'X-Requested-With': 'fetch' }
+      });
+      if (!resp.ok) throw new Error('Failed to load');
+      const data = await resp.json();
+      if (data && Array.isArray(data.collections)) {
+        renderAllCollections(data.collections);
+      }
+    } catch (err) {
+      console.warn('Refresh failed:', err);
+    }
+  }
+
+  let pollInterval = null;
+  function startPolling() {
+    if (pollInterval) return;
+    refreshCollections();
+    pollInterval = setInterval(refreshCollections, REFRESH_MS);
+  }
+
+  // Global refresh function
+  window.refreshAll = function() {
+    showToast('Refreshing...', 'success');
+    refreshCollections();
+  };
+
+  // Initialize
+  connectSSE();
+  if (!useSSE) {
+    startPolling();
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd + R to refresh (prevent default)
+    if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+      e.preventDefault();
+      refreshAll();
+    }
+  });
+})();
+</script>
 {% endblock %}

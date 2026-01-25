@@ -1,49 +1,708 @@
 <!doctype html>
-<html>
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title }}</title>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; color: #111; }
-      header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-      h1 { font-size: 20px; margin: 0; }
-      h2 { font-size: 16px; margin-top: 24px; }
-      .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 12px; }
-      .error { color: #b00; }
-      .warning { color: #8a6d3b; }
-      .flash { border-radius: 6px; padding: 10px 14px; margin: 12px 0; font-size: 14px; }
-      .flash.success { background: #e6f4ea; color: #1e7b34; border: 1px solid #b8e0c3; }
-      .flash.warning { background: #fff7e6; color: #8a6d3b; border: 1px solid #f2d6a0; }
-      .flash.error { background: #fdecea; color: #b3261e; border: 1px solid #f5a29a; }
-      table { border-collapse: collapse; width: 100%; }
-      th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
-      th { background: #f7f7f7; }
-      input { padding: 6px 8px; width: 320px; max-width: 100%; }
-      button { padding: 6px 10px; }
-      form.inline { display: inline; }
-      nav a { margin-right: 12px; }
-      .muted { color: #666; font-size: 12px; }
-      .badge { display: inline-block; border: 1px solid #ddd; border-radius: 999px; padding: 1px 6px; margin: 2px 4px 2px 0; font-size: 11px; background: #f7f7f7; }
+      :root {
+        --bg-primary: #0a0a0f;
+        --bg-secondary: #111118;
+        --bg-card: #16161d;
+        --bg-hover: #1c1c24;
+        --bg-input: #0d0d12;
+        --text-primary: #e4e4e7;
+        --text-secondary: #a1a1aa;
+        --text-muted: #71717a;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-focus: rgba(99, 102, 241, 0.5);
+        --accent: #6366f1;
+        --accent-hover: #818cf8;
+        --accent-glow: rgba(99, 102, 241, 0.25);
+        --success: #22c55e;
+        --success-bg: rgba(34, 197, 94, 0.1);
+        --warning: #f59e0b;
+        --warning-bg: rgba(245, 158, 11, 0.1);
+        --danger: #ef4444;
+        --danger-bg: rgba(239, 68, 68, 0.1);
+        --radius: 8px;
+        --radius-lg: 12px;
+        --transition: 150ms ease;
+      }
+
+      [data-theme="light"] {
+        --bg-primary: #f8fafc;
+        --bg-secondary: #f1f5f9;
+        --bg-card: #ffffff;
+        --bg-hover: #f1f5f9;
+        --bg-input: #f8fafc;
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        --text-muted: #94a3b8;
+        --border: rgba(0, 0, 0, 0.08);
+      }
+
+      *, *::before, *::after { box-sizing: border-box; }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        margin: 0;
+        padding: 0;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      /* Header */
+      .header {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 24px;
+        height: 56px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border);
+        backdrop-filter: blur(12px);
+      }
+
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        font-size: 16px;
+        color: var(--text-primary);
+        text-decoration: none;
+      }
+
+      .logo-icon {
+        width: 28px;
+        height: 28px;
+        background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .logo-icon svg { width: 16px; height: 16px; fill: white; }
+
+      .version-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .version-badge svg { width: 14px; height: 14px; opacity: 0.7; }
+
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .icon-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        background: transparent;
+        border: none;
+        border-radius: var(--radius);
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: all var(--transition);
+      }
+
+      .icon-btn:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      .icon-btn svg { width: 18px; height: 18px; }
+
+      /* Main Content */
+      .main {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 32px 24px;
+      }
+
+      .page-header {
+        margin-bottom: 24px;
+      }
+
+      .page-title {
+        font-size: 28px;
+        font-weight: 600;
+        margin: 0 0 4px 0;
+        color: var(--text-primary);
+      }
+
+      .page-subtitle {
+        font-size: 14px;
+        color: var(--text-muted);
+        margin: 0;
+      }
+
+      /* Cards */
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        margin-bottom: 24px;
+      }
+
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+
+      .card-title {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0;
+        color: var(--text-primary);
+      }
+
+      .card-subtitle {
+        font-size: 13px;
+        color: var(--text-muted);
+        margin: 4px 0 0 0;
+      }
+
+      /* Tables */
+      .table-container {
+        overflow-x: auto;
+        margin: 0 -24px;
+        padding: 0 24px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th {
+        text-align: left;
+        padding: 12px 16px;
+        font-weight: 500;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+
+      td {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-secondary);
+      }
+
+      tr:last-child td { border-bottom: none; }
+
+      tr:hover td { background: var(--bg-hover); }
+
+      /* Buttons */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+        border-radius: var(--radius);
+        border: none;
+        cursor: pointer;
+        transition: all var(--transition);
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .btn svg { width: 16px; height: 16px; }
+
+      .btn-primary {
+        background: var(--accent);
+        color: white;
+        box-shadow: 0 0 0 0 var(--accent-glow);
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-hover);
+        box-shadow: 0 0 20px 2px var(--accent-glow);
+      }
+
+      .btn-secondary {
+        background: transparent;
+        color: var(--text-primary);
+        border: 1px solid var(--border);
+      }
+
+      .btn-secondary:hover {
+        background: var(--bg-hover);
+        border-color: var(--text-muted);
+      }
+
+      .btn-ghost {
+        background: transparent;
+        color: var(--text-secondary);
+        padding: 6px 10px;
+      }
+
+      .btn-ghost:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      .btn-danger {
+        background: var(--danger-bg);
+        color: var(--danger);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+      }
+
+      .btn-danger:hover {
+        background: var(--danger);
+        color: white;
+      }
+
+      .btn-sm {
+        padding: 5px 10px;
+        font-size: 12px;
+      }
+
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* Forms */
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      .form-label {
+        display: block;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+      }
+
+      .form-input, .form-select {
+        width: 100%;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text-primary);
+        transition: all var(--transition);
+      }
+
+      .form-input:focus, .form-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow);
+      }
+
+      .form-input::placeholder { color: var(--text-muted); }
+
+      /* Tabs */
+      .tabs {
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        background: var(--bg-secondary);
+        border-radius: var(--radius);
+        margin-bottom: 24px;
+      }
+
+      .tab {
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all var(--transition);
+      }
+
+      .tab:hover { color: var(--text-primary); }
+
+      .tab.active {
+        background: var(--accent);
+        color: white;
+      }
+
+      /* Status Badges */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 500;
+        border-radius: 999px;
+        background: var(--bg-secondary);
+        color: var(--text-secondary);
+        border: 1px solid var(--border);
+      }
+
+      .badge-success { background: var(--success-bg); color: var(--success); border-color: rgba(34, 197, 94, 0.2); }
+      .badge-warning { background: var(--warning-bg); color: var(--warning); border-color: rgba(245, 158, 11, 0.2); }
+      .badge-danger { background: var(--danger-bg); color: var(--danger); border-color: rgba(239, 68, 68, 0.2); }
+
+      .badge-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      /* Progress Bar */
+      .progress {
+        height: 6px;
+        background: var(--bg-secondary);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), #a855f7);
+        border-radius: 999px;
+        transition: width 300ms ease;
+      }
+
+      .progress-text {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-top: 4px;
+      }
+
+      /* Toast Notifications */
+      .toast-container {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .toast {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 14px 16px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+        min-width: 300px;
+        max-width: 400px;
+        animation: slideIn 200ms ease;
+      }
+
+      @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+
+      .toast-icon { flex-shrink: 0; width: 20px; height: 20px; }
+      .toast-success .toast-icon { color: var(--success); }
+      .toast-error .toast-icon { color: var(--danger); }
+      .toast-warning .toast-icon { color: var(--warning); }
+
+      .toast-content { flex: 1; }
+      .toast-title { font-weight: 500; color: var(--text-primary); margin-bottom: 2px; }
+      .toast-message { font-size: 13px; color: var(--text-muted); }
+
+      .toast-close {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 0;
+      }
+
+      .toast-close:hover { color: var(--text-primary); }
+
+      /* Modal */
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(4px);
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        visibility: hidden;
+        transition: all 200ms ease;
+      }
+
+      .modal-overlay.active {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      .modal {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        width: 100%;
+        max-width: 420px;
+        margin: 24px;
+        transform: scale(0.95);
+        transition: transform 200ms ease;
+      }
+
+      .modal-overlay.active .modal { transform: scale(1); }
+
+      .modal-title { font-size: 18px; font-weight: 600; margin: 0 0 8px 0; }
+      .modal-message { color: var(--text-secondary); margin: 0 0 24px 0; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 12px; }
+
+      /* Loading Spinner */
+      .spinner {
+        width: 20px;
+        height: 20px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 600ms linear infinite;
+      }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      .loading-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(10, 10, 15, 0.8);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: var(--radius-lg);
+        z-index: 10;
+      }
+
+      /* Utilities */
+      .flex { display: flex; }
+      .items-center { align-items: center; }
+      .justify-between { justify-content: space-between; }
+      .gap-2 { gap: 8px; }
+      .gap-3 { gap: 12px; }
+      .gap-4 { gap: 16px; }
+      .text-muted { color: var(--text-muted); }
+      .text-sm { font-size: 12px; }
+      .text-success { color: var(--success); }
+      .text-warning { color: var(--warning); }
+      .text-danger { color: var(--danger); }
+      .font-mono { font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 12px; }
+      .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+      .relative { position: relative; }
+      .inline-form { display: inline; }
+
+      /* Action buttons in tables */
+      .action-group {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      /* Footer */
+      .footer {
+        text-align: center;
+        padding: 24px;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        .header { padding: 0 16px; }
+        .main { padding: 20px 16px; }
+        .card { padding: 16px; }
+        .page-title { font-size: 22px; }
+        .btn { padding: 8px 12px; }
+        .hide-mobile { display: none; }
+      }
     </style>
   </head>
   <body>
-    <header>
-      <h1>{{ title }}</h1>
-      <nav>
-        <a href="/admin">Home</a>
-        <form class="inline" method="post" action="/admin/logout">
-          <button type="submit">Logout</button>
+    <header class="header">
+      <div class="header-left">
+        <a href="/admin" class="logo">
+          <span class="logo-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </span>
+          Context-Engine
+        </a>
+        <span class="version-badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          Admin
+        </span>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+        <button class="icon-btn" title="Notifications">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
+        <form class="inline-form" method="post" action="/admin/logout">
+          <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
         </form>
-      </nav>
+      </div>
     </header>
 
-    {% if flash and flash.message %}
-      <div class="flash {{ flash.level or '' }}">{{ flash.message }}</div>
-    {% endif %}
+    <main class="main">
+      {% block content %}{% endblock %}
+    </main>
 
-    {% block content %}{% endblock %}
+    <footer class="footer">CTXCE Admin UI</footer>
 
-    <p class="muted">CTXCE Admin UI</p>
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal-overlay" id="confirm-modal">
+      <div class="modal">
+        <h3 class="modal-title" id="modal-title">Confirm Action</h3>
+        <p class="modal-message" id="modal-message">Are you sure you want to proceed?</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
+          <button class="btn btn-danger" id="modal-confirm">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Theme Toggle
+      const themeToggle = document.getElementById('theme-toggle');
+      const html = document.documentElement;
+      const savedTheme = localStorage.getItem('theme') || 'dark';
+      html.setAttribute('data-theme', savedTheme);
+
+      themeToggle.addEventListener('click', () => {
+        const current = html.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : 'dark';
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('theme', next);
+      });
+
+      // Toast Notifications
+      window.showToast = function(message, type = 'success', title = '') {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+
+        const icons = {
+          success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22,4 12,14.01 9,11.01"/></svg>',
+          error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+          warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        };
+
+        toast.innerHTML = `
+          <span class="toast-icon">${icons[type] || icons.success}</span>
+          <div class="toast-content">
+            ${title ? `<div class="toast-title">${title}</div>` : ''}
+            <div class="toast-message">${message}</div>
+          </div>
+          <button class="toast-close" onclick="this.parentElement.remove()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        `;
+
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+      };
+
+      // Confirmation Modal
+      const modalOverlay = document.getElementById('confirm-modal');
+      const modalTitle = document.getElementById('modal-title');
+      const modalMessage = document.getElementById('modal-message');
+      const modalCancel = document.getElementById('modal-cancel');
+      const modalConfirm = document.getElementById('modal-confirm');
+      let pendingForm = null;
+
+      window.showConfirm = function(title, message, onConfirm) {
+        modalTitle.textContent = title;
+        modalMessage.textContent = message;
+        modalOverlay.classList.add('active');
+
+        const handleConfirm = () => {
+          modalOverlay.classList.remove('active');
+          onConfirm();
+          cleanup();
+        };
+
+        const handleCancel = () => {
+          modalOverlay.classList.remove('active');
+          cleanup();
+        };
+
+        const cleanup = () => {
+          modalConfirm.removeEventListener('click', handleConfirm);
+          modalCancel.removeEventListener('click', handleCancel);
+        };
+
+        modalConfirm.addEventListener('click', handleConfirm);
+        modalCancel.addEventListener('click', handleCancel);
+      };
+
+      // Form confirmation handler
+      document.addEventListener('submit', function(e) {
+        const form = e.target.closest('.js-confirm');
+        if (!form) return;
+
+        e.preventDefault();
+        const message = form.dataset.confirmMessage || 'Are you sure?';
+        const title = form.dataset.confirmTitle || 'Confirm Action';
+
+        showConfirm(title, message, () => form.submit());
+      });
+
+      // Keyboard shortcuts
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          modalOverlay.classList.remove('active');
+        }
+      });
+
+      // Show flash message as toast if exists
+      {% if flash and flash.message %}
+        showToast("{{ flash.message | e }}", "{{ flash.level or 'success' }}");
+      {% endif %}
+    </script>
   </body>
 </html>

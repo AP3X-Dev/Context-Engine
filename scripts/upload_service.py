@@ -42,7 +42,7 @@ if _OPENLIT_ENABLED:
 
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import urlencode
 
@@ -857,6 +857,48 @@ async def admin_collections_status(request: Request):
         lambda: build_admin_collections_view(collections=collections, work_dir=WORK_DIR)
     )
     return JSONResponse({"collections": enriched})
+
+
+@app.get("/admin/collections/stream")
+async def admin_collections_stream(request: Request):
+    """SSE endpoint for real-time collection status updates."""
+    _require_admin_session(request)
+
+    async def event_generator():
+        """Generate SSE events for collection status updates."""
+        last_data = None
+        while True:
+            # Check if client disconnected
+            if await request.is_disconnected():
+                break
+
+            try:
+                collections = list_collections(include_deleted=False)
+                enriched = await asyncio.to_thread(
+                    lambda: build_admin_collections_view(collections=collections, work_dir=WORK_DIR)
+                )
+
+                # Only send if data changed
+                current_data = json.dumps(enriched, default=str)
+                if current_data != last_data:
+                    last_data = current_data
+                    yield f"data: {json.dumps({'type': 'full', 'collections': enriched}, default=str)}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+            # Poll interval (2 seconds for SSE)
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/admin/collections/reindex")
