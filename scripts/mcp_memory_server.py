@@ -43,6 +43,7 @@ except Exception:
 from scripts.mcp_auth import (
     require_auth_session as _require_auth_session,
     require_collection_access as _require_collection_access,
+    AUTH_HEADER_TOKEN as _AUTH_HEADER_TOKEN,
 )
 
 from qdrant_client import QdrantClient, models
@@ -196,6 +197,52 @@ _security_settings = (
     else None
 )
 mcp = FastMCP(name="memory-server", transport_security=_security_settings)
+
+
+class _AuthHeaderASGIMiddleware:
+    """Pure ASGI middleware that extracts Authorization header into context var."""
+    def __init__(self, app):
+        self.app = app
+    
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+            if auth_header.lower().startswith("bearer "):
+                token = auth_header[7:].strip()
+            else:
+                token = auth_header.strip() if auth_header else ""
+            _AUTH_HEADER_TOKEN.set(token)
+        return await self.app(scope, receive, send)
+
+
+def _add_auth_middleware():
+    """Wrap FastMCP's ASGI app with auth header extraction middleware."""
+    _original_run = mcp.run
+    _middleware_added = [False]
+    
+    def _patched_run(*args, **kwargs):
+        if not _middleware_added[0]:
+            for attr in ("_app", "app", "_asgi_app", "_sse_app", "_http_app"):
+                try:
+                    original_app = getattr(mcp, attr, None)
+                    if original_app is not None and callable(original_app):
+                        wrapped = _AuthHeaderASGIMiddleware(original_app)
+                        setattr(mcp, attr, wrapped)
+                        logger.info(f"Auth header middleware added (wrapped mcp.{attr})")
+                        _middleware_added[0] = True
+                        break
+                except Exception as e:
+                    logger.debug(f"Could not wrap mcp.{attr}: {e}")
+            
+            if not _middleware_added[0]:
+                logger.warning("Could not add auth middleware - app not found")
+        
+        return _original_run(*args, **kwargs)
+    
+    mcp.run = _patched_run
+    logger.debug("Patched mcp.run() for auth middleware injection")
+
 
 _TOOLS_REGISTRY: list[dict] = []
 try:
@@ -1119,6 +1166,11 @@ if __name__ == "__main__":
 
     # Enable stateless HTTP mode to avoid session handshake requirement
     stateless_http = str(os.environ.get("FASTMCP_STATELESS_HTTP", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    
+    # Add auth header extraction middleware for HTTP transports
+    if transport != "stdio":
+        _add_auth_middleware()
+    
     if transport == "stdio":
         # Run over stdio (for clients that don't support network transports)
         mcp.run(transport="stdio")

@@ -1,3 +1,4 @@
+import contextvars
 import os
 from typing import Any, Dict, Optional
 
@@ -7,6 +8,9 @@ except Exception:
 
     class ValidationError(Exception):
         pass
+
+# Context variable for Authorization header token (set by HTTP middleware)
+AUTH_HEADER_TOKEN: contextvars.ContextVar[str] = contextvars.ContextVar("auth_header_token", default="")
 
 
 try:
@@ -47,13 +51,34 @@ ACL_ENFORCE = (
     in {"1", "true", "yes", "on"}
 )
 
+# Direct token auth: allow admin/shared tokens to bypass session lookup
+_AUTH_ADMIN_TOKEN = (os.environ.get("CTXCE_AUTH_ADMIN_TOKEN") or "").strip()
+_AUTH_SHARED_TOKEN = (os.environ.get("CTXCE_AUTH_SHARED_TOKEN") or "").strip()
+
 
 def require_auth_session(session: Optional[str]) -> Optional[Dict[str, Any]]:
     if not AUTH_ENABLED_AUTH:
         return None
     sid = (session or "").strip()
+    
+    # If no session arg provided, try to get token from HTTP header context var
+    if not sid:
+        sid = AUTH_HEADER_TOKEN.get()
+    
     if not sid:
         raise ValidationError("Missing session for authorized operation")
+    
+    # Strip "Bearer " prefix if present (from HTTP Authorization header)
+    if sid.lower().startswith("bearer "):
+        sid = sid[7:].strip()
+    
+    # Check direct admin/shared token first (bypass session DB lookup)
+    if _AUTH_ADMIN_TOKEN and sid == _AUTH_ADMIN_TOKEN:
+        return {"user_id": "admin", "role": "admin", "token_type": "admin"}
+    if _AUTH_SHARED_TOKEN and sid == _AUTH_SHARED_TOKEN:
+        return {"user_id": "shared", "role": "user", "token_type": "shared"}
+    
+    # Fall back to session database lookup
     info = _auth_validate_session(sid)
     if not info:
         raise ValidationError("Invalid or expired session")
