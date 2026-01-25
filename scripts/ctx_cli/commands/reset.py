@@ -147,10 +147,11 @@ def _download_file(url: str, dest: Path, description: str) -> bool:
 
 
 def reset(
-    mode: str = "dual",
+    mode: str = "mcp",
     skip_build: bool = False,
     skip_model: bool = False,
     skip_tokenizer: bool = False,
+    db_reset: bool = False,
     model_url: Optional[str] = None,
     model_path: Optional[str] = None,
     tokenizer_url: Optional[str] = None,
@@ -163,14 +164,14 @@ def reset(
     recreates indexes, and starts services in the specified mode.
 
     Modes:
-        dual: Both SSE and HTTP MCPs (default, most comprehensive)
-        mcp:  HTTP MCPs only (streamable, Codex compatible)
-        sse:  SSE MCPs only (legacy)
+        (default): HTTP MCPs only (streamable, Codex compatible)
+        --dual:    Both SSE and HTTP MCPs (most comprehensive)
+        --sse:     SSE MCPs only (legacy)
 
     Examples:
-        ctx reset                # Full reset with dual mode
-        ctx reset --mcp          # HTTP MCPs only
-        ctx reset --sse          # SSE MCPs only
+        ctx reset                # Full reset with HTTP MCPs (default)
+        ctx reset --dual         # Both SSE and HTTP MCPs
+        ctx reset --sse          # SSE MCPs only (legacy)
         ctx reset --skip-model   # Skip model download
         ctx reset --skip-build   # Skip container rebuild
     """
@@ -193,22 +194,35 @@ def reset(
     if neo4j_enabled:
         compose_cmd.extend(["-f", "docker-compose.yml", "-f", "docker-compose.neo4j.yml"])
 
+    # Check if Redis is enabled (CODEBASE_STATE_BACKEND=redis)
+    redis_enabled = os.environ.get("CODEBASE_STATE_BACKEND", "").strip().lower() == "redis"
+
+    # Check if learning reranker is enabled
+    rerank_learning_enabled = os.environ.get("RERANK_LEARNING", "1").strip().lower() in ("1", "true", "yes")
+
     # Determine which containers to build/start based on mode
-    if mode == "mcp":
-        # HTTP MCPs only (Codex compatible) + upload_service for remote sync
-        build_containers = ["indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
-        start_containers = ["mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
-        mode_desc = "HTTP MCPs only (streamable)"
-    elif mode == "sse":
-        # SSE MCPs only (legacy)
+    # Default is HTTP-only; SSE only starts when explicitly requested with --sse
+    if mode == "sse":
+        # SSE MCPs only (legacy, must be explicitly requested)
         build_containers = ["indexer", "mcp", "mcp_indexer", "watcher"]
         start_containers = ["mcp", "mcp_indexer", "watcher"]
         mode_desc = "SSE MCPs only (legacy)"
-    else:
-        # Dual mode (default)
+    elif mode == "dual":
+        # Dual mode (both SSE and HTTP)
         build_containers = ["indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         start_containers = ["mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "Dual mode (SSE + HTTP)"
+    else:
+        # HTTP MCPs only (default, Codex compatible) + upload_service for remote sync
+        build_containers = ["indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        mode_desc = "HTTP MCPs (streamable)"
+
+    # Add learning_worker if rerank learning is enabled
+    if rerank_learning_enabled:
+        build_containers.append("learning_worker")
+        start_containers.append("learning_worker")
+        mode_desc += " + Learning Reranker"
 
     # Add llamacpp container if needed
     if llamacpp_needed:
@@ -223,11 +237,16 @@ def reset(
         start_containers.insert(0, "neo4j")  # Start neo4j first (other services depend on it)
         mode_desc += " + Neo4j"
 
+    # Add Redis indicator to mode description (Redis is a dependency, not a built container)
+    if redis_enabled:
+        mode_desc += " + Redis"
+
     _print_panel(
         f"[cyan]Mode:[/cyan] {mode_desc}\n"
         f"[cyan]Skip Build:[/cyan] {skip_build}\n"
         f"[cyan]Skip Model:[/cyan] {skip_model}\n"
-        f"[cyan]Skip Tokenizer:[/cyan] {skip_tokenizer}",
+        f"[cyan]Skip Tokenizer:[/cyan] {skip_tokenizer}\n"
+        f"[cyan]DB Reset:[/cyan] {db_reset}",
         title="Development Environment Reset",
         border_style="yellow"
     )
@@ -236,11 +255,17 @@ def reset(
     step = 0
 
     try:
-        # Step 1: Stop all services and remove volumes
+        # Step 1: Stop all services (and optionally reset database volumes)
         step += 1
         _print(f"\n[bold][{step}/{steps_total}] Stopping services...[/bold]")
-        _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans"], "Stopping all containers", check=False)
-        _print("[green]✓[/green] Services stopped")
+        if db_reset:
+            # Full reset including database volumes (qdrant, redis, neo4j)
+            _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans"], "Stopping all containers and removing volumes", check=False)
+            _print("[green]✓[/green] Services stopped and database volumes removed")
+        else:
+            # Stop services but preserve database volumes
+            _run_cmd(compose_cmd + ["down", "--remove-orphans"], "Stopping all containers", check=False)
+            _print("[green]✓[/green] Services stopped (database volumes preserved)")
 
         # Step 2: Build containers (unless skipped)
         step += 1
@@ -252,9 +277,11 @@ def reset(
         else:
             _print(f"\n[bold][{step}/{steps_total}] Skipping container build[/bold]")
 
-        # Step 3: Start Qdrant (and Neo4j if enabled) and wait
+        # Step 3: Start Qdrant, Redis (if enabled), and Neo4j (if enabled) and wait
         step += 1
         db_services = ["qdrant"]
+        if redis_enabled:
+            db_services.append("redis")
         if neo4j_enabled:
             db_services.append("neo4j")
         _print(f"\n[bold][{step}/{steps_total}] Starting {', '.join(db_services)}...[/bold]")
@@ -413,30 +440,43 @@ def register_command(subparsers):
                     "This is equivalent to the Makefile's reset-dev targets.",
         epilog="""
 Modes:
-  dual (default)  Both SSE and HTTP MCPs (most comprehensive)
-  mcp             HTTP MCPs only (streamable, Codex compatible)
-  sse             SSE MCPs only (legacy)
+  (default)       HTTP MCPs only (streamable, Codex compatible)
+  --dual          Both SSE and HTTP MCPs (most comprehensive)
+  --sse           SSE MCPs only (legacy)
 
 Examples:
-  ctx reset                # Full reset with dual mode
-  ctx reset --mcp          # HTTP MCPs only (streamable)
+  ctx reset                # Full reset with HTTP MCPs (default)
+  ctx reset --dual         # Both SSE and HTTP MCPs
   ctx reset --sse          # SSE MCPs only (legacy)
+  ctx reset --db-reset     # Reset database volumes (Qdrant, Redis, Neo4j)
   ctx reset --skip-model   # Skip llama model download
   ctx reset --skip-build   # Skip container rebuild (faster)
 """
     )
 
-    # Mode selection (mutually exclusive)
+    # Mode selection (mutually exclusive among modes)
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--mcp",
         action="store_true",
-        help="HTTP MCPs only (streamable, Codex compatible)"
+        help="HTTP MCPs only (streamable, Codex compatible) - this is the default"
+    )
+    mode_group.add_argument(
+        "--dual",
+        action="store_true",
+        help="Both SSE and HTTP MCPs (most comprehensive)"
     )
     mode_group.add_argument(
         "--sse",
         action="store_true",
         help="SSE MCPs only (legacy)"
+    )
+
+    # Database reset option (can be combined with any mode)
+    parser.add_argument(
+        "--db-reset",
+        action="store_true",
+        help="Reset database volumes (Qdrant, Redis, Neo4j)"
     )
 
     # Skip options
@@ -476,19 +516,21 @@ Examples:
 
     def run_reset(args):
         """Wrapper to call reset function with argparse args."""
-        # Determine mode
-        if args.mcp:
-            mode = "mcp"
+        # Determine mode (default is HTTP-only, no SSE)
+        if args.dual:
+            mode = "dual"
         elif args.sse:
             mode = "sse"
         else:
-            mode = "dual"
+            # --mcp or no flag = HTTP MCPs only (default)
+            mode = "mcp"
 
         return reset(
             mode=mode,
             skip_build=args.skip_build,
             skip_model=args.skip_model,
             skip_tokenizer=args.skip_tokenizer,
+            db_reset=args.db_reset,
             model_url=args.model_url,
             model_path=args.model_path,
             tokenizer_url=args.tokenizer_url,

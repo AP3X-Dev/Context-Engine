@@ -6,6 +6,24 @@
 version: '3.8'
 
 services:
+  # Redis cache/state backend
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - dev-remote-network
+
   # Qdrant vector database - same as base compose
   qdrant:
     image: qdrant/qdrant:latest
@@ -102,6 +120,7 @@ services:
     command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/mcp_indexer_server.py"]
     depends_on:
       - qdrant
+      - redis
     env_file:
       - .env
     environment:
@@ -172,6 +191,10 @@ services:
       - RERANKER_WEIGHTS_DIR=/tmp/rerank_weights
       - RERANK_EVENTS_DIR=/tmp/rerank_events
       - RERANK_EVENTS_ENABLED=${RERANK_EVENTS_ENABLED:-1}
+      # Redis state backend
+      - CODEBASE_STATE_BACKEND=${CODEBASE_STATE_BACKEND:-file}
+      - CODEBASE_STATE_REDIS_URL=${CODEBASE_STATE_REDIS_URL:-redis://redis:6379/0}
+      - CODEBASE_STATE_REDIS_PREFIX=${CODEBASE_STATE_REDIS_PREFIX:-context-engine:codebase}
     ports:
       - "${FASTMCP_INDEXER_PORT:-8001}:8001"
       - "18001:18001"
@@ -316,6 +339,7 @@ services:
     command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/mcp_indexer_server.py"]
     depends_on:
       - qdrant
+      - redis
     env_file:
       - .env
     environment:
@@ -378,6 +402,10 @@ services:
       - RERANKER_WEIGHTS_DIR=/tmp/rerank_weights
       - RERANK_EVENTS_DIR=/tmp/rerank_events
       - RERANK_EVENTS_ENABLED=${RERANK_EVENTS_ENABLED:-1}
+      # Redis state backend
+      - CODEBASE_STATE_BACKEND=${CODEBASE_STATE_BACKEND:-file}
+      - CODEBASE_STATE_REDIS_URL=${CODEBASE_STATE_REDIS_URL:-redis://redis:6379/0}
+      - CODEBASE_STATE_REDIS_PREFIX=${CODEBASE_STATE_REDIS_PREFIX:-context-engine:codebase}
     ports:
       - "${FASTMCP_INDEXER_HTTP_PORT:-8003}:8001"
       - "${FASTMCP_INDEXER_HTTP_HEALTH_PORT:-18003}:18001"
@@ -415,6 +443,7 @@ services:
     user: "1000:1000"
     depends_on:
       - qdrant
+      - redis
     env_file:
       - .env
     environment:
@@ -459,6 +488,10 @@ services:
       - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
       # Parallel indexing - number of worker threads (default: 4, use -1 for CPU count)
       - INDEX_WORKERS=${INDEX_WORKERS:-4}
+      # Redis state backend
+      - CODEBASE_STATE_BACKEND=${CODEBASE_STATE_BACKEND:-file}
+      - CODEBASE_STATE_REDIS_URL=${CODEBASE_STATE_REDIS_URL:-redis://redis:6379/0}
+      - CODEBASE_STATE_REDIS_PREFIX=${CODEBASE_STATE_REDIS_PREFIX:-context-engine:codebase}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
@@ -477,6 +510,7 @@ services:
     user: "1000:1000"
     depends_on:
       - qdrant
+      - redis
     env_file:
       - .env
     environment:
@@ -524,6 +558,10 @@ services:
       - NEO4J_GRAPH=${NEO4J_GRAPH:-}
       # Defer pseudo-tag generation - watcher runs backfill worker thread
       - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
+      # Redis state backend
+      - CODEBASE_STATE_BACKEND=${CODEBASE_STATE_BACKEND:-file}
+      - CODEBASE_STATE_REDIS_URL=${CODEBASE_STATE_REDIS_URL:-redis://redis:6379/0}
+      - CODEBASE_STATE_REDIS_PREFIX=${CODEBASE_STATE_REDIS_PREFIX:-context-engine:codebase}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
@@ -700,6 +738,10 @@ volumes:
 
   # Learning reranker events storage (shared between indexer and worker)
   rerank_events:
+    driver: local
+
+  # Redis data persistence
+  redis_data:
     driver: local
 
 # Custom network for service discovery
