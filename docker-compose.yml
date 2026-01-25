@@ -485,9 +485,6 @@ services:
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
-    entrypoint: [ "sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work" ]
-    restart: "no" # Run once on startup, do not restart after completion
-    cpus: 2.0
     entrypoint: ["sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work"]
     restart: "no"  # Run once on startup, do not restart after completion
     cpus: 4.0
