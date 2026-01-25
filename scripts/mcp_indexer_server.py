@@ -193,9 +193,6 @@ from scripts.mcp_impl.symbol_graph import (
 )
 from scripts.mcp_impl.pattern_search import _pattern_search_impl
 
-# Global lock to guard temporary env toggles used during ReFRAG retrieval/decoding
-_ENV_LOCK = threading.Lock()
-
 # Shared utilities (lex hashing, snippet highlighter)
 try:
     from scripts.utils import highlight_snippet as _do_highlight_snippet
