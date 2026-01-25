@@ -303,6 +303,17 @@ class AuthUserCreateResponse(BaseModel):
     username: str
 
 
+class AuthValidateRequest(BaseModel):
+    session_id: str
+
+
+class AuthValidateResponse(BaseModel):
+    valid: bool
+    user_id: Optional[str] = None
+    expires_at: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class PasswordLoginRequest(BaseModel):
     username: str
     password: str
@@ -597,6 +608,41 @@ async def auth_login(payload: AuthLoginRequest):
         user_id=session.get("user_id"),
         expires_at=session.get("expires_at"),
     )
+
+
+@app.post("/auth/validate", response_model=AuthValidateResponse)
+async def auth_validate(payload: AuthValidateRequest):
+    """Validate a session ID and return session info if valid.
+
+    This endpoint allows remote MCP servers to validate sessions against the
+    auth backend that issued them, enabling distributed auth validation.
+    """
+    try:
+        if not AUTH_ENABLED:
+            # When auth is disabled, all sessions are considered valid
+            return AuthValidateResponse(valid=True, user_id=None, expires_at=None, metadata=None)
+
+        sid = (payload.session_id or "").strip()
+        if not sid:
+            return AuthValidateResponse(valid=False)
+
+        try:
+            record = validate_session(sid)
+        except AuthDisabledError:
+            return AuthValidateResponse(valid=True, user_id=None, expires_at=None, metadata=None)
+
+        if record is None:
+            return AuthValidateResponse(valid=False)
+
+        return AuthValidateResponse(
+            valid=True,
+            user_id=record.get("user_id"),
+            expires_at=record.get("expires_at"),
+            metadata=record.get("metadata"),
+        )
+    except Exception as e:
+        logger.error(f"[upload_service] Failed to validate session: {e}")
+        raise HTTPException(status_code=500, detail="Failed to validate session")
 
 
 @app.get("/admin")

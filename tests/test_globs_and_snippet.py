@@ -223,6 +223,6 @@ def test_repo_search_snippet_strict_cap_after_highlight(monkeypatch):
 @pytest.mark.unit
 def test_repo_search_docstring_clean():
     doc = srv.repo_search.__doc__
-    assert doc and "Zero-config code search" in doc
+    assert doc and "Primary hybrid semantic" in doc
     # Ensure stray inline pseudo-code is not embedded in docstring
     assert "Accept common alias keys from clients" not in doc

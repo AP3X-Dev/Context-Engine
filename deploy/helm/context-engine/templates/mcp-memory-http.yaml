@@ -107,6 +107,8 @@ spec:
             - name: work-volume
               mountPath: /work
               readOnly: true
+            - name: codebase-volume
+              mountPath: /work/.codebase
             - name: metadata-volume
               mountPath: /tmp/rerank_weights
               subPath: rerank_weights
@@ -117,6 +119,9 @@ spec:
         - name: work-volume
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.codeRepos.name }}
+        - name: codebase-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeMetadata.name }}
         - name: metadata-volume
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.codeMetadata.name }}

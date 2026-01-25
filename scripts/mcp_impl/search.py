@@ -62,6 +62,7 @@ SNIPPET_MAX_BYTES = safe_int(
     logger=logger,
     context="MCP_SNIPPET_MAX_BYTES",
 )
+SEARCH_COMPACT_DEFAULT = os.environ.get("SEARCH_COMPACT_DEFAULT", "0").lower() in {"1", "true", "yes", "on"}
 
 
 async def _repo_search_impl(
@@ -323,6 +324,9 @@ async def _repo_search_impl(
     rerank_timeout_ms = _to_int(
         rerank_timeout_ms, int(os.environ.get("RERANKER_TIMEOUT_MS", "3000") or 3000)
     )
+    # Clamp rerank timeout to prevent unreasonably low deadlines
+    _MIN_RERANK_TIMEOUT_MS = int(os.environ.get("RERANK_TIMEOUT_MIN_MS", "10000") or 10000)
+    rerank_timeout_ms = max(rerank_timeout_ms, _MIN_RERANK_TIMEOUT_MS)
     highlight_snippet = _to_bool(highlight_snippet, True)
 
     # Resolve collection and related hints: explicit > per-connection defaults > token defaults > env
@@ -454,7 +458,7 @@ async def _repo_search_impl(
             repo_filter = [detected_repo]
 
     compact_raw = compact
-    compact = _to_bool(compact, False)
+    compact = _to_bool(compact, SEARCH_COMPACT_DEFAULT)
     # If snippets are requested, do not compact (we need snippet field in results)
     if include_snippet:
         compact = False
@@ -795,6 +799,7 @@ async def _repo_search_impl(
 
     # Optional rerank fallback path: if enabled, attempt; on timeout or error, keep hybrid
     used_rerank = False
+    learning_results = None  # May hold learning reranker output for fallback
     rerank_counters = {
         "inproc_hybrid": 0,
         "inproc_dense": 0,
@@ -870,6 +875,8 @@ async def _repo_search_impl(
                         tmp.append(item)
 
                     if tmp:
+                        # Store learning results separately; may be used as fallback
+                        learning_results = tmp
                         results = tmp
                         used_rerank = True
                         rerank_counters["learning"] += 1
@@ -1190,6 +1197,12 @@ async def _repo_search_impl(
                     logger.debug(f"Suppressed exception (rerank subprocess): {e}")
                     rerank_counters["error"] += 1
                     used_rerank = False
+
+    # Fallback to learning reranker results if subprocess failed but learning succeeded
+    if (not used_rerank) and learning_results:
+        results = learning_results
+        used_rerank = True
+        logger.debug("Falling back to learning reranker results after subprocess failure")
 
     if not used_rerank:
         # Build results from hybrid JSON lines
