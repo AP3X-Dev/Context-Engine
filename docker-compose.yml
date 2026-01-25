@@ -412,7 +412,7 @@ services:
     container_name: llama-decoder-dev-remote
     environment:
       - LLAMA_ARG_MODEL=/models/model.gguf
-      - LLAMA_ARG_CTX_SIZE=4096
+      - LLAMA_ARG_CTX_SIZE=${LLAMA_ARG_CTX_SIZE:-8192}
       - LLAMA_ARG_HOST=0.0.0.0
       - LLAMA_ARG_PORT=8080
     ports:
