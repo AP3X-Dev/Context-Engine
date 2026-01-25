@@ -1685,6 +1685,10 @@ async def code_search(
     case: Any = None,
     session: Any = None,
     compact: Any = None,
+    # Memory blending (opt-in)
+    include_memories: Any = None,
+    memory_weight: Any = None,
+    per_source_limits: Any = None,
     kwargs: Any = None,
 ) -> Dict[str, Any]:
     """Exact alias of repo_search (hybrid code search with reranking enabled by default).
@@ -1692,7 +1696,43 @@ async def code_search(
     Prefer repo_search; this name exists for discoverability in some IDEs/agents.
     Same parameters and return shape as repo_search.
     Reranking (rerank_enabled=true) is ON by default for optimal result quality.
+
+    Memory blending (opt-in):
+    - include_memories: bool. If true, blends memory results with code results.
+    - memory_weight: float (default 1.0). Scales memory scores relative to code.
+    - per_source_limits: dict, e.g. {"code": 5, "memory": 3}
     """
+    # If include_memories is requested, delegate to context_search for blending
+    if include_memories:
+        return await context_search(
+            query=query,
+            limit=limit,
+            per_path=per_path,
+            include_memories=include_memories,
+            memory_weight=memory_weight,
+            per_source_limits=per_source_limits,
+            include_snippet=include_snippet,
+            context_lines=context_lines,
+            rerank_enabled=rerank_enabled,
+            rerank_top_n=rerank_top_n,
+            rerank_return_m=rerank_return_m,
+            rerank_timeout_ms=rerank_timeout_ms,
+            highlight_snippet=highlight_snippet,
+            collection=collection,
+            language=language,
+            under=under,
+            kind=kind,
+            symbol=symbol,
+            path_regex=path_regex,
+            path_glob=path_glob,
+            not_glob=not_glob,
+            ext=ext,
+            not_=not_,
+            case=case,
+            session=session,
+            compact=compact,
+            kwargs=kwargs,
+        )
     return await repo_search(
         query=query,
         limit=limit,

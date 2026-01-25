@@ -57,6 +57,90 @@ from scripts.logger import safe_int, ValidationError
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Auto-memory storage for successful answers
+# ---------------------------------------------------------------------------
+
+# Minimum answer length to auto-store (default 200 chars)
+_AUTO_MEMORY_MIN_CHARS = int(os.environ.get("CONTEXT_ANSWER_AUTO_MEMORY_MIN_CHARS", "200") or 200)
+# Enable/disable auto-memory storage (default ON)
+_AUTO_MEMORY_ENABLED = os.environ.get("CONTEXT_ANSWER_AUTO_MEMORY", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _maybe_store_answer_as_memory(
+    answer: str,
+    queries: List[str],
+    citations: List[Dict[str, Any]],
+    collection: Optional[str] = None,
+) -> None:
+    """Fire-and-forget storage of successful context_answer responses as memories.
+
+    Criteria for storage:
+    - Answer is not "insufficient context"
+    - Answer has at least one citation
+    - Answer length >= _AUTO_MEMORY_MIN_CHARS (default 200)
+    - _AUTO_MEMORY_ENABLED is True (default)
+
+    Runs in a background thread to not block the response.
+    """
+    if not _AUTO_MEMORY_ENABLED:
+        return
+
+    # Check criteria
+    ans_clean = (answer or "").strip()
+    if not ans_clean:
+        return
+    if ans_clean.lower() == "insufficient context":
+        return
+    if not citations:
+        return
+    if len(ans_clean) < _AUTO_MEMORY_MIN_CHARS:
+        return
+
+    # Build memory content with query context
+    query_str = " | ".join(queries) if queries else "unknown query"
+
+    # Build citation summary (paths only)
+    cite_paths = []
+    for cit in citations[:5]:  # Limit to first 5 citations
+        p = cit.get("path") or cit.get("rel_path") or ""
+        if p:
+            cite_paths.append(p)
+    cite_summary = ", ".join(cite_paths) if cite_paths else "no paths"
+
+    # Format the memory content
+    memory_content = f"Q: {query_str}\n\nA: {ans_clean}\n\nSources: {cite_summary}"
+
+    # Build metadata
+    metadata = {
+        "kind": "context_answer",
+        "source": "auto_memory",
+        "queries": queries,
+        "citation_count": len(citations),
+        "answer_length": len(ans_clean),
+    }
+
+    # Fire-and-forget in background thread
+    import threading
+
+    def _store():
+        try:
+            # Import here to avoid circular imports
+            from scripts.mcp_memory_server import memory_store
+            memory_store(
+                information=memory_content,
+                metadata=metadata,
+                collection=collection,
+            )
+            logger.debug("Auto-stored context_answer as memory (len=%d, cites=%d)", len(ans_clean), len(citations))
+        except Exception as e:
+            # Silently fail - this is best-effort
+            logger.debug("Auto-memory storage failed: %s", e)
+
+    t = threading.Thread(target=_store, daemon=True)
+    t.start()
+
+
 # Keys to strip from citations for slim MCP output (agents only need path + rel_path)
 _VERBOSE_PATH_KEYS = ("host_path", "container_path", "client_path")
 
@@ -3373,4 +3457,13 @@ async def _context_answer_impl(
     }
     if answers_by_query:
         out["answers_by_query"] = answers_by_query
+
+    # Auto-store successful answers as memories (fire-and-forget)
+    _maybe_store_answer_as_memory(
+        answer=answer.strip(),
+        queries=original_queries,
+        citations=citations,
+        collection=collection,
+    )
+
     return out

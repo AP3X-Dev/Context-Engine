@@ -126,7 +126,8 @@ function selectClientForTool(name, indexerClient, memoryClient) {
     return indexerClient;
   }
   const lowered = name.toLowerCase();
-  if (memoryClient && (lowered.startsWith("memory.") || lowered.startsWith("mcp_memory_"))) {
+  // Route to memory server for any memory-prefixed tool
+  if (memoryClient && lowered.startsWith("memory")) {
     return memoryClient;
   }
   return indexerClient;
