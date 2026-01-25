@@ -4,14 +4,19 @@
 # This adds OpenLit observability to your existing Context-Engine stack.
 # Dashboard: http://localhost:3000 (login: user@openlit.io / openlituser)
 
+# YAML Anchors for reusable configurations
+x-clickhouse-health-condition: &clickhouse-health-condition
+  clickhouse:
+    condition: service_healthy
+
 services:
   # ClickHouse - storage backend for OpenLit
   clickhouse:
     image: clickhouse/clickhouse-server:24.4.1
     container_name: openlit-clickhouse
     ports:
-      - "9000:9000"   # Native protocol (for OTEL exporter)
-      - "8123:8123"   # HTTP interface (for dashboard queries)
+      - "9000:9000" # Native protocol (for OTEL exporter)
+      - "8123:8123" # HTTP interface (for dashboard queries)
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./config/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom-config.xml:ro
@@ -20,7 +25,7 @@ services:
       - CLICKHOUSE_PASSWORD=OPENLIT
       - CLICKHOUSE_USER=default
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      test: [ "CMD", "clickhouse-client", "--query", "SELECT 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,9 +37,9 @@ services:
     image: ghcr.io/openlit/openlit:latest
     container_name: openlit-dashboard
     ports:
-      - "3000:3000"   # Dashboard UI
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
+      - "3000:3000" # Dashboard UI
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
     environment:
       - INIT_DB_HOST=clickhouse
       - INIT_DB_PORT=8123
@@ -45,9 +50,7 @@ services:
     volumes:
       - openlit_data:/app/client/data
       - ./config/otel-collector-config.yaml:/etc/otel/otel-collector-config.yaml:ro
-    depends_on:
-      clickhouse:
-        condition: service_healthy
+    depends_on: *clickhouse-health-condition
     networks:
       - dev-remote-network
 
