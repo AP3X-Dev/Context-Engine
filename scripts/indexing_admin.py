@@ -210,6 +210,24 @@ def _invalidate_schema_cache(collection: Optional[str] = None) -> None:
         _COLLECTION_SCHEMA_CACHE_TS.clear()
 
 
+def list_qdrant_collections() -> List[Dict[str, Any]]:
+    """List all collections directly from Qdrant (no auth required).
+
+    Returns a list of dicts with 'qdrant_collection' key for compatibility
+    with build_admin_collections_view.
+    """
+    client = _get_shared_qdrant_client()
+    if client is None:
+        return []
+    try:
+        collections_response = client.get_collections()
+        collections = getattr(collections_response, "collections", []) or []
+        return [{"qdrant_collection": c.name} for c in collections if hasattr(c, "name")]
+    except Exception as e:
+        logger.debug(f"Failed to list Qdrant collections: {e}")
+        return []
+
+
 def _probe_collection_schema(collection: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     """Probe collection schema with TTL-aware caching and shared client pool."""
     if not collection or QdrantClient is None:

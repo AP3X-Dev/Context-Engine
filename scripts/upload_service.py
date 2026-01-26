@@ -55,6 +55,7 @@ except ImportError:
 
 from scripts.indexing_admin import (
     build_admin_collections_view,
+    list_qdrant_collections,
     resolve_collection_root,
     spawn_ingest_code,
     recreate_collection_qdrant,
@@ -784,13 +785,19 @@ async def admin_logout():
 async def admin_acl_page(request: Request):
     _require_admin_session(request)
     try:
-        users = list_users() if AUTH_ENABLED else []
-        collections = list_collections(include_deleted=False)
-        grants = list_collection_acl() if AUTH_ENABLED else []
+        if AUTH_ENABLED:
+            users = list_users()
+            collections = list_collections(include_deleted=False)
+            grants = list_collection_acl()
+        else:
+            # Auth disabled - get collections directly from Qdrant
+            users = []
+            collections = list_qdrant_collections()
+            grants = []
     except AuthDisabledError:
-        # Auth disabled - still show collections, just no users/grants
+        # Fallback: get collections directly from Qdrant
         users = []
-        collections = list_collections(include_deleted=False)
+        collections = list_qdrant_collections()
         grants = []
     except Exception as e:
         logger.error(f"[upload_service] Failed to load admin UI data: {e}")
