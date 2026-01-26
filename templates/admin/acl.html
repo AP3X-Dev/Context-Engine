@@ -19,6 +19,7 @@
   <button class="tab active" data-tab="collections">Collections</button>
   <button class="tab" data-tab="users">Users</button>
   <button class="tab" data-tab="grants">Access Control</button>
+  <button class="tab" data-tab="keys">API Keys</button>
 </div>
 
 <!-- Collections Tab -->
@@ -143,26 +144,29 @@
                 {% endif %}
               </td>
               <td>
-                <div class="action-group">
+                <div class="action-group" style="gap: 6px;">
                   {% if c.has_mapping %}
                   <form class="inline-form js-confirm" data-confirm-title="Reindex Collection" data-confirm-message="Reindex {{ c.qdrant_collection }}? This will re-index all files." method="post" action="/admin/collections/reindex">
                     <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
-                    <button type="submit" class="btn btn-ghost btn-sm" title="Reindex">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    <button type="submit" class="action-btn action-btn-primary" title="Reindex">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                      <span class="hide-mobile">Reindex</span>
                     </button>
                   </form>
                   <form class="inline-form js-confirm" data-confirm-title="Recreate Collection" data-confirm-message="Recreate {{ c.qdrant_collection }}? This will delete and rebuild the entire collection." method="post" action="/admin/collections/recreate">
                     <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
-                    <button type="submit" class="btn btn-ghost btn-sm" title="Recreate">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                    <button type="submit" class="action-btn action-btn-warning" title="Recreate">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                      <span class="hide-mobile">Recreate</span>
                     </button>
                   </form>
                   {% endif %}
                   {% if deletion_enabled %}
                   <form class="inline-form js-confirm" data-confirm-title="Delete Collection" data-confirm-message="Delete {{ c.qdrant_collection }}? This cannot be undone." method="post" action="/admin/collections/delete">
                     <input type="hidden" name="collection" value="{{ c.qdrant_collection }}" />
-                    <button type="submit" class="btn btn-danger btn-sm" title="Delete">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    <button type="submit" class="action-btn action-btn-danger" title="Delete">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                      <span class="hide-mobile">Delete</span>
                     </button>
                   </form>
                   {% endif %}
@@ -356,6 +360,115 @@
   </div>
 </div>
 
+<!-- API Keys Tab -->
+<div class="tab-content" id="tab-keys" style="display: none;">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">API Keys</h2>
+        <p class="card-subtitle">Manage shared access tokens for service authentication</p>
+      </div>
+      <button class="btn btn-primary" onclick="toggleCreateKey()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Create Key
+      </button>
+    </div>
+
+    <!-- Create Key Form (hidden by default) -->
+    <div id="create-key-form" style="display: none; margin-bottom: 24px; padding: 20px; background: var(--bg-secondary); border-radius: var(--radius); border: 1px solid var(--border);">
+      <h3 style="margin: 0 0 16px 0; font-size: 14px; font-weight: 600;">New API Key</h3>
+      <form method="post" action="/admin/keys" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; align-items: end;">
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Name</label>
+          <input type="text" name="name" class="form-input" placeholder="e.g., CI Pipeline" required />
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Scope</label>
+          <select name="scope" class="form-select">
+            <option value="read">Read Only</option>
+            <option value="write">Read + Write</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label class="form-label">Expires</label>
+          <select name="expires" class="form-select">
+            <option value="never">Never</option>
+            <option value="7d">7 Days</option>
+            <option value="30d">30 Days</option>
+            <option value="90d">90 Days</option>
+            <option value="1y">1 Year</option>
+          </select>
+        </div>
+        <div class="flex gap-2">
+          <button type="submit" class="btn btn-primary">Create</button>
+          <button type="button" class="btn btn-secondary" onclick="toggleCreateKey()">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="table-container">
+      <table id="keys-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Key</th>
+            <th>Scope</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th>Last Used</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="keys-body">
+          {% if api_keys and api_keys|length > 0 %}
+            {% for k in api_keys %}
+            <tr>
+              <td style="font-weight: 500; color: var(--text-primary);">{{ k.name }}</td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <code class="font-mono text-sm" style="background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px;">{{ k.key_prefix }}...{{ k.key_suffix }}</code>
+                  <button type="button" class="btn btn-ghost btn-sm" onclick="copyKey('{{ k.id }}')" title="Copy full key">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>
+              </td>
+              <td>
+                {% if k.scope == 'admin' %}
+                <span class="badge badge-warning">Admin</span>
+                {% elif k.scope == 'write' %}
+                <span class="badge badge-success">Write</span>
+                {% else %}
+                <span class="badge">Read</span>
+                {% endif %}
+              </td>
+              <td class="text-muted text-sm">{{ k.created_at }}</td>
+              <td class="text-muted text-sm">{{ k.expires_at or 'Never' }}</td>
+              <td class="text-muted text-sm">{{ k.last_used_at or 'Never' }}</td>
+              <td>
+                <form class="inline-form js-confirm" data-confirm-title="Revoke Key" data-confirm-message="Revoke API key '{{ k.name }}'? This cannot be undone." method="post" action="/admin/keys/revoke">
+                  <input type="hidden" name="key_id" value="{{ k.id }}" />
+                  <button type="submit" class="action-btn action-btn-danger">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    Revoke
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+          <tr><td colspan="7" style="text-align: center; padding: 40px; color: var(--text-muted);">No API keys found. Create one to enable token-based authentication.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: var(--radius); border: 1px solid var(--border);">
+      <p class="text-muted text-sm" style="margin: 0;">API keys can be used with the <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">CTXCE_AUTH_TOKEN</code> environment variable or the <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">X-Auth-Token</code> header.</p>
+    </div>
+  </div>
+</div>
+
 <script>
 (function() {
   // Tab switching
@@ -381,6 +494,20 @@
   window.toggleGrantForm = function() {
     const form = document.getElementById('grant-form');
     form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  };
+
+  window.toggleCreateKey = function() {
+    const form = document.getElementById('create-key-form');
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  };
+
+  window.copyKey = function(keyId) {
+    // This would need a backend endpoint to get the full key
+    // For now, show a toast indicating the key was copied
+    if (window.showToast) {
+      showToast('Key ID copied to clipboard', 'success');
+    }
+    navigator.clipboard.writeText(keyId).catch(() => {});
   };
 
   // Collection refresh
@@ -427,14 +554,16 @@
     const actions = c.has_mapping ? `
       <form class="inline-form js-confirm" data-confirm-title="Reindex Collection" data-confirm-message="Reindex ${escapeHtml(c.qdrant_collection)}?" method="post" action="/admin/collections/reindex">
         <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-        <button type="submit" class="btn btn-ghost btn-sm" title="Reindex">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        <button type="submit" class="action-btn action-btn-primary" title="Reindex">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          <span class="hide-mobile">Reindex</span>
         </button>
       </form>
       <form class="inline-form js-confirm" data-confirm-title="Recreate Collection" data-confirm-message="Recreate ${escapeHtml(c.qdrant_collection)}?" method="post" action="/admin/collections/recreate">
         <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-        <button type="submit" class="btn btn-ghost btn-sm" title="Recreate">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        <button type="submit" class="action-btn action-btn-warning" title="Recreate">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+          <span class="hide-mobile">Recreate</span>
         </button>
       </form>
     ` : '';
@@ -442,8 +571,9 @@
     const deleteBtn = deletionEnabled ? `
       <form class="inline-form js-confirm" data-confirm-title="Delete Collection" data-confirm-message="Delete ${escapeHtml(c.qdrant_collection)}?" method="post" action="/admin/collections/delete">
         <input type="hidden" name="collection" value="${escapeHtml(c.qdrant_collection)}" />
-        <button type="submit" class="btn btn-danger btn-sm" title="Delete">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        <button type="submit" class="action-btn action-btn-danger" title="Delete">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <span class="hide-mobile">Delete</span>
         </button>
       </form>
     ` : '';

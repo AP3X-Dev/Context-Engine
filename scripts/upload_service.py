@@ -745,8 +745,7 @@ async def admin_bootstrap_submit(
 
 @app.get("/admin/login")
 async def admin_login_form(request: Request):
-    if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+    # Show login page even in demo mode so users can enter demo credentials
     return render_admin_login(request)
 
 
