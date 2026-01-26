@@ -119,11 +119,13 @@ try:
         start_staging_rebuild,
         activate_staging_rebuild,
         abort_staging_rebuild,
+        get_neo4j_status,
     )
 except ImportError:
     start_staging_rebuild = None  # type: ignore
     activate_staging_rebuild = None  # type: ignore
     abort_staging_rebuild = None  # type: ignore
+    get_neo4j_status = None  # type: ignore
 
 # Import existing workspace state and indexing functions
 try:
@@ -859,12 +861,21 @@ async def admin_acl_page(request: Request):
             level = "success"
         flash = {"message": message, "level": level}
 
+    # Get Neo4j status
+    neo4j_status = {}
+    if callable(get_neo4j_status):
+        try:
+            neo4j_status = get_neo4j_status()
+        except Exception as e:
+            logger.debug(f"[upload_service] Failed to get Neo4j status: {e}")
+
     resp = render_admin_acl(
         request,
         users=users,
         collections=enriched,
         grants=grants,
         api_keys=api_keys,
+        neo4j_status=neo4j_status,
         deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
         work_dir=WORK_DIR,
         refresh_ms=ADMIN_COLLECTION_REFRESH_MS,

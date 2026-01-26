@@ -6,7 +6,28 @@
     <h1 class="page-title">Admin Dashboard</h1>
     <p class="page-subtitle">Manage users, collections, and access control</p>
   </div>
-  <div class="flex gap-2">
+  <div class="flex gap-2 items-center">
+    <!-- System Status Badges -->
+    <div class="system-status flex gap-2" style="margin-right: 12px;">
+      {% if neo4j_status and neo4j_status.enabled %}
+        {% if neo4j_status.healthy %}
+        <span class="badge badge-success" title="Neo4j connected{% if neo4j_status.version %} (v{{ neo4j_status.version }}){% endif %}">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
+          Neo4j
+        </span>
+        {% else %}
+        <span class="badge badge-danger" title="Neo4j error: {{ neo4j_status.checks|tojson if neo4j_status.checks else 'Connection failed' }}">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          Neo4j
+        </span>
+        {% endif %}
+      {% else %}
+        <span class="badge badge-muted" title="Neo4j not enabled (set NEO4J_GRAPH=1)">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="12" cy="12" r="10"/><line x1="4" y1="4" x2="20" y2="20"/></svg>
+          Neo4j
+        </span>
+      {% endif %}
+    </div>
     <button class="btn btn-secondary" onclick="refreshAll()">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
       Refresh
