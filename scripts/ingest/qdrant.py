@@ -24,15 +24,20 @@ logger = logging.getLogger(__name__)
 _EMBED_MAX_CONCURRENT = max(1, int(os.environ.get("EMBED_MAX_CONCURRENT", "2") or 2))
 _EMBED_SEMAPHORE = threading.Semaphore(_EMBED_MAX_CONCURRENT)
 
-# Remote embedding service configuration
-_EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
-_EMBEDDING_SERVICE_URL = os.environ.get("EMBEDDING_SERVICE_URL", "http://embedding:8100")
+# Remote embedding service configuration - functions for runtime flexibility (tests can change env)
+def _get_embedding_provider() -> str:
+    return os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
+
+def _get_embedding_service_url() -> str:
+    return os.environ.get("EMBEDDING_SERVICE_URL", "http://embedding:8100")
+
+def _get_embedding_service_urls() -> list:
+    raw = os.environ.get("EMBEDDING_SERVICE_URLS", "").strip()
+    return [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+
 _EMBEDDING_SERVICE_TIMEOUT = int(os.environ.get("EMBEDDING_SERVICE_TIMEOUT", "60") or 60)
 
 # Client-side load balancing for multiple replicas (Compose mode)
-# Set EMBEDDING_SERVICE_URLS=http://host1:8100,http://host2:8100 for parallel processing
-_EMBEDDING_SERVICE_URLS_RAW = os.environ.get("EMBEDDING_SERVICE_URLS", "").strip()
-_EMBEDDING_SERVICE_URLS = [u.strip() for u in _EMBEDDING_SERVICE_URLS_RAW.split(",") if u.strip()] if _EMBEDDING_SERVICE_URLS_RAW else []
 _EMBED_REPLICA_INDEX = 0
 _EMBED_REPLICA_LOCK = threading.Lock()
 
@@ -1022,13 +1027,17 @@ def _embed_remote(texts: List[str], model_name: str = "default") -> List[List[fl
     global _EMBED_REPLICA_INDEX
     import requests
 
+    # Get URLs at call time (not import time) for test flexibility
+    service_urls = _get_embedding_service_urls()
+    service_url = _get_embedding_service_url()
+
     # Client-side load balancing across replicas
-    if _EMBEDDING_SERVICE_URLS:
+    if service_urls:
         with _EMBED_REPLICA_LOCK:
-            url = _EMBEDDING_SERVICE_URLS[_EMBED_REPLICA_INDEX % len(_EMBEDDING_SERVICE_URLS)]
+            url = service_urls[_EMBED_REPLICA_INDEX % len(service_urls)]
             _EMBED_REPLICA_INDEX += 1
     else:
-        url = _EMBEDDING_SERVICE_URL
+        url = service_url
 
     try:
         resp = requests.post(
@@ -1055,7 +1064,8 @@ def embed_batch(model, texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
 
-    if _EMBEDDING_PROVIDER == "remote":
+    # Check provider at call time (not import time) for test flexibility
+    if _get_embedding_provider() == "remote":
         # Get model name for remote service
         model_name = getattr(model, "model_name", None) or os.environ.get("EMBEDDING_MODEL", "default")
         return _embed_remote(texts, model_name)

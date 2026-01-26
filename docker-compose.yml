@@ -48,11 +48,11 @@ services:
       # Limit OMP/MKL threads to match ONNX_THREADS
       - OMP_NUM_THREADS=${ONNX_THREADS:-4}
       - MKL_NUM_THREADS=${ONNX_THREADS:-4}
-      # Cache paths
-      - HF_HOME=/tmp/huggingface
-      - FASTEMBED_CACHE_PATH=/tmp/fastembed
+      # Cache paths - aligned with Dockerfile and volume mount
+      - HF_HOME=/app/models
+      - FASTEMBED_CACHE_PATH=/app/models
     volumes:
-      - embedding_cache:/tmp/huggingface
+      - embedding_cache:/app/models
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
       interval: 30s

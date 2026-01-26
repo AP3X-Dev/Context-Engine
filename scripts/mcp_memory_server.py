@@ -429,7 +429,10 @@ def _ensure_collection(name: str):
         _return_qdrant_client(client)
 
     # Choose dense dimension based on config: probe (default) vs env-configured
-    if MEMORY_PROBE_EMBED_DIM:
+    # When EMBEDDING_PROVIDER=remote, skip local model loading and use env dimension or probe via remote
+    _embedding_provider = os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
+
+    if MEMORY_PROBE_EMBED_DIM and _embedding_provider != "remote":
         try:
             # Probe dimension without populating the shared model cache.
             # This preserves the "cache loads on first tool call" behavior and
@@ -446,6 +449,22 @@ def _ensure_collection(name: str):
                     dense_dim = int(os.environ.get("MEMORY_VECTOR_DIM") or os.environ.get("EMBED_DIM") or "768")
         except Exception:
             # Fallback to env-configured dimension if probing fails
+            try:
+                dense_dim = int(os.environ.get("MEMORY_VECTOR_DIM") or os.environ.get("EMBED_DIM") or "768")
+            except Exception:
+                dense_dim = 768
+    elif MEMORY_PROBE_EMBED_DIM and _embedding_provider == "remote":
+        # Remote mode: probe via remote embedding service instead of loading model locally
+        try:
+            import requests
+            _embed_url = os.environ.get("EMBEDDING_SERVICE_URL", "http://embedding:8100")
+            resp = requests.post(f"{_embed_url}/embed", json={"texts": ["probe"]}, timeout=30)
+            resp.raise_for_status()
+            vectors = resp.json().get("vectors", [])
+            dense_dim = len(vectors[0]) if vectors else int(os.environ.get("MEMORY_VECTOR_DIM") or os.environ.get("EMBED_DIM") or "768")
+            logger.info(f"Probed embedding dimension via remote service: {dense_dim}")
+        except Exception as e:
+            logger.warning(f"Remote embedding probe failed, using env dimension: {e}")
             try:
                 dense_dim = int(os.environ.get("MEMORY_VECTOR_DIM") or os.environ.get("EMBED_DIM") or "768")
             except Exception:

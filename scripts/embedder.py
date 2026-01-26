@@ -76,8 +76,9 @@ _QWEN3_REGISTER_LOCK = threading.Lock()
 _ARCTIC_V2_REGISTERED = False
 _ARCTIC_V2_REGISTER_LOCK = threading.Lock()
 
-# Remote embedding provider detection
-_EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
+def _get_embedding_provider() -> str:
+    """Get embedding provider at call time (not import time) for test flexibility."""
+    return os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
 
 
 class RemoteEmbeddingStub:
@@ -179,7 +180,7 @@ def get_embedding_model(model_name: Optional[str] = None) -> Any:
 
     # Remote mode: return lightweight stub (no ONNX loaded)
     # This saves ~3-4 GB RAM per indexer since embed_batch() routes to remote service
-    if _EMBEDDING_PROVIDER == "remote":
+    if _get_embedding_provider() == "remote":
         cached = _EMBED_MODEL_CACHE.get(f"remote:{model_name}")
         if cached is not None:
             return cached

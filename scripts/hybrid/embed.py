@@ -32,17 +32,26 @@ from typing import Any, List, Optional, TYPE_CHECKING
 # Embedder factory setup
 # ---------------------------------------------------------------------------
 try:
-    from scripts.embedder import get_embedding_model as _get_embedding_model
+    from scripts.embedder import get_embedding_model as _get_embedding_model, RemoteEmbeddingStub
     _EMBEDDER_FACTORY = True
 except ImportError:
     _EMBEDDER_FACTORY = False
     _get_embedding_model = None  # type: ignore
+    RemoteEmbeddingStub = None  # type: ignore
 
 # Always try to import TextEmbedding for backward compatibility with tests
 try:
     from fastembed import TextEmbedding
 except ImportError:
     TextEmbedding = None  # type: ignore
+
+# Remote embedding support: use embed_batch() when EMBEDDING_PROVIDER=remote
+try:
+    from scripts.ingest.qdrant import embed_batch as _embed_batch_remote
+    _REMOTE_EMBED_AVAILABLE = True
+except ImportError:
+    _embed_batch_remote = None  # type: ignore
+    _REMOTE_EMBED_AVAILABLE = False
 
 # Type alias for embedding model (TextEmbedding or compatible)
 EmbeddingModel = Any if TextEmbedding is None else TextEmbedding
@@ -231,24 +240,38 @@ def _embed_with_unified_cache(
     # Batch-embed all missing queries in one call
     # Use query_embed if available AND ASYMMETRIC_EMBEDDING=1 (e.g., Jina v3)
     if missing_queries:
-        # Select embedding function: query_embed for asymmetric models, else regular embed
-        if ASYMMETRIC_EMBEDDING and hasattr(model, "query_embed"):
-            embed_fn = model.query_embed
-        else:
-            embed_fn = model.embed
+        # Check if model is RemoteEmbeddingStub - route to remote service
+        is_remote_stub = RemoteEmbeddingStub is not None and isinstance(model, RemoteEmbeddingStub)
 
-        try:
-            vecs = list(embed_fn(missing_queries))
-            # Cache all new embeddings
-            for q, vec in zip(missing_queries, vecs):
-                key = (str(model_name), str(q))
-                cache.set(key, vec.tolist())
-        except Exception:
-            # Fallback to one-by-one if batch fails
-            for q in missing_queries:
-                key = (str(model_name), str(q))
-                vec = next(embed_fn([q])).tolist()
-                cache.set(key, vec)
+        if is_remote_stub and _REMOTE_EMBED_AVAILABLE and _embed_batch_remote is not None:
+            # Use remote embedding service via embed_batch()
+            try:
+                vecs = _embed_batch_remote(model, missing_queries)
+                for q, vec in zip(missing_queries, vecs):
+                    key = (str(model_name), str(q))
+                    cache.set(key, vec if isinstance(vec, list) else vec.tolist())
+            except Exception as e:
+                logger.warning(f"Remote embedding failed: {e}")
+                raise
+        else:
+            # Local embedding: select function based on asymmetric mode
+            if ASYMMETRIC_EMBEDDING and hasattr(model, "query_embed"):
+                embed_fn = model.query_embed
+            else:
+                embed_fn = model.embed
+
+            try:
+                vecs = list(embed_fn(missing_queries))
+                # Cache all new embeddings
+                for q, vec in zip(missing_queries, vecs):
+                    key = (str(model_name), str(q))
+                    cache.set(key, vec.tolist())
+            except Exception:
+                # Fallback to one-by-one if batch fails
+                for q in missing_queries:
+                    key = (str(model_name), str(q))
+                    vec = next(embed_fn([q])).tolist()
+                    cache.set(key, vec)
 
     # Return embeddings in original order from cache
     out: List[List[float]] = []
@@ -280,34 +303,53 @@ def _embed_with_legacy_cache(
     # Batch-embed all missing queries in one call
     # Use query_embed if available AND ASYMMETRIC_EMBEDDING=1 (e.g., Jina v3)
     if missing_queries:
-        if ASYMMETRIC_EMBEDDING and hasattr(model, "query_embed"):
-            embed_fn = model.query_embed
-        else:
-            embed_fn = model.embed
+        # Check if model is RemoteEmbeddingStub - route to remote service
+        is_remote_stub = RemoteEmbeddingStub is not None and isinstance(model, RemoteEmbeddingStub)
 
-        try:
-            # Embed all missing queries at once
-            vecs = list(embed_fn(missing_queries))
-            with _EMBED_LOCK:
-                # Cache all new embeddings
-                for q, vec in zip(missing_queries, vecs):
-                    key = (str(model_name), str(q))
-                    if key not in _EMBED_QUERY_CACHE:
-                        _EMBED_QUERY_CACHE[key] = vec.tolist()
-                        # Evict oldest entries if cache exceeds limit
-                        while len(_EMBED_QUERY_CACHE) > MAX_EMBED_CACHE:
-                            _EMBED_QUERY_CACHE.popitem(last=False)
-        except Exception:
-            # Fallback to one-by-one if batch fails
-            for q in missing_queries:
-                key = (str(model_name), str(q))
-                vec = next(embed_fn([q])).tolist()
+        if is_remote_stub and _REMOTE_EMBED_AVAILABLE and _embed_batch_remote is not None:
+            # Use remote embedding service via embed_batch()
+            try:
+                vecs = _embed_batch_remote(model, missing_queries)
                 with _EMBED_LOCK:
-                    if key not in _EMBED_QUERY_CACHE:
-                        _EMBED_QUERY_CACHE[key] = vec
-                        # Evict oldest entries if cache exceeds limit
-                        while len(_EMBED_QUERY_CACHE) > MAX_EMBED_CACHE:
-                            _EMBED_QUERY_CACHE.popitem(last=False)
+                    for q, vec in zip(missing_queries, vecs):
+                        key = (str(model_name), str(q))
+                        if key not in _EMBED_QUERY_CACHE:
+                            _EMBED_QUERY_CACHE[key] = vec if isinstance(vec, list) else vec.tolist()
+                            while len(_EMBED_QUERY_CACHE) > MAX_EMBED_CACHE:
+                                _EMBED_QUERY_CACHE.popitem(last=False)
+            except Exception as e:
+                logger.warning(f"Remote embedding failed: {e}")
+                raise
+        else:
+            # Local embedding
+            if ASYMMETRIC_EMBEDDING and hasattr(model, "query_embed"):
+                embed_fn = model.query_embed
+            else:
+                embed_fn = model.embed
+
+            try:
+                # Embed all missing queries at once
+                vecs = list(embed_fn(missing_queries))
+                with _EMBED_LOCK:
+                    # Cache all new embeddings
+                    for q, vec in zip(missing_queries, vecs):
+                        key = (str(model_name), str(q))
+                        if key not in _EMBED_QUERY_CACHE:
+                            _EMBED_QUERY_CACHE[key] = vec.tolist()
+                            # Evict oldest entries if cache exceeds limit
+                            while len(_EMBED_QUERY_CACHE) > MAX_EMBED_CACHE:
+                                _EMBED_QUERY_CACHE.popitem(last=False)
+            except Exception:
+                # Fallback to one-by-one if batch fails
+                for q in missing_queries:
+                    key = (str(model_name), str(q))
+                    vec = next(embed_fn([q])).tolist()
+                    with _EMBED_LOCK:
+                        if key not in _EMBED_QUERY_CACHE:
+                            _EMBED_QUERY_CACHE[key] = vec
+                            # Evict oldest entries if cache exceeds limit
+                            while len(_EMBED_QUERY_CACHE) > MAX_EMBED_CACHE:
+                                _EMBED_QUERY_CACHE.popitem(last=False)
 
     # Return embeddings in original order from cache (thread-safe read)
     out: List[List[float]] = []
