@@ -1508,6 +1508,7 @@ def index_repo(
         Returns:
             (path, error_or_none, was_skipped_due_to_lock)
         """
+        import gc
         per_file_repo = (
             root_repo_for_cache
             if root_repo_for_cache is not None
@@ -1532,6 +1533,9 @@ def index_repo(
             return (file_path, None, True)
         except Exception as e:
             return (file_path, e, False)
+        finally:
+            # Free memory after each file to prevent accumulation
+            gc.collect()
 
     files_processed = 0
     errors = []
