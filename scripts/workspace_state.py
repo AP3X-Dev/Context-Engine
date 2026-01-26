@@ -19,6 +19,7 @@ import re
 import uuid
 import subprocess
 import hashlib
+import xxhash
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Literal, TypedDict
@@ -71,7 +72,7 @@ def _redis_prefix() -> str:
 
 def _redis_key_for_path(kind: str, path: Path) -> str:
     raw = str(path)
-    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()
+    digest = xxhash.xxh64(raw.encode("utf-8")).hexdigest()
     return f"{_redis_prefix()}:{kind}:{digest}"
 
 
@@ -270,7 +271,7 @@ def _redis_lock(kind: str, path: Path):
         logger.info(f"Redis lock not acquired for {lock_key} after {attempts} attempts, proceeding without lock")
         yield
         return
-    logger.info(f"Redis lock acquired for {lock_key} (attempts={attempts}, ttl={ttl_ms}ms)")
+    logger.debug(f"Redis lock acquired for {lock_key} (attempts={attempts}, ttl={ttl_ms}ms)")
     try:
         yield
     finally:
@@ -451,7 +452,7 @@ def _migrate_redis_to_file(workspace_root: Path) -> int:
                             file_path = codebase_dir / "cache.json"
                         else:
                             # For symbols, use a hash-based name
-                            key_hash = key.split(":")[-1] if ":" in key else hashlib.md5(key.encode()).hexdigest()
+                            key_hash = key.split(":")[-1] if ":" in key else xxhash.xxh64(key.encode()).hexdigest()
                             symbols_dir = codebase_dir / "symbols"
                             symbols_dir.mkdir(parents=True, exist_ok=True)
                             file_path = symbols_dir / f"{key_hash[:16]}.json"
@@ -1001,8 +1002,7 @@ _FILE_LOCK_TIMEOUT_SECONDS = 300  # 5 min max per file (generous for LLM calls)
 def _get_file_lock_path(file_path: str) -> Path:
     """Get the lock file path for a given file."""
     # Use hash of file path to avoid filesystem path issues
-    import hashlib
-    path_hash = hashlib.md5(file_path.encode()).hexdigest()[:16]
+    path_hash = xxhash.xxh64(file_path.encode()).hexdigest()[:16]
     return _FILE_LOCKS_DIR / f"{path_hash}.lock"
 
 
@@ -2764,7 +2764,7 @@ def _get_symbol_cache_path(file_path: str) -> Path:
     try:
         fp = _normalize_cache_key_path(file_path)
         # Create symbol cache using file hash to handle renames
-        file_hash = hashlib.md5(fp.encode('utf-8')).hexdigest()[:8]
+        file_hash = xxhash.xxh64(fp.encode('utf-8')).hexdigest()[:8]
         if is_multi_repo_mode():
             repo_name = _detect_repo_name_from_path(Path(file_path))
             if repo_name:

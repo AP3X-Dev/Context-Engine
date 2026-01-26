@@ -379,7 +379,8 @@ def _get_valid_session_record(request: Request) -> Optional[Dict[str, Any]]:
 
 def _require_admin_session(request: Request) -> Dict[str, Any]:
     if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Allow access when auth is disabled (demo/dev mode)
+        return {"user_id": "demo", "role": "admin"}
     record = _get_valid_session_record(request)
     if record is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
@@ -648,11 +649,12 @@ async def auth_validate(payload: AuthValidateRequest):
 @app.get("/admin")
 async def admin_root(request: Request):
     if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Auth disabled - go directly to dashboard (demo mode)
+        return RedirectResponse(url="/admin/acl", status_code=302)
     try:
         users_exist = has_any_users()
     except AuthDisabledError:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        return RedirectResponse(url="/admin/acl", status_code=302)
     except Exception as e:
         logger.error(f"[upload_service] Failed to inspect user state for admin UI: {e}")
         raise HTTPException(status_code=500, detail="Failed to inspect user state")
@@ -782,11 +784,14 @@ async def admin_logout():
 async def admin_acl_page(request: Request):
     _require_admin_session(request)
     try:
-        users = list_users()
+        users = list_users() if AUTH_ENABLED else []
         collections = list_collections(include_deleted=False)
-        grants = list_collection_acl()
+        grants = list_collection_acl() if AUTH_ENABLED else []
     except AuthDisabledError:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Auth disabled - still show collections, just no users/grants
+        users = []
+        collections = list_collections(include_deleted=False)
+        grants = []
     except Exception as e:
         logger.error(f"[upload_service] Failed to load admin UI data: {e}")
         raise HTTPException(status_code=500, detail="Failed to load admin data")

@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import hashlib
 import time
+
+import xxhash
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -702,7 +703,7 @@ def _index_single_file_inner(
 
     language = detect_language(file_path)
     is_text_like = _is_text_like_language(language)
-    file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+    file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
 
     repo_tag = repo_name_for_cache or _detect_repo_name_from_path(file_path)
 
@@ -1590,7 +1591,7 @@ def process_file_with_smart_reindexing(
     except Exception:
         file_path = Path(fp)
 
-    file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+    file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
 
     # FAST PATH: Check if file hash is unchanged - skip entire processing if so
     # This avoids AST parsing for unchanged files (P1 optimization)
