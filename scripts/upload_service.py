@@ -649,13 +649,24 @@ async def auth_validate(payload: AuthValidateRequest):
 
 @app.get("/admin")
 async def admin_root(request: Request):
+    # Check for demo session cookie first (works in demo mode)
+    candidate = _get_session_candidate_from_request(request)
+    session_id = candidate.get("session_id") or ""
+
     if not AUTH_ENABLED:
-        # Auth disabled - go directly to dashboard (demo mode)
-        return RedirectResponse(url="/admin/acl", status_code=302)
+        # Demo mode: if we have a demo session cookie, go to dashboard
+        if session_id.startswith("demo-"):
+            return RedirectResponse(url="/admin/acl", status_code=302)
+        # Otherwise show login page for demo credentials
+        return RedirectResponse(url="/admin/login", status_code=302)
+
     try:
         users_exist = has_any_users()
     except AuthDisabledError:
-        return RedirectResponse(url="/admin/acl", status_code=302)
+        # Fallback to demo mode behavior
+        if session_id.startswith("demo-"):
+            return RedirectResponse(url="/admin/acl", status_code=302)
+        return RedirectResponse(url="/admin/login", status_code=302)
     except Exception as e:
         logger.error(f"[upload_service] Failed to inspect user state for admin UI: {e}")
         raise HTTPException(status_code=500, detail="Failed to inspect user state")
@@ -663,7 +674,6 @@ async def admin_root(request: Request):
     if not users_exist:
         return RedirectResponse(url="/admin/bootstrap", status_code=302)
 
-    candidate = _get_session_candidate_from_request(request)
     record = _get_valid_session_record(request)
     if record is None:
         return RedirectResponse(url="/admin/login", status_code=302)
@@ -746,11 +756,31 @@ async def admin_login_submit(
     username: str = Form(...),
     password: str = Form(...),
 ):
+    # Demo mode: accept admin/admin when auth is disabled
     if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        if username == "admin" and password == "admin":
+            # Create a demo session cookie and redirect
+            import uuid
+            demo_session_id = f"demo-{uuid.uuid4().hex}"
+            resp = RedirectResponse(url="/admin/acl", status_code=302)
+            _set_admin_session_cookie(resp, demo_session_id)
+            return resp
+        return render_admin_login(
+            request=request,
+            error="Invalid credentials (demo mode: use admin/admin)",
+            status_code=401,
+        )
+
     try:
         user = authenticate_user(username, password)
     except AuthDisabledError:
+        # Fallback to demo mode
+        if username == "admin" and password == "admin":
+            import uuid
+            demo_session_id = f"demo-{uuid.uuid4().hex}"
+            resp = RedirectResponse(url="/admin/acl", status_code=302)
+            _set_admin_session_cookie(resp, demo_session_id)
+            return resp
         raise HTTPException(status_code=404, detail="Auth disabled")
     except Exception as e:
         logger.error(f"[upload_service] Error authenticating user for admin UI: {e}")

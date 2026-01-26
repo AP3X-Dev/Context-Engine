@@ -65,6 +65,8 @@ from scripts.ingest.config import (
     get_workspace_state,
     compare_symbol_changes,
     file_indexing_lock,
+    set_indexing_started,
+    set_indexing_progress,
 )
 from scripts.ingest.exclusions import (
     iter_files,
@@ -1479,6 +1481,14 @@ def index_repo(
     if log_progress:
         print(f"[index] Found {total_files} files to process under {root}")
 
+    # Track progress in workspace state for live UI updates
+    workspace_path = str(root)
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        set_indexing_started(workspace_path, total_files)
+    except Exception as e:
+        logger.debug(f"Failed to set indexing started: {e}")
+
     # Parallel file processing configuration
     # INDEX_WORKERS=0 or 1 means sequential (default for safety)
     # INDEX_WORKERS=N uses N threads (recommended: 4-8 for I/O-bound indexing)
@@ -1537,6 +1547,7 @@ def index_repo(
         with enable_lock_skip_on_contention():
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_index_file_task, fp): fp for fp in files}
+                last_progress_update = 0
                 for future in as_completed(futures):
                     files_processed += 1
                     file_path, error, was_skipped = future.result()
@@ -1548,6 +1559,16 @@ def index_repo(
                         print(f"Error indexing {file_path}: {error}")
                     if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
                         print(f"[index] {files_processed}/{total_files} files processed")
+                    # Update progress in workspace state every 10 files for live UI
+                    if files_processed - last_progress_update >= 10 or files_processed == total_files:
+                        last_progress_update = files_processed
+                        try:
+                            set_indexing_progress(
+                                workspace_path, started_at, files_processed, total_files,
+                                str(file_path) if file_path else None
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to update indexing progress: {e}")
 
         # Retry phase: process skipped files sequentially (no lock contention mode)
         # This runs OUTSIDE the enable_lock_skip_on_contention context, so locks wait normally
@@ -1565,6 +1586,7 @@ def index_repo(
                     logger.warning(f"Lock still contended after retry for {file_path}")
     else:
         # Sequential processing (original behavior) - no retry needed
+        last_progress_update = 0
         for file_path in iterator:
             files_processed += 1
             file_path, error, _ = _index_file_task(file_path)
@@ -1573,6 +1595,16 @@ def index_repo(
                 print(f"Error indexing {file_path}: {error}")
             if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
                 print(f"[index] {files_processed}/{total_files} files processed")
+            # Update progress in workspace state every 10 files for live UI
+            if files_processed - last_progress_update >= 10 or files_processed == total_files:
+                last_progress_update = files_processed
+                try:
+                    set_indexing_progress(
+                        workspace_path, started_at, files_processed, total_files,
+                        str(file_path) if file_path else None
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to update indexing progress: {e}")
 
     if errors and log_progress:
         print(f"[index] Completed with {len(errors)} errors out of {total_files} files")

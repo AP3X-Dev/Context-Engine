@@ -47,11 +47,14 @@
       <table id="collections-table" data-deletion-enabled="{{ '1' if deletion_enabled else '0' }}" data-work-dir="{{ work_dir }}" data-refresh-ms="{{ refresh_ms }}" data-staging-enabled="{{ '1' if staging_enabled else '0' }}">
         <thead>
           <tr>
+            <th>ID</th>
             <th>Collection</th>
             <th>Status</th>
             <th>Progress</th>
             <th>Config</th>
-            <th class="hide-mobile">Hashes</th>
+            <th class="hide-mobile">Applied Hash</th>
+            <th class="hide-mobile">Pending Hash</th>
+            <th class="hide-mobile">Current Hash</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -59,6 +62,9 @@
           {% if collections and collections|length > 0 %}
             {% for c in collections %}
             <tr data-collection="{{ c.qdrant_collection }}">
+              <td>
+                <div class="font-mono text-muted text-sm" title="{{ c.id or c.workspace_id or '' }}">{{ (c.id or c.workspace_id or '—')[:16] }}...</div>
+              </td>
               <td>
                 <div style="font-weight: 500; color: var(--text-primary);">{{ c.qdrant_collection }}</div>
                 {% if c.container_path %}
@@ -121,8 +127,19 @@
               </td>
               <td class="hide-mobile">
                 <div class="font-mono text-muted text-sm" title="Applied: {{ c.applied_indexing_hash or 'none' }}">{{ (c.applied_indexing_hash or '—')[:8] }}</div>
+              </td>
+              <td class="hide-mobile">
                 {% if c.pending_indexing_hash %}
                 <div class="font-mono text-warning text-sm" title="Pending: {{ c.pending_indexing_hash }}">{{ c.pending_indexing_hash[:8] }}</div>
+                {% else %}
+                <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td class="hide-mobile">
+                {% if c.current_indexing_hash or c.indexing_config_hash %}
+                <div class="font-mono text-sm" style="color: var(--accent);" title="Current: {{ c.current_indexing_hash or c.indexing_config_hash }}">{{ (c.current_indexing_hash or c.indexing_config_hash)[:8] }}</div>
+                {% else %}
+                <span class="text-muted">—</span>
                 {% endif %}
               </td>
               <td>
@@ -154,7 +171,7 @@
             </tr>
             {% endfor %}
           {% else %}
-          <tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">No collections found</td></tr>
+          <tr><td colspan="9" style="text-align: center; padding: 40px; color: var(--text-muted);">No collections found</td></tr>
           {% endif %}
         </tbody>
       </table>
@@ -431,8 +448,18 @@
       </form>
     ` : '';
 
+    // Get ID - try different possible field names
+    const collectionId = c.id || c.workspace_id || '';
+    const idDisplay = collectionId ? escapeHtml(collectionId.slice(0, 16)) + '...' : '—';
+
+    // Get current hash - try different possible field names
+    const currentHash = c.current_indexing_hash || c.indexing_config_hash || '';
+
     return `
       <tr data-collection="${escapeHtml(c.qdrant_collection)}">
+        <td>
+          <div class="font-mono text-muted text-sm" title="${escapeHtml(collectionId)}">${idDisplay}</div>
+        </td>
         <td>
           <div style="font-weight: 500; color: var(--text-primary);">${escapeHtml(c.qdrant_collection)}</div>
           ${c.container_path ? `<div class="text-muted text-sm truncate" title="${escapeHtml(c.container_path)}">${escapeHtml(c.container_path)}</div>` : ''}
@@ -451,8 +478,17 @@
           ${configExtra}
         </td>
         <td class="hide-mobile">
-          <div class="font-mono text-muted text-sm">${escapeHtml((c.applied_indexing_hash || '—').slice(0, 8))}</div>
-          ${c.pending_indexing_hash ? `<div class="font-mono text-warning text-sm">${escapeHtml(c.pending_indexing_hash.slice(0, 8))}</div>` : ''}
+          <div class="font-mono text-muted text-sm" title="Applied: ${escapeHtml(c.applied_indexing_hash || 'none')}">${escapeHtml((c.applied_indexing_hash || '—').slice(0, 8))}</div>
+        </td>
+        <td class="hide-mobile">
+          ${c.pending_indexing_hash
+            ? `<div class="font-mono text-warning text-sm" title="Pending: ${escapeHtml(c.pending_indexing_hash)}">${escapeHtml(c.pending_indexing_hash.slice(0, 8))}</div>`
+            : '<span class="text-muted">—</span>'}
+        </td>
+        <td class="hide-mobile">
+          ${currentHash
+            ? `<div class="font-mono text-sm" style="color: var(--accent);" title="Current: ${escapeHtml(currentHash)}">${escapeHtml(currentHash.slice(0, 8))}</div>`
+            : '<span class="text-muted">—</span>'}
         </td>
         <td>
           <div class="action-group">
@@ -516,7 +552,7 @@
 
   function renderAllCollections(collections) {
     if (collections.length === 0) {
-      bodyEl.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">No collections found</td></tr>';
+      bodyEl.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: var(--text-muted);">No collections found</td></tr>';
     } else {
       bodyEl.innerHTML = collections.map(renderRow).join('');
     }
