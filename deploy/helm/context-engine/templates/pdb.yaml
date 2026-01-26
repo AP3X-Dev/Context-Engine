@@ -1,0 +1,93 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- if .Values.qdrant.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qdrant-pdb
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: qdrant
+spec:
+  {{- if .Values.podDisruptionBudget.qdrant.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.qdrant.minAvailable }}
+  {{- else if .Values.podDisruptionBudget.qdrant.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.qdrant.maxUnavailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: qdrant
+{{- end }}
+---
+{{- if .Values.mcpIndexerHttp.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mcp-indexer-http-pdb
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-indexer-http
+spec:
+  {{- if .Values.podDisruptionBudget.mcpIndexerHttp.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.mcpIndexerHttp.minAvailable }}
+  {{- else if .Values.podDisruptionBudget.mcpIndexerHttp.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.mcpIndexerHttp.maxUnavailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: mcp-indexer-http
+{{- end }}
+---
+{{- if .Values.mcpMemoryHttp.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mcp-memory-http-pdb
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: mcp-memory-http
+spec:
+  {{- if .Values.podDisruptionBudget.mcpMemoryHttp.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.mcpMemoryHttp.minAvailable }}
+  {{- else if .Values.podDisruptionBudget.mcpMemoryHttp.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.mcpMemoryHttp.maxUnavailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: mcp-memory-http
+{{- end }}
+---
+{{- if .Values.uploadService.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: upload-service-pdb
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: upload-service
+spec:
+  {{- if .Values.podDisruptionBudget.uploadService.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.uploadService.minAvailable }}
+  {{- else if .Values.podDisruptionBudget.uploadService.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.uploadService.maxUnavailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: upload-service
+{{- end }}
+{{- end }}

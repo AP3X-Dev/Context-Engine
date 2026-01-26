@@ -1,0 +1,123 @@
+{{- if .Values.mcpIndexerHttp.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mcp-indexer-http-hpa
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mcp-indexer-http
+  minReplicas: {{ .Values.mcpIndexerHttp.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.mcpIndexerHttp.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.mcpIndexerHttp.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.mcpIndexerHttp.autoscaling.targetMemoryUtilizationPercentage }}
+  {{- include "context-engine.hpaBehavior" . | nindent 2 }}
+{{- end }}
+---
+{{- if .Values.mcpMemoryHttp.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mcp-memory-http-hpa
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mcp-memory-http
+  minReplicas: {{ .Values.mcpMemoryHttp.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.mcpMemoryHttp.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.mcpMemoryHttp.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.mcpMemoryHttp.autoscaling.targetMemoryUtilizationPercentage }}
+  {{- include "context-engine.hpaBehavior" . | nindent 2 }}
+{{- end }}
+---
+{{- if .Values.uploadService.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: upload-service-hpa
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: upload-service
+  minReplicas: {{ .Values.uploadService.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.uploadService.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.uploadService.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.uploadService.autoscaling.targetMemoryUtilizationPercentage }}
+  {{- include "context-engine.hpaBehavior" . | nindent 2 }}
+{{- end }}
+---
+{{- if .Values.learningRerankerWorker.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: learning-reranker-worker-hpa
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: learning-reranker-worker
+  minReplicas: {{ .Values.learningRerankerWorker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.learningRerankerWorker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.learningRerankerWorker.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.learningRerankerWorker.autoscaling.targetMemoryUtilizationPercentage }}
+  {{- include "context-engine.hpaBehavior" . | nindent 2 }}
+{{- end }}

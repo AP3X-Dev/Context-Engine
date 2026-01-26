@@ -1,0 +1,149 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "context-engine.fullname" . }}-ingress
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- if .Values.ingress.host }}
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- if .Values.mcpIndexerHttp.enabled }}
+          - path: {{ .Values.ingress.paths.indexer.path }}
+            pathType: {{ .Values.ingress.paths.indexer.pathType }}
+            backend:
+              service:
+                name: mcp-indexer-http
+                port:
+                  number: {{ .Values.ingress.paths.indexer.servicePort }}
+          {{- end }}
+          {{- if .Values.mcpMemoryHttp.enabled }}
+          - path: {{ .Values.ingress.paths.memory.path }}
+            pathType: {{ .Values.ingress.paths.memory.pathType }}
+            backend:
+              service:
+                name: mcp-memory-http
+                port:
+                  number: {{ .Values.ingress.paths.memory.servicePort }}
+          {{- end }}
+          {{- if .Values.uploadService.enabled }}
+          - path: {{ .Values.ingress.paths.upload.path }}
+            pathType: {{ .Values.ingress.paths.upload.pathType }}
+            backend:
+              service:
+                name: upload-service
+                port:
+                  number: {{ .Values.ingress.paths.upload.servicePort }}
+          {{- end }}
+          {{- if .Values.qdrant.enabled }}
+          - path: {{ .Values.ingress.paths.qdrant.path }}
+            pathType: {{ .Values.ingress.paths.qdrant.pathType }}
+            backend:
+              service:
+                name: qdrant
+                port:
+                  number: {{ .Values.ingress.paths.qdrant.servicePort }}
+          {{- end }}
+    {{- else }}
+    - http:
+        paths:
+          {{- if .Values.mcpIndexerHttp.enabled }}
+          - path: {{ .Values.ingress.paths.indexer.path }}
+            pathType: {{ .Values.ingress.paths.indexer.pathType }}
+            backend:
+              service:
+                name: mcp-indexer-http
+                port:
+                  number: {{ .Values.ingress.paths.indexer.servicePort }}
+          {{- end }}
+          {{- if .Values.mcpMemoryHttp.enabled }}
+          - path: {{ .Values.ingress.paths.memory.path }}
+            pathType: {{ .Values.ingress.paths.memory.pathType }}
+            backend:
+              service:
+                name: mcp-memory-http
+                port:
+                  number: {{ .Values.ingress.paths.memory.servicePort }}
+          {{- end }}
+          {{- if .Values.uploadService.enabled }}
+          - path: {{ .Values.ingress.paths.upload.path }}
+            pathType: {{ .Values.ingress.paths.upload.pathType }}
+            backend:
+              service:
+                name: upload-service
+                port:
+                  number: {{ .Values.ingress.paths.upload.servicePort }}
+          {{- end }}
+          {{- if .Values.qdrant.enabled }}
+          - path: {{ .Values.ingress.paths.qdrant.path }}
+            pathType: {{ .Values.ingress.paths.qdrant.pathType }}
+            backend:
+              service:
+                name: qdrant
+                port:
+                  number: {{ .Values.ingress.paths.qdrant.servicePort }}
+          {{- end }}
+    {{- end }}
+{{- if .Values.ingress.admin.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "context-engine.fullname" . }}-admin
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+  {{- with .Values.ingress.admin.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- if .Values.ingress.host }}
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.admin.path }}
+            pathType: {{ .Values.ingress.admin.pathType }}
+            backend:
+              service:
+                name: upload-service
+                port:
+                  number: {{ .Values.uploadService.service.port }}
+    {{- else }}
+    - http:
+        paths:
+          - path: {{ .Values.ingress.admin.path }}
+            pathType: {{ .Values.ingress.admin.pathType }}
+            backend:
+              service:
+                name: upload-service
+                port:
+                  number: {{ .Values.uploadService.service.port }}
+    {{- end }}
+{{- end }}
+{{- end }}

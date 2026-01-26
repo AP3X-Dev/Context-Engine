@@ -1,0 +1,32 @@
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "context-engine.fullname" . }}-quota
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- if .Values.resourceQuota.requests.cpu }}
+    requests.cpu: {{ .Values.resourceQuota.requests.cpu | quote }}
+    {{- end }}
+    {{- if .Values.resourceQuota.requests.memory }}
+    requests.memory: {{ .Values.resourceQuota.requests.memory | quote }}
+    {{- end }}
+    {{- if .Values.resourceQuota.limits.cpu }}
+    limits.cpu: {{ .Values.resourceQuota.limits.cpu | quote }}
+    {{- end }}
+    {{- if .Values.resourceQuota.limits.memory }}
+    limits.memory: {{ .Values.resourceQuota.limits.memory | quote }}
+    {{- end }}
+    {{- if .Values.resourceQuota.pods }}
+    pods: {{ .Values.resourceQuota.pods | quote }}
+    {{- end }}
+    {{- if .Values.resourceQuota.persistentvolumeclaims }}
+    persistentvolumeclaims: {{ .Values.resourceQuota.persistentvolumeclaims | quote }}
+    {{- end }}
+    {{- if .Values.resourceQuota.storage }}
+    requests.storage: {{ .Values.resourceQuota.storage | quote }}
+    {{- end }}
+{{- end }}

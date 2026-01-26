@@ -1,0 +1,250 @@
+# Example values for Context-Engine Helm chart
+# Copy this file and customize for your environment
+#
+# Usage:
+#   cp values-example.yaml ../kubernetes/values-mycompany.yaml
+#   # Edit values-mycompany.yaml with your settings
+#   helm install ce-mycompany ./deploy/helm/context-engine \
+#     -f ./deploy/kubernetes/values-mycompany.yaml \
+#     --namespace context-engine --create-namespace
+
+global:
+  environment: dev
+  team: ai
+  appName: context-engine
+
+# Override the release name
+# fullnameOverride: ce-mycompany
+
+namespace:
+  create: true
+  name: context-engine
+
+# Image configuration
+# For ECR: 123456789.dkr.ecr.us-east-1.amazonaws.com/context-engine
+# For Docker Hub: myorg/context-engine
+image:
+  repository: context-engine
+  pullPolicy: IfNotPresent
+  tag: "latest"
+  # pullSecrets:
+  #   - name: ecr-registry-secret
+
+# Qdrant configuration
+qdrant:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: "1"
+      memory: 8Gi
+    limits:
+      cpu: "4"
+      memory: 24Gi
+  persistence:
+    enabled: true
+    storageClassName: gp3-sc  # Change to your storage class
+    size: 50Gi
+
+# MCP Indexer HTTP
+mcpIndexerHttp:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 8Gi
+    limits:
+      cpu: "2"
+      memory: 16Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 2
+
+# MCP Memory HTTP
+mcpMemoryHttp:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1500m"
+      memory: 3Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 1
+
+# Upload Service
+uploadService:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1500m"
+      memory: 3Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 2
+
+# Watcher
+watcher:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 3Gi
+    limits:
+      cpu: "2500m"
+      memory: 10Gi
+
+# Learning Reranker Worker (singleton - only 1 can run due to leader election)
+learningRerankerWorker:
+  enabled: true
+  replicas: 1
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 1
+
+# Persistence - shared PVCs
+persistence:
+  codeRepos:
+    enabled: true
+    name: code-repos-pvc
+    storageClassName: efs-sc  # Change to your shared storage class (EFS, NFS, etc.)
+    accessModes:
+      - ReadWriteMany
+    size: 50Gi
+    # existingVolumeName: my-pre-provisioned-pv  # Optional: use existing PV
+  codeMetadata:
+    enabled: true
+    name: code-metadata-pvc
+    storageClassName: efs-sc
+    accessModes:
+      - ReadWriteMany
+    size: 10Gi
+  codeModels:
+    enabled: true
+    name: code-models-pvc
+    storageClassName: efs-sc
+    accessModes:
+      - ReadWriteMany
+    size: 20Gi
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx  # or: alb, traefik, etc.
+  host: ""  # Set to your domain: ce.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+  # tls:
+  #   - hosts:
+  #       - ce.example.com
+  #     secretName: ce-tls-secret
+  admin:
+    enabled: true
+
+# ConfigMap values
+config:
+  # Collection name - unique per customer/project
+  collectionName: codebase
+  
+  # Embedding configuration
+  embeddingModel: BAAI/bge-base-en-v1.5
+  embeddingProvider: fastembed
+  
+  # Indexing settings
+  indexing:
+    microChunks: "1"
+    maxMicroChunksPerFile: "200"
+    chunkLines: "60"
+    chunkOverlap: "10"
+    semanticChunks: "1"
+    useEnhancedAst: "1"
+  
+  # Hybrid search settings
+  hybrid:
+    expand: "0"
+    inProcess: "1"
+    miniWeight: "1.0"
+    perPath: "1"
+    recencyWeight: "0.1"
+    resultsCache: "128"
+    resultsCacheEnabled: "1"
+    snippetDiskRead: "1"
+    symbolBoost: "0.35"
+  
+  # Reranker settings
+  reranker:
+    enabled: "1"
+    model: jinaai/jina-reranker-v2-base-multilingual
+    timeoutMs: "3000"
+    topN: "20"
+    returnM: "20"
+  
+  # ReFRAG / Decoder settings
+  refrag:
+    mode: "1"
+    decoder: "1"
+    decoderMode: prompt
+    gateFirst: "1"
+    candidates: "200"
+    runtime: glm  # Options: glm, llama, disabled
+  
+  # GLM API settings (if using GLM decoder)
+  # IMPORTANT: Set apiKey via Kubernetes Secret, not here
+  glm:
+    apiBase: ""  # e.g., https://api.z.ai/api/coding/paas/v4/
+    apiKey: ""   # DO NOT commit API keys - use secrets
+    model: glm-4.7
+    modelFast: glm-4.5
+  
+  # Graph settings
+  graph:
+    ragEnabled: "1"
+    importOnIndex: "1"
+    contextRadius: "2"
+  
+  # Symbol graph
+  symbolGraph:
+    enabled: "1"
+  
+  # Multi-repo mode
+  multiRepoMode: "1"
+  repoAutoFilter: "1"
+  
+  # Memory settings
+  memory:
+    sseEnabled: "true"
+    autodetect: "1"
+  
+  # Authentication (disabled by default)
+  auth:
+    enabled: "0"
+    sharedToken: ""  # Set via secret
+    adminToken: ""   # Set via secret
+  
+  # Additional environment variables
+  extraEnv: {}
+    # CUSTOM_VAR: "value"
+
+# Secrets configuration (optional)
+# secrets:
+#   create: true
+#   name: context-engine-secrets
+#   data:
+#     GLM_API_KEY: "your-api-key-here"
+#     AUTH_SHARED_TOKEN: "your-shared-token"

@@ -1,0 +1,86 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qdrant-network-policy
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: qdrant
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: qdrant
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "context-engine.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.grpcPort }}
+    {{- if .Values.networkPolicy.qdrant.allowExternal }}
+    - from: []
+      ports:
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.grpcPort }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-services-network-policy
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8001
+        - protocol: TCP
+          port: 8002
+        - protocol: TCP
+          port: 8003
+        - protocol: TCP
+          port: 18000
+        - protocol: TCP
+          port: 18001
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              component: qdrant
+      ports:
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.grpcPort }}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+{{- end }}

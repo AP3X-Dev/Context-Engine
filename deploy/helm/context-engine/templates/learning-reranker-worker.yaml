@@ -1,0 +1,68 @@
+{{- if .Values.learningRerankerWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: learning-reranker-worker
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: learning-reranker-worker
+spec:
+  replicas: {{ .Values.learningRerankerWorker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      component: learning-reranker-worker
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.labels" . | nindent 8 }}
+        component: learning-reranker-worker
+    spec:
+      serviceAccountName: {{ include "context-engine.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.learningRerankerWorker.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.learningRerankerWorker.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.learningRerankerWorker.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.learningRerankerWorker.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "context-engine.selectorLabels" . | nindent 14 }}
+              component: learning-reranker-worker
+      {{- end }}
+      initContainers:
+        - name: init-rerank-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /mnt/rerank_weights /mnt/rerank_events && chmod 777 /mnt/rerank_weights /mnt/rerank_events
+          volumeMounts:
+            - name: metadata-volume
+              mountPath: /mnt
+      containers:
+        - name: learning-reranker-worker
+          image: {{ include "context-engine.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.learningRerankerWorker.command | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "context-engine.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.learningRerankerWorker.resources | nindent 12 }}
+          volumeMounts:
+            - name: metadata-volume
+              mountPath: /tmp/rerank_weights
+              subPath: rerank_weights
+            - name: metadata-volume
+              mountPath: /tmp/rerank_events
+              subPath: rerank_events
+      volumes:
+        - name: metadata-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.codeMetadata.name }}
+{{- end }}

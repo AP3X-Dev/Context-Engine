@@ -1,0 +1,57 @@
+{{- if and .Values.qdrant.enabled .Values.qdrant.config }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qdrant-config
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: qdrant
+data:
+  config.yaml: |
+    {{- if .Values.qdrant.config.storage }}
+    storage:
+      {{- if .Values.qdrant.config.storage.on_disk }}
+      on_disk: {{ .Values.qdrant.config.storage.on_disk }}
+      {{- end }}
+      {{- if .Values.qdrant.config.storage.performance }}
+      performance:
+        {{- toYaml .Values.qdrant.config.storage.performance | nindent 8 }}
+      {{- end }}
+      {{- if .Values.qdrant.config.storage.quantization }}
+      quantization:
+        {{- if .Values.qdrant.config.storage.quantization.scalar }}
+        scalar:
+          {{- toYaml .Values.qdrant.config.storage.quantization.scalar | nindent 10 }}
+        {{- end }}
+        {{- if .Values.qdrant.config.storage.quantization.product }}
+        product:
+          {{- toYaml .Values.qdrant.config.storage.quantization.product | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.qdrant.config.storage.hnsw_index }}
+      hnsw_index:
+        {{- toYaml .Values.qdrant.config.storage.hnsw_index | nindent 8 }}
+      {{- end }}
+      {{- if .Values.qdrant.config.storage.wal }}
+      wal:
+        {{- toYaml .Values.qdrant.config.storage.wal | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- if .Values.qdrant.config.optimizers }}
+    optimizers:
+      {{- toYaml .Values.qdrant.config.optimizers | nindent 6 }}
+    {{- end }}
+    {{- if .Values.qdrant.config.service }}
+    service:
+      {{- toYaml .Values.qdrant.config.service | nindent 6 }}
+    {{- end }}
+    {{- if .Values.qdrant.config.cluster }}
+    cluster:
+      {{- toYaml .Values.qdrant.config.cluster | nindent 6 }}
+    {{- end }}
+    {{- if .Values.qdrant.config.telemetry }}
+    telemetry:
+      {{- toYaml .Values.qdrant.config.telemetry | nindent 6 }}
+    {{- end }}
+{{- end }}

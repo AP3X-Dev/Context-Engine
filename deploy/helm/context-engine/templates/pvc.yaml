@@ -1,0 +1,71 @@
+{{- if .Values.persistence.codeRepos.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.codeRepos.name }}
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: workspace
+    type: storage
+  annotations:
+    description: "Code repositories volume"
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.codeRepos.accessModes | nindent 4 }}
+  storageClassName: {{ .Values.persistence.codeRepos.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.codeRepos.size }}
+  {{- if .Values.persistence.codeRepos.existingVolumeName }}
+  volumeName: {{ .Values.persistence.codeRepos.existingVolumeName }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.persistence.codeMetadata.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.codeMetadata.name }}
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: metadata
+    type: storage
+  annotations:
+    description: "Codebase metadata volume (.codebase directory)"
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.codeMetadata.accessModes | nindent 4 }}
+  storageClassName: {{ .Values.persistence.codeMetadata.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.codeMetadata.size }}
+  {{- if .Values.persistence.codeMetadata.existingVolumeName }}
+  volumeName: {{ .Values.persistence.codeMetadata.existingVolumeName }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.persistence.codeModels.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.codeModels.name }}
+  namespace: {{ include "context-engine.namespace" . }}
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    component: models
+    type: storage
+  annotations:
+    description: "Code models volume (HuggingFace cache)"
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.codeModels.accessModes | nindent 4 }}
+  storageClassName: {{ .Values.persistence.codeModels.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.codeModels.size }}
+  {{- if .Values.persistence.codeModels.existingVolumeName }}
+  volumeName: {{ .Values.persistence.codeModels.existingVolumeName }}
+  {{- end }}
+{{- end }}
