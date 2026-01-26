@@ -78,6 +78,21 @@ spec:
             configMapKeyRef:
               name: context-engine-config
               key: EMBEDDING_MODEL
+        - name: EMBEDDING_PROVIDER
+          valueFrom:
+            configMapKeyRef:
+              name: context-engine-config
+              key: EMBEDDING_PROVIDER
+        - name: EMBEDDING_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: context-engine-config
+              key: EMBEDDING_SERVICE_URL
+        - name: INDEX_WORKERS
+          valueFrom:
+            configMapKeyRef:
+              name: context-engine-config
+              key: INDEX_WORKERS
         - name: HF_HOME
           value: /work/models/hf-cache
         - name: XDG_CACHE_HOME

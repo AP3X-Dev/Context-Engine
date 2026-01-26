@@ -35,14 +35,19 @@ services:
     ports:
       - "8100-8101:8100"
     environment:
-      # Model: use nomic-Q for faster + better quality, or override via EMBEDDING_MODEL
+      # Model: use nomic for faster + better quality, or override via EMBEDDING_MODEL
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-ai/nomic-embed-text-v1.5}
       - EMBED_MAX_CONCURRENT=${EMBED_MAX_CONCURRENT:-2}
       - EMBED_MAX_BATCH=${EMBED_MAX_BATCH:-256}
       # ONNX CPU optimizations
-      - ONNX_THREADS=${ONNX_THREADS:-0}
-      - ONNX_DISABLE_SPINNING=${ONNX_DISABLE_SPINNING:-0}
+      # ONNX_THREADS: limit threads per replica (0=all cores, 4-6 recommended for multi-replica)
+      - ONNX_THREADS=${ONNX_THREADS:-4}
+      # Disable thread spinning to reduce CPU burn when idle
+      - ONNX_DISABLE_SPINNING=${ONNX_DISABLE_SPINNING:-1}
       - EMBED_OPTIMAL_BATCH=${EMBED_OPTIMAL_BATCH:-32}
+      # Limit OMP/MKL threads to match ONNX_THREADS
+      - OMP_NUM_THREADS=${ONNX_THREADS:-4}
+      - MKL_NUM_THREADS=${ONNX_THREADS:-4}
       # Cache paths
       - HF_HOME=/tmp/huggingface
       - FASTEMBED_CACHE_PATH=/tmp/fastembed
@@ -59,6 +64,7 @@ services:
       resources:
         limits:
           memory: 6G
+          cpus: "4"
     restart: unless-stopped
     networks:
       - dev-remote-network

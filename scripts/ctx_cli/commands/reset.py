@@ -53,7 +53,12 @@ console = Console() if RICH_AVAILABLE else None
 # Default model/tokenizer URLs (same as Makefile)
 DEFAULT_MODEL_URL = "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/main/granite-4.0-micro-Q4_K_M.gguf"
 DEFAULT_MODEL_PATH = "models/model.gguf"
-DEFAULT_TOKENIZER_URL = "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json"
+# Tokenizer for micro-chunking (token counting). BGE tokenizer works for any model.
+# Override via TOKENIZER_URL env var if needed.
+DEFAULT_TOKENIZER_URL = os.environ.get(
+    "TOKENIZER_URL",
+    "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json"
+)
 DEFAULT_TOKENIZER_PATH = "models/tokenizer.json"
 
 

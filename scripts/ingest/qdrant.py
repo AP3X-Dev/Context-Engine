@@ -29,6 +29,13 @@ _EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local").strip().lowe
 _EMBEDDING_SERVICE_URL = os.environ.get("EMBEDDING_SERVICE_URL", "http://embedding:8100")
 _EMBEDDING_SERVICE_TIMEOUT = int(os.environ.get("EMBEDDING_SERVICE_TIMEOUT", "60") or 60)
 
+# Client-side load balancing for multiple replicas (Compose mode)
+# Set EMBEDDING_SERVICE_URLS=http://host1:8100,http://host2:8100 for parallel processing
+_EMBEDDING_SERVICE_URLS_RAW = os.environ.get("EMBEDDING_SERVICE_URLS", "").strip()
+_EMBEDDING_SERVICE_URLS = [u.strip() for u in _EMBEDDING_SERVICE_URLS_RAW.split(",") if u.strip()] if _EMBEDDING_SERVICE_URLS_RAW else []
+_EMBED_REPLICA_INDEX = 0
+_EMBED_REPLICA_LOCK = threading.Lock()
+
 from qdrant_client import QdrantClient, models
 
 from scripts.ingest.config import (
@@ -1007,19 +1014,32 @@ def _embed_local(model, texts: List[str]) -> List[List[float]]:
 
 
 def _embed_remote(texts: List[str], model_name: str = "default") -> List[List[float]]:
-    """Remote embedding via HTTP service."""
+    """Remote embedding via HTTP service with client-side load balancing.
+
+    If EMBEDDING_SERVICE_URLS is set (comma-separated), round-robins across replicas
+    for true parallel processing. Otherwise uses single EMBEDDING_SERVICE_URL.
+    """
+    global _EMBED_REPLICA_INDEX
     import requests
+
+    # Client-side load balancing across replicas
+    if _EMBEDDING_SERVICE_URLS:
+        with _EMBED_REPLICA_LOCK:
+            url = _EMBEDDING_SERVICE_URLS[_EMBED_REPLICA_INDEX % len(_EMBEDDING_SERVICE_URLS)]
+            _EMBED_REPLICA_INDEX += 1
+    else:
+        url = _EMBEDDING_SERVICE_URL
 
     try:
         resp = requests.post(
-            f"{_EMBEDDING_SERVICE_URL}/embed",
+            f"{url}/embed",
             json={"texts": texts, "model": model_name},
             timeout=_EMBEDDING_SERVICE_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json()["vectors"]
     except Exception as e:
-        logger.error(f"Remote embedding failed: {e}")
+        logger.error(f"Remote embedding failed ({url}): {e}")
         raise
 
 

@@ -11,7 +11,9 @@ data:
   QDRANT_URL: {{ include "context-engine.qdrantUrl" . | quote }}
   EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
   EMBEDDING_PROVIDER: {{ .Values.config.embeddingProvider | quote }}
+  EMBEDDING_SERVICE_URL: {{ .Values.config.embeddingServiceUrl | quote }}
   EMBEDDING_WARMUP: "0"
+  INDEX_WORKERS: {{ .Values.config.indexWorkers | default "4" | quote }}
   
   FASTMCP_HOST: {{ .Values.config.fastmcp.host | quote }}
   FASTMCP_PORT: {{ .Values.config.fastmcp.port | quote }}
