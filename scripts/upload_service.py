@@ -42,7 +42,7 @@ if _OPENLIT_ENABLED:
 
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import urlencode
 
@@ -55,6 +55,7 @@ except ImportError:
 
 from scripts.indexing_admin import (
     build_admin_collections_view,
+    list_qdrant_collections,
     resolve_collection_root,
     spawn_ingest_code,
     recreate_collection_qdrant,
@@ -85,6 +86,9 @@ from scripts.auth_backend import (
     list_collection_acl,
     grant_collection_access,
     revoke_collection_access,
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
 )
 
 try:
@@ -115,11 +119,13 @@ try:
         start_staging_rebuild,
         activate_staging_rebuild,
         abort_staging_rebuild,
+        get_neo4j_status,
     )
 except ImportError:
     start_staging_rebuild = None  # type: ignore
     activate_staging_rebuild = None  # type: ignore
     abort_staging_rebuild = None  # type: ignore
+    get_neo4j_status = None  # type: ignore
 
 # Import existing workspace state and indexing functions
 try:
@@ -379,7 +385,8 @@ def _get_valid_session_record(request: Request) -> Optional[Dict[str, Any]]:
 
 def _require_admin_session(request: Request) -> Dict[str, Any]:
     if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Allow access when auth is disabled (demo/dev mode)
+        return {"user_id": "demo", "role": "admin"}
     record = _get_valid_session_record(request)
     if record is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
@@ -647,12 +654,24 @@ async def auth_validate(payload: AuthValidateRequest):
 
 @app.get("/admin")
 async def admin_root(request: Request):
+    # Check for demo session cookie first (works in demo mode)
+    candidate = _get_session_candidate_from_request(request)
+    session_id = candidate.get("session_id") or ""
+
     if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Demo mode: if we have a demo session cookie, go to dashboard
+        if session_id.startswith("demo-"):
+            return RedirectResponse(url="/admin/acl", status_code=302)
+        # Otherwise show login page for demo credentials
+        return RedirectResponse(url="/admin/login", status_code=302)
+
     try:
         users_exist = has_any_users()
     except AuthDisabledError:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Fallback to demo mode behavior
+        if session_id.startswith("demo-"):
+            return RedirectResponse(url="/admin/acl", status_code=302)
+        return RedirectResponse(url="/admin/login", status_code=302)
     except Exception as e:
         logger.error(f"[upload_service] Failed to inspect user state for admin UI: {e}")
         raise HTTPException(status_code=500, detail="Failed to inspect user state")
@@ -660,7 +679,6 @@ async def admin_root(request: Request):
     if not users_exist:
         return RedirectResponse(url="/admin/bootstrap", status_code=302)
 
-    candidate = _get_session_candidate_from_request(request)
     record = _get_valid_session_record(request)
     if record is None:
         return RedirectResponse(url="/admin/login", status_code=302)
@@ -732,8 +750,7 @@ async def admin_bootstrap_submit(
 
 @app.get("/admin/login")
 async def admin_login_form(request: Request):
-    if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+    # Show login page even in demo mode so users can enter demo credentials
     return render_admin_login(request)
 
 
@@ -743,11 +760,31 @@ async def admin_login_submit(
     username: str = Form(...),
     password: str = Form(...),
 ):
+    # Demo mode: accept admin/admin when auth is disabled
     if not AUTH_ENABLED:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        if username == "admin" and password == "admin":
+            # Create a demo session cookie and redirect
+            import uuid
+            demo_session_id = f"demo-{uuid.uuid4().hex}"
+            resp = RedirectResponse(url="/admin/acl", status_code=302)
+            _set_admin_session_cookie(resp, demo_session_id)
+            return resp
+        return render_admin_login(
+            request=request,
+            error="Invalid credentials (demo mode: use admin/admin)",
+            status_code=401,
+        )
+
     try:
         user = authenticate_user(username, password)
     except AuthDisabledError:
+        # Fallback to demo mode
+        if username == "admin" and password == "admin":
+            import uuid
+            demo_session_id = f"demo-{uuid.uuid4().hex}"
+            resp = RedirectResponse(url="/admin/acl", status_code=302)
+            _set_admin_session_cookie(resp, demo_session_id)
+            return resp
         raise HTTPException(status_code=404, detail="Auth disabled")
     except Exception as e:
         logger.error(f"[upload_service] Error authenticating user for admin UI: {e}")
@@ -781,12 +818,26 @@ async def admin_logout():
 @app.get("/admin/acl")
 async def admin_acl_page(request: Request):
     _require_admin_session(request)
+    api_keys = []
     try:
-        users = list_users()
-        collections = list_collections(include_deleted=False)
-        grants = list_collection_acl()
+        if AUTH_ENABLED:
+            users = list_users()
+            collections = list_collections(include_deleted=False)
+            grants = list_collection_acl()
+            try:
+                api_keys = list_api_keys()
+            except Exception as e:
+                logger.debug(f"[upload_service] Failed to load API keys: {e}")
+        else:
+            # Auth disabled - get collections directly from Qdrant
+            users = []
+            collections = list_qdrant_collections()
+            grants = []
     except AuthDisabledError:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        # Fallback: get collections directly from Qdrant
+        users = []
+        collections = list_qdrant_collections()
+        grants = []
     except Exception as e:
         logger.error(f"[upload_service] Failed to load admin UI data: {e}")
         raise HTTPException(status_code=500, detail="Failed to load admin data")
@@ -810,11 +861,21 @@ async def admin_acl_page(request: Request):
             level = "success"
         flash = {"message": message, "level": level}
 
+    # Get Neo4j status
+    neo4j_status = {}
+    if callable(get_neo4j_status):
+        try:
+            neo4j_status = get_neo4j_status()
+        except Exception as e:
+            logger.debug(f"[upload_service] Failed to get Neo4j status: {e}")
+
     resp = render_admin_acl(
         request,
         users=users,
         collections=enriched,
         grants=grants,
+        api_keys=api_keys,
+        neo4j_status=neo4j_status,
         deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
         work_dir=WORK_DIR,
         refresh_ms=ADMIN_COLLECTION_REFRESH_MS,
@@ -857,6 +918,48 @@ async def admin_collections_status(request: Request):
         lambda: build_admin_collections_view(collections=collections, work_dir=WORK_DIR)
     )
     return JSONResponse({"collections": enriched})
+
+
+@app.get("/admin/collections/stream")
+async def admin_collections_stream(request: Request):
+    """SSE endpoint for real-time collection status updates."""
+    _require_admin_session(request)
+
+    async def event_generator():
+        """Generate SSE events for collection status updates."""
+        last_data = None
+        while True:
+            # Check if client disconnected
+            if await request.is_disconnected():
+                break
+
+            try:
+                collections = list_collections(include_deleted=False)
+                enriched = await asyncio.to_thread(
+                    lambda: build_admin_collections_view(collections=collections, work_dir=WORK_DIR)
+                )
+
+                # Only send if data changed
+                current_data = json.dumps(enriched, default=str)
+                if current_data != last_data:
+                    last_data = current_data
+                    yield f"data: {json.dumps({'type': 'full', 'collections': enriched}, default=str)}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+            # Poll interval (2 seconds for SSE)
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/admin/collections/reindex")
@@ -1369,6 +1472,53 @@ async def admin_acl_revoke(
         raise HTTPException(status_code=404, detail="Auth disabled")
     except Exception as e:
         return render_admin_error(request, title="Revoke Failed", message=str(e), back_href="/admin/acl")
+    return RedirectResponse(url="/admin/acl", status_code=302)
+
+
+@app.post("/admin/keys")
+async def admin_create_api_key(
+    request: Request,
+    name: str = Form(...),
+    scope: str = Form("read"),
+    expires: str = Form("never"),
+):
+    _require_admin_session(request)
+    try:
+        key_info = create_api_key(name=name, scope=scope, expires_in=expires)
+        # Flash the new key to the user (only shown once)
+        new_key = key_info.get("key", "")
+        return render_admin_acl(
+            request,
+            users=list_users() if AUTH_ENABLED else [],
+            collections=build_admin_collections_view(
+                collections=list_collections(include_deleted=False) if AUTH_ENABLED else list_qdrant_collections(),
+                work_dir=WORK_DIR,
+            ),
+            grants=list_collection_acl() if AUTH_ENABLED else [],
+            api_keys=list_api_keys() if AUTH_ENABLED else [],
+            deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
+            work_dir=WORK_DIR,
+            refresh_ms=ADMIN_COLLECTION_REFRESH_MS,
+            flash={"message": f"API key created! Copy it now (shown only once): {new_key}", "level": "success"},
+        )
+    except AuthDisabledError:
+        raise HTTPException(status_code=404, detail="Auth disabled")
+    except Exception as e:
+        return render_admin_error(request, title="Create API Key Failed", message=str(e), back_href="/admin/acl")
+
+
+@app.post("/admin/keys/revoke")
+async def admin_revoke_api_key(
+    request: Request,
+    key_id: str = Form(...),
+):
+    _require_admin_session(request)
+    try:
+        revoke_api_key(key_id=key_id)
+    except AuthDisabledError:
+        raise HTTPException(status_code=404, detail="Auth disabled")
+    except Exception as e:
+        return render_admin_error(request, title="Revoke API Key Failed", message=str(e), back_href="/admin/acl")
     return RedirectResponse(url="/admin/acl", status_code=302)
 
 

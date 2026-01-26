@@ -2532,7 +2532,8 @@ async def code_search(
     RETURNS: Same schema as repo_search.
     """
     # If include_memories is requested, delegate to context_search for blending
-    if include_memories:
+    # Coerce to bool first to handle string 'false'/'0' from some clients
+    if _coerce_bool(include_memories, default=False):
         return await context_search(
             query=query,
             limit=limit,
@@ -3284,7 +3285,18 @@ if __name__ == "__main__":
     _log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
     _log_level = getattr(_logging, _log_level_str, _logging.INFO)
     _logging.getLogger().setLevel(_log_level)
-    
+
+    # Backend migration: detect file<->redis switch and migrate state if needed
+    try:
+        from scripts.workspace_state import detect_and_migrate_backend
+        from pathlib import Path as _Path
+        _ws_root = _Path(os.environ.get("WORKSPACE_PATH") or os.environ.get("WATCH_ROOT") or "/work")
+        migrated = detect_and_migrate_backend(_ws_root)
+        if migrated is not None:
+            logger.info(f"[backend_migration] Migrated {migrated} items to new backend")
+    except Exception as e:
+        logger.warning(f"Backend migration check failed (continuing): {e}")
+
     # Startup logging with configuration info
     logger.info("=" * 60)
     logger.info("MCP Indexer Server starting...")

@@ -19,6 +19,7 @@ import re
 import uuid
 import subprocess
 import hashlib
+import xxhash
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Literal, TypedDict
@@ -41,6 +42,12 @@ _cache_memo_last_check: Dict[str, float] = {}
 _REDIS_CLIENT = None
 _REDIS_CLIENT_LOCK = threading.Lock()
 
+# Global flag to enable skip-if-contended behavior for Redis locks.
+# When set, locks that are contended will raise LockContendedException
+# instead of waiting, allowing the caller to retry later.
+# Uses threading.Event for thread-safe cross-thread visibility in ThreadPoolExecutor.
+_lock_skip_contended_event = threading.Event()
+
 
 def _redis_state_enabled() -> bool:
     backend = str(os.environ.get("CODEBASE_STATE_BACKEND", "") or "").strip().lower()
@@ -52,6 +59,11 @@ def _redis_state_enabled() -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_current_backend() -> str:
+    """Return the current backend name: 'redis' or 'file'."""
+    return "redis" if _redis_state_enabled() else "file"
 
 
 def _redis_state_active() -> bool:
@@ -66,7 +78,7 @@ def _redis_prefix() -> str:
 
 def _redis_key_for_path(kind: str, path: Path) -> str:
     raw = str(path)
-    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()
+    digest = xxhash.xxh64(raw.encode("utf-8")).hexdigest()
     return f"{_redis_prefix()}:{kind}:{digest}"
 
 
@@ -232,8 +244,62 @@ def _redis_delete(kind: str, path: Path) -> bool:
         return False
 
 
+class LockContendedException(Exception):
+    """Raised when a Redis lock cannot be acquired and skip_if_contended=True."""
+    pass
+
+
 @contextmanager
-def _redis_lock(kind: str, path: Path):
+def enable_lock_skip_on_contention():
+    """Context manager to enable skip-if-contended behavior for Redis locks.
+
+    When active, any Redis lock contention will raise LockContendedException
+    instead of waiting, allowing the caller to retry the operation later.
+    This is useful for parallel processing where one file's lock shouldn't
+    block processing of other files.
+
+    This uses a threading.Event for cross-thread visibility, so worker threads
+    in a ThreadPoolExecutor will see the flag.
+
+    Example:
+        with enable_lock_skip_on_contention():
+            with ThreadPoolExecutor() as executor:
+                # Worker threads will see the skip flag
+                futures = [executor.submit(index_file, f) for f in files]
+    """
+    _lock_skip_contended_event.set()
+    try:
+        yield
+    finally:
+        _lock_skip_contended_event.clear()
+
+
+def _should_skip_if_contended() -> bool:
+    """Check if skip-if-contended mode is enabled (thread-safe, cross-thread visible)."""
+    return _lock_skip_contended_event.is_set()
+
+
+@contextmanager
+def _redis_lock(kind: str, path: Path, *, skip_if_contended: bool = False):
+    """Acquire a Redis distributed lock for the given resource.
+
+    Args:
+        kind: Type of resource ("state", "cache", "symbols")
+        path: Path to the resource being locked
+        skip_if_contended: If True, raise LockContendedException after a few quick
+            attempts instead of waiting the full timeout. Useful for parallel processing
+            where the caller can retry later. Also enabled if the thread-local
+            enable_lock_skip_on_contention() context manager is active.
+
+    Yields:
+        None when lock is acquired (or Redis not available)
+
+    Raises:
+        LockContendedException: When skip_if_contended=True and lock is contended
+    """
+    # Check thread-local flag as well as explicit parameter
+    skip_mode = skip_if_contended or _should_skip_if_contended()
+
     client = _get_redis_client()
     if client is None:
         yield
@@ -244,14 +310,23 @@ def _redis_lock(kind: str, path: Path):
         ttl_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_TTL_MS", "5000") or 5000)
     except Exception:
         ttl_ms = 5000
-    try:
-        wait_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_WAIT_MS", "2000") or 2000)
-    except Exception:
-        wait_ms = 2000
-    deadline = time.time() + (wait_ms / 1000.0)
+
+    # For skip_if_contended mode, try just a few times quickly (100-200ms max)
+    # For normal mode, wait up to REDIS_LOCK_WAIT_MS (default 2000ms)
+    if skip_mode:
+        max_attempts = 4
+        sleep_interval = 0.05  # 50ms between attempts = 200ms max
+    else:
+        try:
+            wait_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_WAIT_MS", "2000") or 2000)
+        except Exception:
+            wait_ms = 2000
+        max_attempts = int(wait_ms / 50) + 1  # 50ms per attempt
+        sleep_interval = 0.05
+
     acquired = False
     attempts = 0
-    while time.time() < deadline:
+    for _ in range(max_attempts):
         attempts += 1
         try:
             if client.set(lock_key, token, nx=True, px=ttl_ms):
@@ -260,12 +335,18 @@ def _redis_lock(kind: str, path: Path):
         except Exception as e:
             logger.warning(f"Redis lock set failed for {lock_key}: {e}")
             break
-        time.sleep(0.05)
+        time.sleep(sleep_interval)
+
     if not acquired:
-        logger.info(f"Redis lock not acquired for {lock_key} after {attempts} attempts, proceeding without lock")
-        yield
-        return
-    logger.info(f"Redis lock acquired for {lock_key} (attempts={attempts}, ttl={ttl_ms}ms)")
+        if skip_mode:
+            logger.debug(f"Redis lock contended for {lock_key}, skipping (attempts={attempts})")
+            raise LockContendedException(f"Lock contended: {lock_key}")
+        else:
+            logger.info(f"Redis lock not acquired for {lock_key} after {attempts} attempts, proceeding without lock")
+            yield
+            return
+
+    logger.debug(f"Redis lock acquired for {lock_key} (attempts={attempts}, ttl={ttl_ms}ms)")
     try:
         yield
     finally:
@@ -279,6 +360,261 @@ def _redis_lock(kind: str, path: Path):
             logger.debug(f"Redis lock released for {lock_key}")
         except Exception as e:
             logger.warning(f"Redis lock release failed for {lock_key}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Backend Migration: file <-> redis
+# ---------------------------------------------------------------------------
+
+_BACKEND_MARKER_FILENAME = ".backend_marker"
+_migration_lock = threading.Lock()
+_migration_done = False
+
+
+def _get_backend_marker_path(workspace_root: Optional[Path] = None) -> Path:
+    """Get path to the backend marker file."""
+    if workspace_root is None:
+        workspace_root = Path(os.environ.get("WORKSPACE_PATH") or os.environ.get("WATCH_ROOT") or "/work")
+    return workspace_root / ".codebase" / _BACKEND_MARKER_FILENAME
+
+
+def _read_backend_marker(workspace_root: Optional[Path] = None) -> Optional[str]:
+    """Read the last known backend from the marker file."""
+    marker_path = _get_backend_marker_path(workspace_root)
+    if not marker_path.exists():
+        return None
+    try:
+        content = marker_path.read_text(encoding="utf-8").strip()
+        if content in {"redis", "file"}:
+            return content
+    except Exception as e:
+        logger.debug(f"Failed to read backend marker: {e}")
+    return None
+
+
+def _write_backend_marker(backend: str, workspace_root: Optional[Path] = None) -> None:
+    """Write the current backend to the marker file."""
+    marker_path = _get_backend_marker_path(workspace_root)
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(backend + "\n", encoding="utf-8")
+        try:
+            os.chmod(marker_path, 0o664)
+        except PermissionError:
+            pass
+    except Exception as e:
+        logger.warning(f"Failed to write backend marker: {e}")
+
+
+def _migrate_file_to_redis(workspace_root: Path) -> int:
+    """Migrate all state/cache/symbols from files to Redis.
+
+    Returns the count of migrated items.
+    """
+    if not _redis_state_enabled():
+        logger.warning("Cannot migrate to Redis: Redis backend not enabled")
+        return 0
+
+    client = _get_redis_client()
+    if client is None:
+        logger.warning("Cannot migrate to Redis: Redis client not available")
+        return 0
+
+    migrated = 0
+    codebase_dir = workspace_root / ".codebase"
+
+    if not codebase_dir.exists():
+        logger.info(f"No .codebase directory found at {codebase_dir}, nothing to migrate")
+        return 0
+
+    logger.info(f"Starting file->Redis migration from {codebase_dir}")
+
+    # Migrate state.json files
+    for state_file in codebase_dir.rglob("state.json"):
+        try:
+            with open(state_file, "r", encoding="utf-8-sig") as f:
+                state = json.load(f)
+            if isinstance(state, dict):
+                # Use the file path as the key basis (same as normal operation)
+                if _redis_set_json("state", state_file, state):
+                    migrated += 1
+                    logger.debug(f"Migrated state: {state_file}")
+        except Exception as e:
+            logger.warning(f"Failed to migrate state file {state_file}: {e}")
+
+    # Migrate cache.json files
+    for cache_file in codebase_dir.rglob("cache.json"):
+        try:
+            with open(cache_file, "r", encoding="utf-8-sig") as f:
+                cache = json.load(f)
+            if isinstance(cache, dict):
+                if _redis_set_json("cache", cache_file, cache):
+                    migrated += 1
+                    logger.debug(f"Migrated cache: {cache_file}")
+        except Exception as e:
+            logger.warning(f"Failed to migrate cache file {cache_file}: {e}")
+
+    # Migrate symbols/*.json files
+    for symbols_dir in codebase_dir.rglob("symbols"):
+        if not symbols_dir.is_dir():
+            continue
+        for symbol_file in symbols_dir.glob("*.json"):
+            try:
+                with open(symbol_file, "r", encoding="utf-8-sig") as f:
+                    symbols = json.load(f)
+                if isinstance(symbols, dict):
+                    if _redis_set_json("symbols", symbol_file, symbols):
+                        migrated += 1
+                        logger.debug(f"Migrated symbols: {symbol_file}")
+            except Exception as e:
+                logger.warning(f"Failed to migrate symbol file {symbol_file}: {e}")
+
+    logger.info(f"File->Redis migration complete: {migrated} items migrated")
+    return migrated
+
+
+def _migrate_redis_to_file(workspace_root: Path) -> int:
+    """Migrate all state/cache/symbols from Redis to files.
+
+    Returns the count of migrated items.
+    """
+    # We need to temporarily bypass the Redis check to read from Redis
+    # even though the current backend is set to 'file'
+    try:
+        import redis as redis_pkg
+    except ImportError:
+        logger.warning("Cannot migrate from Redis: redis package not available")
+        return 0
+
+    url = os.environ.get("CODEBASE_STATE_REDIS_URL") or os.environ.get("REDIS_URL") or "redis://redis:6379/0"
+    try:
+        client = redis_pkg.Redis.from_url(url, decode_responses=True, socket_timeout=2.0)
+        client.ping()
+    except Exception as e:
+        logger.warning(f"Cannot migrate from Redis: connection failed: {e}")
+        return 0
+
+    migrated = 0
+    prefix = _redis_prefix()
+
+    logger.info(f"Starting Redis->file migration to {workspace_root}")
+
+    codebase_dir = workspace_root / ".codebase"
+    codebase_dir.mkdir(parents=True, exist_ok=True)
+
+    # Scan and migrate each kind
+    for kind in ("state", "cache", "symbols"):
+        pattern = f"{prefix}:{kind}:*"
+        try:
+            for key in client.scan_iter(match=pattern, count=200):
+                try:
+                    raw = client.get(key)
+                    if not raw:
+                        continue
+                    obj = json.loads(raw)
+                    if not isinstance(obj, dict):
+                        continue
+
+                    # Determine file path from the object's stored metadata or derive it
+                    # For state/cache, we need to reconstruct the path
+                    # The key is a hash of the path, so we need to store path in the object
+                    file_path_str = obj.get("_source_path") or obj.get("workspace_path")
+                    if not file_path_str:
+                        # Fallback: write to default location based on kind
+                        if kind == "state":
+                            file_path = codebase_dir / "state.json"
+                        elif kind == "cache":
+                            file_path = codebase_dir / "cache.json"
+                        else:
+                            # For symbols, use a hash-based name
+                            key_hash = key.split(":")[-1] if ":" in key else xxhash.xxh64(key.encode()).hexdigest()
+                            symbols_dir = codebase_dir / "symbols"
+                            symbols_dir.mkdir(parents=True, exist_ok=True)
+                            file_path = symbols_dir / f"{key_hash[:16]}.json"
+                    else:
+                        file_path = Path(file_path_str)
+                        # Ensure it's under the workspace
+                        if not str(file_path).startswith(str(workspace_root)):
+                            # Reconstruct relative path under workspace
+                            if kind == "state":
+                                file_path = codebase_dir / "state.json"
+                            elif kind == "cache":
+                                file_path = codebase_dir / "cache.json"
+                            else:
+                                continue
+
+                    # Write to file
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        json.dump(obj, f, indent=2, ensure_ascii=False)
+                    try:
+                        os.chmod(file_path, 0o664)
+                    except PermissionError:
+                        pass
+                    migrated += 1
+                    logger.debug(f"Migrated {kind}: {key} -> {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to migrate Redis key {key}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to scan Redis keys for {kind}: {e}")
+
+    logger.info(f"Redis->file migration complete: {migrated} items migrated")
+    return migrated
+
+
+def detect_and_migrate_backend(workspace_root: Optional[Path] = None) -> Optional[int]:
+    """Detect backend switch and trigger migration if needed.
+
+    Call this on startup from indexer/watcher/MCP servers.
+
+    Returns:
+        - None if no migration needed
+        - int count of migrated items if migration occurred
+    """
+    global _migration_done
+
+    # Skip if migration already done in this process
+    with _migration_lock:
+        if _migration_done:
+            return None
+        _migration_done = True
+
+    # Skip if explicitly disabled
+    if os.environ.get("CODEBASE_STATE_SKIP_MIGRATION", "").strip().lower() in {"1", "true", "yes"}:
+        logger.info("Backend migration skipped (CODEBASE_STATE_SKIP_MIGRATION=1)")
+        return None
+
+    if workspace_root is None:
+        workspace_root = Path(os.environ.get("WORKSPACE_PATH") or os.environ.get("WATCH_ROOT") or "/work")
+
+    current_backend = _get_current_backend()
+    last_backend = _read_backend_marker(workspace_root)
+
+    logger.info(f"Backend check: current={current_backend}, last={last_backend}")
+
+    if last_backend is None:
+        # First run or marker missing - just set the marker
+        _write_backend_marker(current_backend, workspace_root)
+        logger.info(f"Backend marker initialized: {current_backend}")
+        return None
+
+    if last_backend == current_backend:
+        # No change
+        return None
+
+    # Backend has changed - migrate!
+    logger.info(f"Backend switch detected: {last_backend} -> {current_backend}")
+
+    migrated = 0
+    if last_backend == "file" and current_backend == "redis":
+        migrated = _migrate_file_to_redis(workspace_root)
+    elif last_backend == "redis" and current_backend == "file":
+        migrated = _migrate_redis_to_file(workspace_root)
+
+    # Update the marker
+    _write_backend_marker(current_backend, workspace_root)
+
+    return migrated
 
 
 def is_staging_enabled() -> bool:
@@ -741,8 +1077,7 @@ _FILE_LOCK_TIMEOUT_SECONDS = 300  # 5 min max per file (generous for LLM calls)
 def _get_file_lock_path(file_path: str) -> Path:
     """Get the lock file path for a given file."""
     # Use hash of file path to avoid filesystem path issues
-    import hashlib
-    path_hash = hashlib.md5(file_path.encode()).hexdigest()[:16]
+    path_hash = xxhash.xxh64(file_path.encode()).hexdigest()[:16]
     return _FILE_LOCKS_DIR / f"{path_hash}.lock"
 
 
@@ -2504,7 +2839,7 @@ def _get_symbol_cache_path(file_path: str) -> Path:
     try:
         fp = _normalize_cache_key_path(file_path)
         # Create symbol cache using file hash to handle renames
-        file_hash = hashlib.md5(fp.encode('utf-8')).hexdigest()[:8]
+        file_hash = xxhash.xxh64(fp.encode('utf-8')).hexdigest()[:8]
         if is_multi_repo_mode():
             repo_name = _detect_repo_name_from_path(Path(file_path))
             if repo_name:

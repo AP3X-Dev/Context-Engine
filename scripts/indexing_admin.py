@@ -91,6 +91,51 @@ get_graph_collection_name_t: Optional[Callable[[str], str]] = (
 )
 
 
+def get_neo4j_status() -> Dict[str, Any]:
+    """
+    Get Neo4j plugin status.
+
+    Returns:
+        Dict with: enabled, healthy, version, checks, error
+    """
+    neo4j_enabled = os.environ.get("NEO4J_GRAPH", "").strip().lower() in ("1", "true", "yes", "on")
+    if not neo4j_enabled:
+        return {"enabled": False, "healthy": None, "version": None, "checks": {}}
+
+    try:
+        from plugins.neo4j_graph.plugin import register_plugin
+        manifest = register_plugin()
+        if manifest.health_check:
+            health = manifest.health_check()
+            return {
+                "enabled": True,
+                "healthy": health.get("healthy", False),
+                "version": health.get("version") or manifest.version,
+                "checks": health.get("checks", {}),
+            }
+        else:
+            return {
+                "enabled": True,
+                "healthy": False,
+                "version": manifest.version,
+                "checks": {"error": "Health check not available"},
+            }
+    except ImportError as e:
+        return {
+            "enabled": True,
+            "healthy": False,
+            "version": None,
+            "checks": {"import_error": str(e)},
+        }
+    except Exception as e:
+        return {
+            "enabled": True,
+            "healthy": False,
+            "version": None,
+            "checks": {"error": str(e)},
+        }
+
+
 def _staging_enabled() -> bool:
     return bool(is_staging_enabled() if callable(is_staging_enabled) else False)
 
@@ -154,37 +199,98 @@ def _copy_repo_state_for_clone(
         logger.warning("[staging] failed to retarget cache.json for %s: %s", clone_repo_name, exc)
 
 
+# Cache with TTL support
 _COLLECTION_SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
+_COLLECTION_SCHEMA_CACHE_TS: Dict[str, float] = {}  # Track cache timestamps
+_COLLECTION_SCHEMA_CACHE_TTL = float(os.environ.get("SCHEMA_CACHE_TTL_SECS", "300"))  # 5 min default
 _SNAPSHOT_REFRESHED: Set[str] = set()
 _MAPPING_INDEX_CACHE: Dict[str, Any] = {"ts": 0.0, "work_dir": "", "value": {}}
 
+# Shared Qdrant client pool for reduced connection overhead
+_QDRANT_CLIENT_POOL: Dict[str, "QdrantClient"] = {}
+_QDRANT_CLIENT_POOL_LOCK = __import__("threading").Lock()
 
-def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
+
+def _get_shared_qdrant_client(url: Optional[str] = None, api_key: Optional[str] = None) -> Optional["QdrantClient"]:
+    """Get or create a shared Qdrant client from the pool."""
+    if QdrantClient is None:
+        return None
+
+    qdrant_url = url or os.environ.get("QDRANT_URL", "http://qdrant:6333")
+    qdrant_key = api_key or os.environ.get("QDRANT_API_KEY") or None
+    pool_key = f"{qdrant_url}|{qdrant_key or ''}"
+
+    with _QDRANT_CLIENT_POOL_LOCK:
+        if pool_key in _QDRANT_CLIENT_POOL:
+            return _QDRANT_CLIENT_POOL[pool_key]
+
+        try:
+            client = QdrantClient(
+                url=qdrant_url,
+                api_key=qdrant_key,
+                timeout=float(os.environ.get("QDRANT_TIMEOUT", "60")),
+            )
+            _QDRANT_CLIENT_POOL[pool_key] = client
+            return client
+        except Exception as e:
+            logger.debug(f"Failed to create shared Qdrant client: {e}")
+            return None
+
+
+def _is_schema_cache_valid(collection: str) -> bool:
+    """Check if cached schema is still valid (within TTL)."""
+    if collection not in _COLLECTION_SCHEMA_CACHE:
+        return False
+    cache_ts = _COLLECTION_SCHEMA_CACHE_TS.get(collection, 0.0)
+    return (time.time() - cache_ts) < _COLLECTION_SCHEMA_CACHE_TTL
+
+
+def _invalidate_schema_cache(collection: Optional[str] = None) -> None:
+    """Invalidate schema cache for a collection or all collections."""
+    if collection:
+        _COLLECTION_SCHEMA_CACHE.pop(collection, None)
+        _COLLECTION_SCHEMA_CACHE_TS.pop(collection, None)
+    else:
+        _COLLECTION_SCHEMA_CACHE.clear()
+        _COLLECTION_SCHEMA_CACHE_TS.clear()
+
+
+def list_qdrant_collections() -> List[Dict[str, Any]]:
+    """List all collections directly from Qdrant (no auth required).
+
+    Returns a list of dicts with 'qdrant_collection' key for compatibility
+    with build_admin_collections_view.
+    """
+    client = _get_shared_qdrant_client()
+    if client is None:
+        return []
+    try:
+        collections_response = client.get_collections()
+        collections = getattr(collections_response, "collections", []) or []
+        return [{"qdrant_collection": c.name} for c in collections if hasattr(c, "name")]
+    except Exception as e:
+        logger.debug(f"Failed to list Qdrant collections: {e}")
+        return []
+
+
+def _probe_collection_schema(collection: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
+    """Probe collection schema with TTL-aware caching and shared client pool."""
     if not collection or QdrantClient is None:
         return None
-    cached = _COLLECTION_SCHEMA_CACHE.get(collection)
-    if cached:
-        return cached
 
-    qdrant_url = os.environ.get("QDRANT_URL", "http://qdrant:6333")
-    api_key = os.environ.get("QDRANT_API_KEY") or None
-    if QdrantClient is None:
-        return
+    # Check TTL-aware cache first (unless force refresh)
+    if not force_refresh and _is_schema_cache_valid(collection):
+        return _COLLECTION_SCHEMA_CACHE.get(collection)
 
-    try:
-        client = QdrantClient(url=qdrant_url, api_key=api_key)
-    except Exception as e:
-        logger.debug(f"Failed to connect to Qdrant for schema probe: {e}")
+    # Use shared client from pool
+    client = _get_shared_qdrant_client()
+    if client is None:
         return None
 
     try:
         info = client.get_collection(collection_name=collection)
     except Exception as e:
         logger.debug(f"Failed to get collection info for '{collection}': {e}")
-        try:
-            client.close()
-        except Exception as close_e:
-            logger.debug(f"Suppressed exception during close: {close_e}")
         return None
 
     try:
@@ -231,16 +337,14 @@ def _probe_collection_schema(collection: str) -> Optional[Dict[str, Any]]:
             "sparse_vectors": sparse_vectors,
             "payload_indexes": getattr(getattr(info.config, "params", None), "payload_indexes", None),
         }
+        # Store in cache with timestamp for TTL
         _COLLECTION_SCHEMA_CACHE[collection] = schema
+        _COLLECTION_SCHEMA_CACHE_TS[collection] = time.time()
         return schema
     except Exception as e:
         logger.debug(f"Failed to build schema for collection '{collection}': {e}")
         return None
-    finally:
-        try:
-            client.close()
-        except Exception as e:
-            logger.debug(f"Suppressed exception: {e}")
+    # Note: Don't close client - it's from the shared pool
 
 
 def _filter_snapshot_only_recreate_keys(

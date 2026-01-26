@@ -287,6 +287,8 @@ try:
         indexing_lock,
         file_indexing_lock,
         is_file_locked,
+        set_indexing_started,
+        set_indexing_progress,
     )
 except ImportError:
     # State integration is optional; continue if not available
@@ -308,3 +310,5 @@ except ImportError:
     indexing_lock = None  # type: ignore
     file_indexing_lock = None  # type: ignore
     is_file_locked = None  # type: ignore
+    set_indexing_started = None  # type: ignore
+    set_indexing_progress = None  # type: ignore

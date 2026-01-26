@@ -111,6 +111,15 @@ def main() -> None:
     _start_health_server()
     _watcher_started_at = datetime.now(timezone.utc).isoformat()
 
+    # Backend migration: detect file<->redis switch and migrate state if needed
+    try:
+        from scripts.workspace_state import detect_and_migrate_backend
+        migrated = detect_and_migrate_backend(ROOT)
+        if migrated is not None:
+            print(f"[backend_migration] Migrated {migrated} items to new backend")
+    except Exception as e:
+        logger.warning(f"Backend migration check failed (continuing): {e}")
+
     # Resolve collection name from workspace state before any client/state ops
     try:
         from scripts.workspace_state import get_collection_name_with_staging as _get_coll

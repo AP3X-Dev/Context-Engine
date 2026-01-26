@@ -10,14 +10,28 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import hashlib
 import time
+
+import xxhash
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
+
+# Import lock contention handling for skip-and-retry logic during parallel indexing
+try:
+    from scripts.workspace_state import LockContendedException, enable_lock_skip_on_contention
+except ImportError:
+    # Fallback if not available
+    class LockContendedException(Exception):
+        pass
+
+    @contextmanager
+    def enable_lock_skip_on_contention():
+        yield
 
 from qdrant_client import QdrantClient, models
 
@@ -51,6 +65,8 @@ from scripts.ingest.config import (
     get_workspace_state,
     compare_symbol_changes,
     file_indexing_lock,
+    set_indexing_started,
+    set_indexing_progress,
 )
 from scripts.ingest.exclusions import (
     iter_files,
@@ -702,7 +718,7 @@ def _index_single_file_inner(
 
     language = detect_language(file_path)
     is_text_like = _is_text_like_language(language)
-    file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+    file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
 
     repo_tag = repo_name_for_cache or _detect_repo_name_from_path(file_path)
 
@@ -1465,6 +1481,14 @@ def index_repo(
     if log_progress:
         print(f"[index] Found {total_files} files to process under {root}")
 
+    # Track progress in workspace state for live UI updates
+    workspace_path = str(root)
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        set_indexing_started(workspace_path, total_files)
+    except Exception as e:
+        logger.debug(f"Failed to set indexing started: {e}")
+
     # Parallel file processing configuration
     # INDEX_WORKERS=0 or 1 means sequential (default for safety)
     # INDEX_WORKERS=N uses N threads (recommended: 4-8 for I/O-bound indexing)
@@ -1478,8 +1502,12 @@ def index_repo(
     # Cap at reasonable max to avoid overwhelming Qdrant
     max_workers = min(index_workers, 16) if index_workers > 1 else 1
 
-    def _index_file_task(file_path: Path) -> tuple[Path, Optional[Exception]]:
-        """Task for parallel file indexing. Returns (path, error_or_none)."""
+    def _index_file_task(file_path: Path) -> tuple[Path, Optional[Exception], bool]:
+        """Task for parallel file indexing.
+
+        Returns:
+            (path, error_or_none, was_skipped_due_to_lock)
+        """
         per_file_repo = (
             root_repo_for_cache
             if root_repo_for_cache is not None
@@ -1498,37 +1526,85 @@ def index_repo(
                 allowed_vectors=allowed_vectors,
                 allowed_sparse=allowed_sparse,
             )
-            return (file_path, None)
+            return (file_path, None, False)
+        except LockContendedException:
+            # Lock contention - mark for retry
+            return (file_path, None, True)
         except Exception as e:
-            return (file_path, e)
+            return (file_path, e, False)
 
     files_processed = 0
     errors = []
+    retry_queue: list[Path] = []
 
     if max_workers > 1:
-        # Parallel processing with ThreadPoolExecutor
+        # Parallel processing with ThreadPoolExecutor and skip-and-retry for lock contention
         if log_progress:
             print(f"[index] Using {max_workers} parallel workers")
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_index_file_task, fp): fp for fp in files}
-            for future in as_completed(futures):
-                files_processed += 1
-                file_path, error = future.result()
+
+        # Enable skip-on-contention mode for parallel phase
+        # This makes Redis locks fail fast instead of blocking, allowing other files to proceed
+        with enable_lock_skip_on_contention():
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_index_file_task, fp): fp for fp in files}
+                last_progress_update = 0
+                for future in as_completed(futures):
+                    files_processed += 1
+                    file_path, error, was_skipped = future.result()
+                    if was_skipped:
+                        # Lock contention - queue for retry
+                        retry_queue.append(file_path)
+                    elif error:
+                        errors.append((file_path, error))
+                        print(f"Error indexing {file_path}: {error}")
+                    if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
+                        print(f"[index] {files_processed}/{total_files} files processed")
+                    # Update progress in workspace state every 10 files for live UI
+                    if files_processed - last_progress_update >= 10 or files_processed == total_files:
+                        last_progress_update = files_processed
+                        try:
+                            set_indexing_progress(
+                                workspace_path, started_at, files_processed, total_files,
+                                str(file_path) if file_path else None
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to update indexing progress: {e}")
+
+        # Retry phase: process skipped files sequentially (no lock contention mode)
+        # This runs OUTSIDE the enable_lock_skip_on_contention context, so locks wait normally
+        if retry_queue:
+            if log_progress:
+                print(f"[index] Retrying {len(retry_queue)} files skipped due to lock contention")
+            for file_path in retry_queue:
+                _, error, was_skipped = _index_file_task(file_path)
                 if error:
                     errors.append((file_path, error))
                     print(f"Error indexing {file_path}: {error}")
-                if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
-                    print(f"[index] {files_processed}/{total_files} files processed")
+                # If still skipped on retry, that's a real issue - count as error
+                if was_skipped:
+                    errors.append((file_path, LockContendedException("Lock still contended after retry")))
+                    logger.warning(f"Lock still contended after retry for {file_path}")
     else:
-        # Sequential processing (original behavior)
+        # Sequential processing (original behavior) - no retry needed
+        last_progress_update = 0
         for file_path in iterator:
             files_processed += 1
-            file_path, error = _index_file_task(file_path)
+            file_path, error, _ = _index_file_task(file_path)
             if error:
                 errors.append((file_path, error))
                 print(f"Error indexing {file_path}: {error}")
             if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
                 print(f"[index] {files_processed}/{total_files} files processed")
+            # Update progress in workspace state every 10 files for live UI
+            if files_processed - last_progress_update >= 10 or files_processed == total_files:
+                last_progress_update = files_processed
+                try:
+                    set_indexing_progress(
+                        workspace_path, started_at, files_processed, total_files,
+                        str(file_path) if file_path else None
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to update indexing progress: {e}")
 
     if errors and log_progress:
         print(f"[index] Completed with {len(errors)} errors out of {total_files} files")
@@ -1590,7 +1666,7 @@ def process_file_with_smart_reindexing(
     except Exception:
         file_path = Path(fp)
 
-    file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+    file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
 
     # FAST PATH: Check if file hash is unchanged - skip entire processing if so
     # This avoids AST parsing for unchanged files (P1 optimization)

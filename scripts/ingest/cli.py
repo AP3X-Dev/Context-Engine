@@ -209,7 +209,17 @@ def main():
         load_dotenv(Path(__file__).parent.parent.parent / ".env")
     except ImportError:
         pass  # python-dotenv not installed, rely on exported env vars
-    
+
+    # Backend migration: detect file<->redis switch and migrate state if needed
+    try:
+        from scripts.workspace_state import detect_and_migrate_backend
+        ws_root = Path(os.environ.get("WORKSPACE_PATH") or os.environ.get("WATCH_ROOT") or "/work")
+        migrated = detect_and_migrate_backend(ws_root)
+        if migrated is not None:
+            print(f"[backend_migration] Migrated {migrated} items to new backend")
+    except Exception as e:
+        logger.warning(f"Backend migration check failed (continuing): {e}")
+
     args = parse_args()
 
     # Map CLI overrides to env so downstream helpers pick them up

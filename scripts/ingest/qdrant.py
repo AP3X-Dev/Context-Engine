@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-import hashlib
+
+import xxhash
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -971,7 +972,7 @@ def flush_upserts(client: QdrantClient, collection: str) -> None:
 
 def hash_id(text: str, path: str, start: int, end: int) -> int:
     """Generate a stable hash ID for a chunk."""
-    h = hashlib.sha1(
+    h = xxhash.xxh64(
         f"{path}:{start}-{end}\n{text}".encode("utf-8", errors="ignore")
     ).hexdigest()
     return int(h[:16], 16)

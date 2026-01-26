@@ -576,7 +576,12 @@ def print_status_table(
         points_count = qdrant_status_info.get("count", "Unknown")
         if isinstance(points_count, int):
             points_count = f"{points_count:,}"
-        last_indexed = format_timestamp(qdrant_status_info.get("last_indexed"))
+        # qdrant_status returns last_ingested_at as {"unix": int, "iso": str}
+        last_ingested = qdrant_status_info.get("last_ingested_at")
+        if isinstance(last_ingested, dict):
+            last_indexed = format_timestamp(last_ingested.get("iso"))
+        else:
+            last_indexed = format_timestamp(qdrant_status_info.get("last_indexed"))
     elif collection_info:
         collection_name = collection_info.get("collection", "Unknown")
         points_count = collection_info.get("points_count", collection_info.get("count", "Unknown"))
@@ -640,16 +645,27 @@ def print_status_table(
 
         # Model warmup status
         if warmup_info:
-            embedding_ready = warmup_info.get("embedding_ready", False)
-            reranker_ready = warmup_info.get("reranker_ready", False)
-            if embedding_ready and reranker_ready:
+            # warmup_info returns status: "warm"|"warming"|"cold"|"failed"
+            # and embedding_ms/reranker_ms when available
+            warmup_status = warmup_info.get("status", "cold")
+            embedding_ready = warmup_info.get("embedding_ready", warmup_info.get("embedding_ms") is not None)
+            reranker_ready = warmup_info.get("reranker_ready", warmup_info.get("reranker_ms") is not None)
+            if warmup_status == "warm" or (embedding_ready and reranker_ready):
                 models_text = Text()
                 models_text.append("● ", style="green")
                 models_text.append("Ready", style="green")
-            else:
+            elif warmup_status == "warming":
                 models_text = Text()
                 models_text.append("◐ ", style="yellow")
                 models_text.append("Loading", style="yellow")
+            elif warmup_status == "failed":
+                models_text = Text()
+                models_text.append("✗ ", style="red")
+                models_text.append("Failed", style="red")
+            else:
+                models_text = Text()
+                models_text.append("○ ", style="dim")
+                models_text.append("Cold", style="dim")
             table.add_row("Models", models_text)
 
         # Indexing progress
@@ -714,10 +730,22 @@ def print_status_table(
         print(f"│ Last index: {last_indexed}" + " " * (46 - len(f"Last index: {last_indexed}") - 2) + "│")
 
         if warmup_info:
-            embedding_ready = warmup_info.get("embedding_ready", False)
-            reranker_ready = warmup_info.get("reranker_ready", False)
-            models_symbol = "✓" if (embedding_ready and reranker_ready) else "⚠"
-            models_text = "Ready" if (embedding_ready and reranker_ready) else "Loading"
+            # warmup_info returns status: "warm"|"warming"|"cold"|"failed"
+            warmup_status = warmup_info.get("status", "cold")
+            embedding_ready = warmup_info.get("embedding_ready", warmup_info.get("embedding_ms") is not None)
+            reranker_ready = warmup_info.get("reranker_ready", warmup_info.get("reranker_ms") is not None)
+            if warmup_status == "warm" or (embedding_ready and reranker_ready):
+                models_symbol = "✓"
+                models_text = "Ready"
+            elif warmup_status == "warming":
+                models_symbol = "⚠"
+                models_text = "Loading"
+            elif warmup_status == "failed":
+                models_symbol = "✗"
+                models_text = "Failed"
+            else:
+                models_symbol = "○"
+                models_text = "Cold"
             print(f"│ Models:     {models_symbol} {models_text}" + " " * (46 - len(f"Models:     {models_symbol} {models_text}") - 2) + "│")
 
         if workspace_info:
@@ -766,9 +794,11 @@ def print_status_table(
             print("│ " + "Model".ljust(25) + " Status".ljust(23) + "│")
             print("├" + "─" * 50 + "┤")
 
+            # Derive ready status from timing values when explicit booleans not present
+            warmup_status = warmup_info.get("status", "cold")
             models = [
-                ("Embedding", warmup_info.get("embedding_ready", False)),
-                ("Reranker", warmup_info.get("reranker_ready", False)),
+                ("Embedding", warmup_info.get("embedding_ready", warmup_info.get("embedding_ms") is not None)),
+                ("Reranker", warmup_info.get("reranker_ready", warmup_info.get("reranker_ms") is not None)),
                 ("Decoder", warmup_info.get("decoder_ready", False)),
             ]
 

@@ -120,6 +120,9 @@ def _ensure_db() -> None:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS collection_acl (collection_id TEXT NOT NULL, user_id TEXT NOT NULL, permission TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (collection_id, user_id))"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, name TEXT NOT NULL, key_hash TEXT NOT NULL, key_prefix TEXT NOT NULL, key_suffix TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'read', created_at INTEGER NOT NULL, expires_at INTEGER, last_used_at INTEGER, is_revoked INTEGER NOT NULL DEFAULT 0)"
+            )
             try:
                 cur = conn.cursor()
                 cur.execute("PRAGMA table_info(users)")
@@ -295,22 +298,47 @@ def create_session_for_token(
 ) -> Dict[str, Any]:
     if not AUTH_ENABLED:
         raise AuthDisabledError("Auth not enabled")
-    if AUTH_SHARED_TOKEN:
-        # When a shared token is configured, require it for all token-based sessions.
-        if not token or token != AUTH_SHARED_TOKEN:
-            raise AuthInvalidToken("Invalid auth token")
+
+    token = (token or "").strip()
+    api_key_info: Optional[Dict[str, Any]] = None
+
+    # First, check if token matches the shared token
+    if AUTH_SHARED_TOKEN and token == AUTH_SHARED_TOKEN:
+        pass  # Valid shared token
+    elif token:
+        # Try validating as an API key
+        try:
+            api_key_info = validate_api_key(token)
+        except Exception:
+            api_key_info = None
+
+        if not api_key_info:
+            # Not a valid API key, check shared token requirement
+            if AUTH_SHARED_TOKEN:
+                raise AuthInvalidToken("Invalid auth token")
+            elif not ALLOW_OPEN_TOKEN_LOGIN:
+                raise AuthInvalidToken(
+                    "Token-based login disabled (no shared token configured; set CTXCE_AUTH_SHARED_TOKEN "
+                    "or CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN=1 to enable)"
+                )
     else:
-        # Harden default behavior: when auth is enabled but no shared token is configured,
-        # disable token-based login unless explicitly allowed via env.
-        if not ALLOW_OPEN_TOKEN_LOGIN:
+        # No token provided
+        if AUTH_SHARED_TOKEN:
+            raise AuthInvalidToken("Invalid auth token")
+        elif not ALLOW_OPEN_TOKEN_LOGIN:
             raise AuthInvalidToken(
                 "Token-based login disabled (no shared token configured; set CTXCE_AUTH_SHARED_TOKEN "
                 "or CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN=1 to enable)"
             )
+
     user_id = client or "ctxce"
     meta: Dict[str, Any] = {}
     if workspace:
         meta["workspace"] = workspace
+    if api_key_info:
+        meta["api_key_id"] = api_key_info["id"]
+        meta["api_key_name"] = api_key_info["name"]
+        meta["api_key_scope"] = api_key_info["scope"]
     return create_session(user_id=user_id, metadata=meta)
 
 
@@ -668,3 +696,173 @@ def list_collection_acl() -> List[Dict[str, Any]]:
             }
         )
     return out
+
+
+# =============================================================================
+# API Keys Management
+# =============================================================================
+
+def _hash_api_key(key: str) -> str:
+    """Hash an API key for storage using SHA256."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def create_api_key(
+    name: str,
+    scope: str = "read",
+    expires_in: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a new API key.
+
+    Args:
+        name: Human-readable name for the key
+        scope: Permission scope - 'read', 'write', or 'admin'
+        expires_in: Expiration period - 'never', '7d', '30d', '90d', '1y'
+
+    Returns:
+        Dict with key details including the raw key (only shown once)
+    """
+    if not AUTH_ENABLED:
+        raise AuthDisabledError("Auth not enabled")
+    _ensure_db()
+
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Key name is required")
+
+    scope = (scope or "read").strip().lower()
+    if scope not in {"read", "write", "admin"}:
+        scope = "read"
+
+    # Generate a secure random key
+    key_id = uuid.uuid4().hex
+    raw_key = f"ctxce_{uuid.uuid4().hex}{uuid.uuid4().hex[:16]}"
+    key_hash = _hash_api_key(raw_key)
+    key_prefix = raw_key[:10]
+    key_suffix = raw_key[-4:]
+
+    now_ts = int(datetime.now().timestamp())
+
+    # Calculate expiration
+    expires_ts: Optional[int] = None
+    if expires_in and expires_in != "never":
+        days_map = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}
+        days = days_map.get(expires_in, 0)
+        if days > 0:
+            expires_ts = now_ts + (days * 24 * 60 * 60)
+
+    with _db_connection() as conn:
+        with conn:
+            conn.execute(
+                "INSERT INTO api_keys (id, name, key_hash, key_prefix, key_suffix, scope, created_at, expires_at, is_revoked) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                (key_id, name, key_hash, key_prefix, key_suffix, scope, now_ts, expires_ts),
+            )
+
+    return {
+        "id": key_id,
+        "name": name,
+        "key": raw_key,  # Only returned on creation
+        "key_prefix": key_prefix,
+        "key_suffix": key_suffix,
+        "scope": scope,
+        "created_at": now_ts,
+        "expires_at": expires_ts,
+    }
+
+
+def list_api_keys() -> List[Dict[str, Any]]:
+    """List all non-revoked API keys (without the actual key values)."""
+    if not AUTH_ENABLED:
+        raise AuthDisabledError("Auth not enabled")
+    _ensure_db()
+
+    with _db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, key_prefix, key_suffix, scope, created_at, expires_at, last_used_at "
+            "FROM api_keys WHERE is_revoked = 0 ORDER BY created_at DESC"
+        )
+        rows = cur.fetchall() or []
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        created_dt = datetime.fromtimestamp(r[5]).strftime("%Y-%m-%d %H:%M") if r[5] else None
+        expires_dt = datetime.fromtimestamp(r[6]).strftime("%Y-%m-%d %H:%M") if r[6] else None
+        last_used_dt = datetime.fromtimestamp(r[7]).strftime("%Y-%m-%d %H:%M") if r[7] else None
+        out.append({
+            "id": r[0],
+            "name": r[1],
+            "key_prefix": r[2],
+            "key_suffix": r[3],
+            "scope": r[4],
+            "created_at": created_dt,
+            "expires_at": expires_dt,
+            "last_used_at": last_used_dt,
+        })
+    return out
+
+
+def revoke_api_key(key_id: str) -> bool:
+    """Revoke an API key by ID."""
+    if not AUTH_ENABLED:
+        raise AuthDisabledError("Auth not enabled")
+    _ensure_db()
+
+    key_id = (key_id or "").strip()
+    if not key_id:
+        raise ValueError("Key ID is required")
+
+    with _db_connection() as conn:
+        with conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE api_keys SET is_revoked = 1 WHERE id = ?", (key_id,))
+            return cur.rowcount > 0
+
+
+def validate_api_key(raw_key: str) -> Optional[Dict[str, Any]]:
+    """Validate an API key and return its details if valid.
+
+    Also updates last_used_at timestamp on successful validation.
+    """
+    if not AUTH_ENABLED:
+        raise AuthDisabledError("Auth not enabled")
+    _ensure_db()
+
+    raw_key = (raw_key or "").strip()
+    if not raw_key:
+        return None
+
+    key_hash = _hash_api_key(raw_key)
+    now_ts = int(datetime.now().timestamp())
+
+    with _db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, scope, expires_at FROM api_keys "
+            "WHERE key_hash = ? AND is_revoked = 0",
+            (key_hash,),
+        )
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        key_id, name, scope, expires_at = row
+
+        # Check expiration
+        if expires_at and expires_at < now_ts:
+            return None
+
+        # Update last_used_at
+        with conn:
+            conn.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+                (now_ts, key_id),
+            )
+
+        return {
+            "id": key_id,
+            "name": name,
+            "scope": scope,
+        }
