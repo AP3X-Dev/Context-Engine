@@ -474,6 +474,8 @@ config:
     indexerPort: "8001"
     httpPort: "8002"
     indexerHttpPort: "8003"
+    httpHealthPort: "18002"
+    indexerHttpHealthPort: "18003"
     httpTransport: http
   
   # -- Indexing settings
