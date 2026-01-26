@@ -349,6 +349,7 @@ def _process_paths(
 
 
 def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
+    """Read file text and compute hash. Uses xxhash for consistency with pipeline."""
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -356,6 +357,11 @@ def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
     if not text:
         return text, ""
     try:
+        # Use xxhash for consistency with scripts/ingest/pipeline.py
+        import xxhash
+        file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
+    except ImportError:
+        # Fallback to hashlib if xxhash not available
         file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
     except Exception:
         file_hash = ""

@@ -908,9 +908,13 @@ async def admin_acl_grant(
 async def admin_collections_status(request: Request):
     _require_admin_session(request)
     try:
-        collections = list_collections(include_deleted=False)
+        if AUTH_ENABLED:
+            collections = list_collections(include_deleted=False)
+        else:
+            # Demo mode: get collections directly from Qdrant
+            collections = list_qdrant_collections()
     except AuthDisabledError:
-        raise HTTPException(status_code=404, detail="Auth disabled")
+        collections = list_qdrant_collections()
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to load collections")
 
@@ -934,7 +938,11 @@ async def admin_collections_stream(request: Request):
                 break
 
             try:
-                collections = list_collections(include_deleted=False)
+                if AUTH_ENABLED:
+                    collections = list_collections(include_deleted=False)
+                else:
+                    # Demo mode: get collections directly from Qdrant
+                    collections = list_qdrant_collections()
                 enriched = await asyncio.to_thread(
                     lambda: build_admin_collections_view(collections=collections, work_dir=WORK_DIR)
                 )
@@ -945,6 +953,19 @@ async def admin_collections_stream(request: Request):
                     last_data = current_data
                     yield f"data: {json.dumps({'type': 'full', 'collections': enriched}, default=str)}\n\n"
 
+            except AuthDisabledError:
+                # Fallback to Qdrant collections
+                try:
+                    collections = list_qdrant_collections()
+                    enriched = await asyncio.to_thread(
+                        lambda: build_admin_collections_view(collections=collections, work_dir=WORK_DIR)
+                    )
+                    current_data = json.dumps(enriched, default=str)
+                    if current_data != last_data:
+                        last_data = current_data
+                        yield f"data: {json.dumps({'type': 'full', 'collections': enriched}, default=str)}\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
