@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import subprocess
@@ -10,6 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+import xxhash
 
 import scripts.ingest_code as idx
 from scripts.workspace_state import (
@@ -128,7 +128,7 @@ def _maybe_handle_staging_file(
     if not (is_staging_enabled() and state_env and collection):
         return False
 
-    _text, file_hash = _read_text_and_sha1(path)
+    _text, file_hash = _read_text_and_hash(path)
     if file_hash:
         try:
             cached_hash = get_cached_file_hash(str(path), repo_name) if repo_name else None
@@ -348,17 +348,15 @@ def _process_paths(
             logger.debug(f"Suppressed exception: {e}")
 
 
-def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
+def _read_text_and_hash(path: Path) -> tuple[Optional[str], str]:
+    """Read file text and compute xxhash64 for consistency with pipeline."""
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         text = None
     if not text:
         return text, ""
-    try:
-        file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
-    except Exception:
-        file_hash = ""
+    file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
     return text, file_hash
 
 
@@ -378,7 +376,7 @@ def _run_indexing_strategy(
     except Exception as e:
         logger.debug(f"Suppressed exception: {e}")
 
-    text, file_hash = _read_text_and_sha1(path)
+    text, file_hash = _read_text_and_hash(path)
     ok = False
     if text is not None:
         try:
