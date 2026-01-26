@@ -1,8 +1,19 @@
 import importlib
+import os
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.responses import Response
+
+try:
+    from qdrant_client.http.exceptions import UnexpectedResponse
+except Exception:
+    class UnexpectedResponse(Exception):
+        def __init__(self, status_code: int, reason_phrase: str):
+            self.status_code = status_code
+            self.reason_phrase = reason_phrase
+
 
 
 @pytest.mark.unit
@@ -27,7 +38,7 @@ def test_env_gate_blocks_delete_endpoint(monkeypatch):
 
     monkeypatch.setattr(srv, "delete_collection_everywhere", _should_not_be_called)
 
-    client = TestClient(srv.app)
+    client = TestClient(srv.app, follow_redirects=False)
     resp = client.post("/admin/collections/delete", data={"collection": "c1", "delete_fs": ""})
     assert resp.status_code == 403
 
@@ -46,7 +57,7 @@ def test_admin_role_gate_blocks_non_admin(monkeypatch):
     monkeypatch.setattr(srv, "_get_valid_session_record", lambda _req: {"user_id": "u1"})
     monkeypatch.setattr(srv, "is_admin_user", lambda _uid: False)
 
-    client = TestClient(srv.app)
+    client = TestClient(srv.app, follow_redirects=False)
     resp = client.post("/admin/collections/delete", data={"collection": "c1"})
     assert resp.status_code == 403
     assert resp.json().get("detail") == "Admin required"
@@ -177,3 +188,176 @@ def test_workspace_state_does_not_recreate_repo_metadata_when_workspace_missing(
 
     ws.log_activity(repo_name=repo_name, action="deleted", workspace_path=str(ws_root))
     assert not state_dir.exists()
+
+
+@pytest.mark.unit
+def test_delete_collection_everywhere_deletes_graph_collection(monkeypatch, tmp_path):
+    """Test that graph collection is deleted with main collection."""
+    ca = importlib.import_module("scripts.collection_admin")
+    ca = importlib.reload(ca)
+
+    deleted_collections = []
+    env_enabled = os.environ.get("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED")
+    monkeypatch.setenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", "1")
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def delete_collection(self, collection_name):
+            deleted_collections.append(collection_name)
+
+    def fake_pooled_qdrant_client(**kwargs):
+        return FakeClient()
+
+    def fake_get_graph_collection_name(base_collection: str) -> str:
+        return f"{base_collection}_graph"
+
+    monkeypatch.setattr(ca, "pooled_qdrant_client", fake_pooled_qdrant_client)
+    monkeypatch.setattr(ca, "get_graph_collection_name", fake_get_graph_collection_name)
+    monkeypatch.setattr(ca, "_cleanup_state_files_for_mapping", lambda **_: 1)
+    monkeypatch.setattr(ca, "_is_managed_upload_workspace_dir", lambda **_: False)
+    monkeypatch.setattr(ca, "get_collection_mappings", lambda **_: [])
+
+    try:
+        # Call delete_collection_everywhere
+        result = ca.delete_collection_everywhere(collection="my_collection", cleanup_fs=False)
+
+        # Verify both main and graph collections deleted
+        assert "my_collection" in deleted_collections, "Expected main collection to be deleted"
+        assert "my_collection_graph" in deleted_collections, "Expected graph collection to be deleted"
+        assert result.get("graph_collection_deleted") is True, "Expected graph_collection_deleted to be True"
+    finally:
+        if env_enabled is None:
+            monkeypatch.delenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", env_enabled)
+
+
+@pytest.mark.unit
+def test_delete_endpoint_redirects_with_graph_flag(monkeypatch):
+    monkeypatch.setenv("CTXCE_AUTH_ENABLED", "1")
+    monkeypatch.setenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", "1")
+
+    srv = importlib.import_module("scripts.upload_service")
+    srv = importlib.reload(srv)
+
+    monkeypatch.setattr(srv, "_require_admin_session", lambda _request: {"user_id": "admin"})
+    monkeypatch.setattr(srv, "delete_collection_everywhere", lambda **_: {"graph_collection_deleted": True})
+
+    client = TestClient(srv.app, follow_redirects=False)
+    resp = client.post("/admin/collections/delete", data={"collection": "c1"})
+
+    assert resp.status_code == 302
+    location = resp.headers.get("location")
+    assert location, "Expected redirect location header"
+    parsed = urlparse(location)
+    assert parsed.path == "/admin/acl"
+    qs = parse_qs(parsed.query)
+    assert qs.get("deleted") == ["c1"]
+    assert qs.get("graph_deleted") == ["1"]
+
+
+@pytest.mark.unit
+def test_admin_acl_flash_message(monkeypatch):
+    monkeypatch.setenv("CTXCE_AUTH_ENABLED", "1")
+    monkeypatch.setenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", "1")
+
+    srv = importlib.import_module("scripts.upload_service")
+    srv = importlib.reload(srv)
+
+    monkeypatch.setattr(srv, "_require_admin_session", lambda _request: {"user_id": "admin"})
+    monkeypatch.setattr(srv, "list_users", lambda: [])
+    monkeypatch.setattr(srv, "list_collections", lambda **_: [])
+    monkeypatch.setattr(srv, "list_collection_acl", lambda: [])
+    monkeypatch.setattr(srv, "build_admin_collections_view", lambda **_: [])
+
+    client = TestClient(srv.app)
+    resp = client.get("/admin/acl?deleted=c1&graph_deleted=0")
+
+    assert resp.status_code == 200
+    assert "graph clone was not found or could not be deleted" in resp.text.lower()
+
+
+@pytest.mark.unit
+def test_admin_collections_status_endpoint(monkeypatch):
+    monkeypatch.setenv("CTXCE_AUTH_ENABLED", "1")
+
+    srv = importlib.import_module("scripts.upload_service")
+    srv = importlib.reload(srv)
+
+    monkeypatch.setattr(srv, "_require_admin_session", lambda _request: {"user_id": "admin"})
+    monkeypatch.setattr(srv, "list_collections", lambda **_: [
+        {"id": 1, "qdrant_collection": "c1", "created_at": 0, "is_deleted": 0}
+    ])
+    monkeypatch.setattr(
+        srv,
+        "build_admin_collections_view",
+        lambda **_: [{"qdrant_collection": "c1", "graph_clone_name": "c1_graph"}],
+    )
+
+    client = TestClient(srv.app)
+    resp = client.get("/admin/collections/status")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data.get("collections"), list)
+    assert data["collections"][0]["qdrant_collection"] == "c1"
+
+
+@pytest.mark.unit
+def test_delete_collection_succeeds_without_graph_collection(monkeypatch, tmp_path):
+    """Test that delete succeeds when graph collection doesn't exist."""
+    ca = importlib.import_module("scripts.collection_admin")
+    ca = importlib.reload(ca)
+
+    deleted_collections = []
+    env_enabled = os.environ.get("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED")
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def delete_collection(self, collection_name):
+            deleted_collections.append(collection_name)
+            # Simulate that the main collection exists but graph doesn't
+            if "_graph" in collection_name:
+                raise UnexpectedResponse(
+                    status_code=404,
+                    reason_phrase="Not Found",
+                )
+
+    def fake_pooled_qdrant_client(**kwargs):
+        return FakeClient()
+
+    def fake_get_graph_collection_name(base_collection: str) -> str:
+        return f"{base_collection}_graph"
+
+    monkeypatch.setenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", "1")
+    monkeypatch.setattr(ca, "pooled_qdrant_client", fake_pooled_qdrant_client)
+    monkeypatch.setattr(ca, "get_graph_collection_name", fake_get_graph_collection_name)
+    monkeypatch.setattr(ca, "_cleanup_state_files_for_mapping", lambda **_: 1)
+    monkeypatch.setattr(ca, "_is_managed_upload_workspace_dir", lambda **_: False)
+    monkeypatch.setattr(ca, "get_collection_mappings", lambda **_: [])
+
+    try:
+        # Call delete_collection_everywhere - should not fail even if graph doesn't exist
+        result = ca.delete_collection_everywhere(collection="my_collection", cleanup_fs=False)
+
+        # Verify main collection was deleted
+        assert "my_collection" in deleted_collections, "Expected main collection to be deleted"
+        # Graph delete was attempted even though Qdrant responded 404
+        assert "my_collection_graph" in deleted_collections, "Graph collection delete should be attempted even if it fails"
+        # The function should succeed even if graph deletion fails
+        assert result.get("qdrant_deleted") is True, "Expected main collection to be deleted"
+    finally:
+        if env_enabled is None:
+            monkeypatch.delenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("CTXCE_ADMIN_COLLECTION_DELETE_ENABLED", env_enabled)

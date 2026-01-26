@@ -1,9 +1,25 @@
 """
-mcp_router/intent.py - Intent classification (rules + ML).
+mcp_router/intent.py - Intent classification for MCP tool routing.
+
+Classifies user queries into specific tool intents (12+ categories) using
+rules-first with ML fallback. Returns a string intent constant.
+
+NOTE: This module handles TOOL-LEVEL intent for MCP tool dispatch.
+For RETRIEVAL-LEVEL intent (4 categories: GRAPH, SEMANTIC, IDENTIFIER, HYBRID),
+see scripts/intent_classifier.py which tunes search strategy in QueryOptimizer.
+
+The split is intentional:
+- Router intent (this file): fine-grained tool selection → returns str
+- Retrieval intent: broad search strategy → returns Tuple[QueryIntent, float, bool]
+
+Intents handled here:
+  answer, search, search_tests, search_config, search_callers, search_importers,
+  memory_store, memory_find, symbol_graph, index, prune, status, list
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -14,6 +30,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 # Intent constants
+
+logger = logging.getLogger(__name__)
 INTENT_ANSWER = "answer"
 INTENT_SEARCH = "search"
 INTENT_SEARCH_TESTS = "search_tests"
@@ -204,8 +222,8 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
         em = TextEmbedding(model_name=model_name)
         raw = list(em.embed(texts))
         return [v.tolist() if hasattr(v, "tolist") else list(v) for v in raw]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Fallback to lexical
     try:
@@ -394,7 +412,7 @@ def classify_intent(q: str) -> str:
         try:
             if os.environ.get("DEBUG_ROUTER") and _LAST_INTENT_DEBUG.get("fallback"):
                 print(json.dumps({"router": {"intent_fallback": _LAST_INTENT_DEBUG}}), file=sys.stderr)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return picked

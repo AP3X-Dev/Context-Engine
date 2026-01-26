@@ -1,6 +1,7 @@
 const process = require('process');
 
 const _skippedAuthCombos = new Set();
+const _SKIPPED_AUTH_MAX_SIZE = 100;
 
 function getFetch(deps) {
   if (deps && typeof deps.fetchGlobal === 'function') {
@@ -14,6 +15,101 @@ function getFetch(deps) {
   }
   return null;
 }
+
+/**
+ * Check auth status for the given endpoint using ctxce CLI.
+ * Returns { state: 'ok' | 'missing' | 'expired' | 'error', userId?: string }
+ */
+async function checkAuthStatus(endpoint, deps) {
+  if (!deps || !deps.spawn || !deps.resolveBridgeCliInvocation || !deps.getWorkspaceFolderPath) {
+    return { state: 'error' };
+  }
+  const { spawn, resolveBridgeCliInvocation, getWorkspaceFolderPath } = deps;
+  const raw = (endpoint || '').trim();
+  if (!raw) {
+    return { state: 'error' };
+  }
+  let backendUrl = raw;
+  try {
+    const u = new URL(raw);
+    backendUrl = `${u.protocol}//${u.host}`;
+  } catch (_) {
+    backendUrl = raw.replace(/\/+$/, '');
+  }
+
+  const invocation = resolveBridgeCliInvocation();
+  if (!invocation) {
+    return { state: 'error' };
+  }
+
+  const args = [...invocation.args, 'auth', 'status', '--json', '--backend-url', backendUrl];
+
+  return new Promise((resolve) => {
+    const child = spawn(invocation.command, args, {
+      cwd: getWorkspaceFolderPath() || process.cwd(),
+      env: {
+        ...process.env,
+        CTXCE_AUTH_BACKEND_URL: backendUrl,
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let finished = false;
+
+    const finish = (code) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+
+      let parsedOutput = null;
+      if (stdout) {
+        try {
+          parsedOutput = JSON.parse(stdout);
+        } catch (_) {
+          parsedOutput = null;
+        }
+      }
+      const state = parsedOutput && typeof parsedOutput.state === 'string' ? parsedOutput.state : 'error';
+      const userId = parsedOutput && typeof parsedOutput.userId === 'string' ? parsedOutput.userId : undefined;
+
+      // Include exitCode and stderr for debugging errors
+      const result = { state, userId, exitCode: code };
+      // Capture stderr for any non-zero exit or when stderr output exists
+      if (stderr || code !== 0) {
+        result.stderr = stderr;
+        // Log error details for diagnostics
+        if (deps && typeof deps.log === 'function') {
+          deps.log(`checkAuthStatus: state=${state}, exit code ${code}${stderr ? `, stderr: ${stderr}` : ''}`);
+        }
+      }
+
+      resolve(result);
+    };
+
+    if (child.stdout) {
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+    }
+
+    child.on('close', (code) => {
+      finish(code);
+    });
+
+    child.on('error', () => {
+      finish(-1);
+    });
+  });
+}
+
 
 async function ensureAuthIfRequired(endpoint, deps) {
   try {
@@ -100,7 +196,7 @@ async function ensureAuthIfRequired(endpoint, deps) {
     const state = parsed && typeof parsed.state === 'string' ? parsed.state : undefined;
     const exitCode = result && typeof result.status === 'number' ? result.status : undefined;
     log(`Context Engine Uploader: auth status JSON state=${state || '<unknown>'} exitCode=${exitCode !== undefined ? exitCode : '<none>'}`);
-    if (state === 'ok' || result.status === 0) {
+    if (state === 'ok') {
       return;
     }
 
@@ -110,6 +206,10 @@ async function ensureAuthIfRequired(endpoint, deps) {
       'Skip for now',
     );
     if (choice !== 'Sign In') {
+      if (_skippedAuthCombos.size >= _SKIPPED_AUTH_MAX_SIZE) {
+        const first = _skippedAuthCombos.values().next().value;
+        if (first) _skippedAuthCombos.delete(first);
+      }
       _skippedAuthCombos.add(skipKey);
       return;
     }
@@ -245,7 +345,70 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
   });
 }
 
+async function runAuthLogoutFlow(explicitBackendUrl, deps) {
+  if (!deps || !deps.vscode || !deps.spawn || !deps.resolveBridgeCliInvocation || !deps.getWorkspaceFolderPath || !deps.attachOutput || !deps.log) {
+    return;
+  }
+  const { vscode, spawn, resolveBridgeCliInvocation, getWorkspaceFolderPath, attachOutput, log } = deps;
+  let endpoint = '';
+  try {
+    if (deps && typeof deps.getEffectiveConfig === 'function') {
+      const cfg = deps.getEffectiveConfig();
+      endpoint = (cfg.get('endpoint') || '').trim();
+    }
+  } catch (_) {
+    endpoint = '';
+  }
+  if (!endpoint) {
+    const settings = vscode.workspace.getConfiguration('contextEngineUploader');
+    endpoint = (settings.get('endpoint') || '').trim();
+  }
+  let backendUrl = explicitBackendUrl || endpoint;
+  if (!backendUrl) {
+    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint).');
+    return;
+  }
+  try {
+    const u = new URL(backendUrl);
+    backendUrl = `${u.protocol}//${u.host}`;
+  } catch (_) {
+    backendUrl = backendUrl.replace(/\/+$/, '');
+  }
+
+  const invocation = resolveBridgeCliInvocation();
+  if (!invocation) {
+    vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for auth logout.');
+    return;
+  }
+  const cwd = getWorkspaceFolderPath() || process.cwd();
+
+  const args = [...invocation.args, 'auth', 'logout'];
+  const env = {
+    ...process.env,
+    CTXCE_AUTH_BACKEND_URL: backendUrl,
+  };
+  await new Promise(resolve => {
+    const child = spawn(invocation.command, args, { cwd, env });
+    attachOutput(child, 'auth');
+    child.on('error', error => {
+      log(`ctxce auth logout failed to start: ${error instanceof Error ? error.message : String(error)}`);
+      vscode.window.showErrorMessage('Context Engine Uploader: auth logout failed to start. See output for details.');
+      resolve();
+    });
+    child.on('close', code => {
+      if (code === 0) {
+        vscode.window.showInformationMessage('Context Engine Uploader: signed out successfully.');
+      } else {
+        vscode.window.showErrorMessage(`Context Engine Uploader: auth logout failed with exit code ${code}. See output for details.`);
+      }
+      resolve();
+    });
+  });
+}
+
 module.exports = {
+  checkAuthStatus,
   ensureAuthIfRequired,
   runAuthLoginFlow,
+  runAuthLogoutFlow,
 };

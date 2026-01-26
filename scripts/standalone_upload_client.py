@@ -21,12 +21,23 @@ import logging
 import argparse
 import subprocess
 import re
+import shutil
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Watchdog for event-based file watching (graceful fallback to polling if unavailable)
+import threading
+
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
 
 try:
     from upload_auth_utils import get_auth_session  # type: ignore[import]
@@ -37,6 +48,9 @@ except ImportError:
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_TEMP_CLEAN_ATTEMPTS = 3
+DEFAULT_TEMP_CLEAN_SLEEP = 1.0
 
 # =============================================================================
 # EMBEDDED DEPENDENCIES (Extracted from Context-Engine)
@@ -187,7 +201,10 @@ def _extract_repo_name_from_path(workspace_path: str) -> str:
 
 # Simple file-based hash cache (simplified from workspace_state.py)
 class SimpleHashCache:
-    """Simple file-based hash cache for tracking file changes."""
+    """Simple file-based hash cache for tracking file changes.
+    
+    Thread-safe via internal lock for concurrent watch mode access.
+    """
 
     def __init__(self, workspace_path: str, repo_name: str):
         self.workspace_path = Path(workspace_path).resolve()
@@ -199,43 +216,44 @@ class SimpleHashCache:
         self._cache_loaded = False
         self._cache: Dict[str, str] = {}
         self._stale_checked = False
+        self._lock = threading.Lock()
         self._load_cache()  # Load once on init
 
     def _load_cache(self) -> Dict[str, str]:
-        """Load cache from disk."""
-        if self._cache_loaded:
-            return self._cache
+        """Load cache from disk. Thread-safe."""
+        with self._lock:
+            if self._cache_loaded:
+                return self._cache.copy()
 
-        if not self.cache_file.exists():
-            self._cache = {}
+            if not self.cache_file.exists():
+                self._cache = {}
+                self._cache_loaded = True
+                return self._cache.copy()
+
+            try:
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    file_hashes = data.get("file_hashes", {})
+                    # Run stale check only once per process to avoid O(N^2) scans
+                    if not self._stale_checked and self._cache_seems_stale(file_hashes):
+                        self._stale_checked = True
+                        logger.warning(
+                            "[hash_cache] Detected stale cache with missing paths; resetting %s",
+                            self.cache_file,
+                        )
+                        self._save_cache_internal({})
+                        self._cache = {}
+                    else:
+                        self._stale_checked = True
+                        self._cache = file_hashes if isinstance(file_hashes, dict) else {}
+            except Exception:
+                self._cache = {}
+
             self._cache_loaded = True
-            return self._cache
+            return self._cache.copy()
 
-        try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                file_hashes = data.get("file_hashes", {})
-                # Run stale check only once per process to avoid O(N^2) scans
-                if not self._stale_checked and self._cache_seems_stale(file_hashes):
-                    self._stale_checked = True
-                    logger.warning(
-                        "[hash_cache] Detected stale cache with missing paths; resetting %s",
-                        self.cache_file,
-                    )
-                    self._save_cache({})
-                    self._cache = {}
-                else:
-                    self._stale_checked = True
-                    self._cache = file_hashes if isinstance(file_hashes, dict) else {}
-        except Exception:
-            self._cache = {}
-
-        self._cache_loaded = True
-        return self._cache
-
-    def _save_cache(self, file_hashes: Dict[str, str]):
-        """Save cache to disk."""
-        # Keep in-memory view in sync
+    def _save_cache_internal(self, file_hashes: Dict[str, str]):
+        """Save cache to disk. Must be called with lock held."""
         self._cache = file_hashes
         self._cache_loaded = True
         try:
@@ -245,36 +263,44 @@ class SimpleHashCache:
             }
             with open(self.cache_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+
+    def _save_cache(self, file_hashes: Dict[str, str]):
+        """Save cache to disk. Thread-safe."""
+        with self._lock:
+            self._save_cache_internal(file_hashes)
 
     def get_hash(self, file_path: str) -> str:
-        """Get cached file hash."""
-        file_hashes = self._load_cache()
+        """Get cached file hash. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        return file_hashes.get(abs_path, "")
+        with self._lock:
+            if not self._cache_loaded:
+                # Trigger load without lock held for file I/O
+                pass
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            return self._cache.get(abs_path, "")
 
     def set_hash(self, file_path: str, file_hash: str):
-        """Set cached file hash."""
-        file_hashes = self._load_cache()
+        """Set cached file hash. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        file_hashes[abs_path] = file_hash
-        self._cache = file_hashes
-        self._cache_loaded = True
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            self._cache[abs_path] = file_hash
 
     def all_paths(self) -> List[str]:
-        """Return all cached absolute file paths."""
-        file_hashes = self._load_cache()
-        return list(file_hashes.keys())
+        """Return all cached absolute file paths. Thread-safe."""
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            return list(self._cache.keys())
 
     def remove_hash(self, file_path: str) -> None:
-        """Remove a cached file hash if present."""
-        file_hashes = self._load_cache()
+        """Remove a cached file hash if present. Thread-safe."""
         abs_path = str(Path(file_path).resolve())
-        if abs_path in file_hashes:
-            file_hashes.pop(abs_path, None)
-            self._cache = file_hashes
-            self._cache_loaded = True
+        self._load_cache()  # Ensures cache is loaded
+        with self._lock:
+            self._cache.pop(abs_path, None)
 
     def _cache_seems_stale(self, file_hashes: Dict[str, str]) -> bool:
         """Return True if a large portion of cached paths no longer exist on disk."""
@@ -342,7 +368,8 @@ def _find_git_root(start: Path) -> Optional[Path]:
             try:
                 if (p / ".git").exists():
                     return p
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
     except Exception:
         return None
@@ -493,8 +520,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
             if anc.returncode != 0:
                 snapshot_mode = True
                 base_head = ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Build git rev-list command (simple HEAD-based history)
     cmd: List[str] = ["git", "rev-list", "--no-merges"]
@@ -591,7 +618,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
                     "diff": diff_text,
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     if not records:
@@ -626,8 +654,8 @@ def _collect_git_history_for_workspace(workspace_path: str) -> Optional[Dict[str
         }
         with git_cache_path.open("w", encoding="utf-8") as f:
             json.dump(cache_out, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return manifest
 
@@ -657,8 +685,8 @@ class RemoteUploadClient:
                 return str(container)
             except ValueError:
                 pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         # Fallback: strip drive/anchor and map to /work/<repo-name>
         try:
@@ -667,8 +695,8 @@ class RemoteUploadClient:
             if usable_parts:
                 repo_name = usable_parts[-1]
                 return str(container.joinpath(repo_name))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         return host_path.replace('\\', '/').replace(':', '')
 
@@ -716,14 +744,8 @@ class RemoteUploadClient:
     def cleanup(self):
         """Clean up temporary directories."""
         if self.temp_dir and os.path.exists(self.temp_dir):
-            try:
-                import shutil
-                shutil.rmtree(self.temp_dir)
-                logger.debug(f"[remote_upload] Cleaned up temporary directory: {self.temp_dir}")
-            except Exception as e:
-                logger.warning(f"[remote_upload] Failed to cleanup temp directory {self.temp_dir}: {e}")
-            finally:
-                self.temp_dir = None
+            _cleanup_dir_with_retries(self.temp_dir)
+            self.temp_dir = None
 
     def get_mapping_summary(self) -> Dict[str, Any]:
         """Return derived collection mapping details."""
@@ -788,8 +810,8 @@ class RemoteUploadClient:
                 try:
                     if abs_path in self._stat_cache:
                         self._stat_cache.pop(abs_path, None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 continue
 
             # File exists - use stat to avoid unnecessary re-hashing when possible
@@ -832,8 +854,8 @@ class RemoteUploadClient:
             # Update caches
             try:
                 self._stat_cache[abs_path] = (getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)), stat.st_size)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             set_cached_file_hash(abs_path, current_hash, self.repo_name)
 
         # Detect moves by looking for files with same content hash
@@ -871,7 +893,8 @@ class RemoteUploadClient:
                         content = f.read()
                     file_hash = hashlib.sha1(content).hexdigest()
                     deleted_hashes[file_hash] = deleted_path
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         # Match created files with deleted files by hash
@@ -886,7 +909,8 @@ class RemoteUploadClient:
                     moves.append((source_path, created_path))
                     # Remove from consideration
                     del deleted_hashes[file_hash]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
         return moves
@@ -1119,8 +1143,8 @@ class RemoteUploadClient:
                     (metadata_dir / "git_history.json").write_text(
                         json.dumps(git_history, indent=2)
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
             # Create tarball in temporary directory
             temp_bundle_dir = self._get_temp_bundle_dir()
@@ -1157,33 +1181,38 @@ class RemoteUploadClient:
                 # Check bundle size (server-side enforcement)
                 bundle_size = os.path.getsize(bundle_path)
 
-                files = {
-                    "bundle": open(bundle_path, "rb"),
-                }
-                data = {
-                    "workspace_path": self._translate_to_container_path(self.workspace_path),
-                    "collection_name": self.collection_name,
-                    "sequence_number": manifest.get("sequence_number"),
-                    "force": False,
-                    "source_path": self.workspace_path,
-                    "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
-                }
+                # Use context manager to ensure file handle is closed
+                bundle_file = open(bundle_path, "rb")
+                try:
+                    files = {
+                        "bundle": bundle_file,
+                    }
+                    data = {
+                        "workspace_path": self._translate_to_container_path(self.workspace_path),
+                        "collection_name": self.collection_name,
+                        "sequence_number": manifest.get("sequence_number"),
+                        "force": False,
+                        "source_path": self.workspace_path,
+                        "logical_repo_id": _compute_logical_repo_id(self.workspace_path),
+                    }
 
-                sess = get_auth_session(self.upload_endpoint)
-                if sess:
-                    data["session"] = sess
+                    sess = get_auth_session(self.upload_endpoint)
+                    if sess:
+                        data["session"] = sess
 
-                if getattr(self, "logical_repo_id", None):
-                    data['logical_repo_id'] = self.logical_repo_id
+                    if getattr(self, "logical_repo_id", None):
+                        data['logical_repo_id'] = self.logical_repo_id
 
-                logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
+                    logger.info(f"[remote_upload] Uploading bundle {manifest['bundle_id']} (size: {bundle_size} bytes)")
 
-                response = self.session.post(
-                    f"{self.upload_endpoint}/api/v1/delta/upload",
-                    files=files,
-                    data=data,
-                    timeout=(10, self.timeout)
-                )
+                    response = self.session.post(
+                        f"{self.upload_endpoint}/api/v1/delta/upload",
+                        files=files,
+                        data=data,
+                        timeout=(10, self.timeout)
+                    )
+                finally:
+                    bundle_file.close()
 
                 result = None
                 try:
@@ -1197,8 +1226,8 @@ class RemoteUploadClient:
                     if seq is not None:
                         try:
                             manifest["sequence"] = seq
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
                     return result
 
                 # Handle error
@@ -1419,8 +1448,8 @@ class RemoteUploadClient:
                     if os.path.exists(bundle_path):
                         os.remove(bundle_path)
                     self.cleanup()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 return True
             return False
         except Exception as e:
@@ -1507,8 +1536,152 @@ class RemoteUploadClient:
             return False
 
     def watch_loop(self, interval: int = 5):
-        """Main file watching loop using existing detection and upload methods."""
-        logger.info(f"[watch] Starting file monitoring (interval: {interval}s)")
+        """Event-driven or polling file watching based on watchdog availability."""
+        if WATCHDOG_AVAILABLE:
+            self._watch_loop_event_based(interval)
+        else:
+            self._watch_loop_polling(interval)
+    
+    def _watch_loop_event_based(self, interval: int = 5):
+        """Event-driven file watching using watchdog library."""
+        logger.info("[watch] Starting event-driven file monitoring")
+        logger.info(f"[watch] Monitoring: {self.workspace_path}")
+        logger.info("[watch] Press Ctrl+C to stop")
+        
+        class CodeFileEventHandler(FileSystemEventHandler):
+            """Event handler for code file changes."""
+            
+            def __init__(self, client, debounce_seconds=2.0):
+                super().__init__()
+                self.client = client
+                self.debounce_seconds = debounce_seconds
+                self._debounce_timer = None
+                self._pending_paths = set()
+                self._check_for_deletions = False
+                self._lock = threading.Lock()
+                
+            def on_any_event(self, event):
+                """Handle any file system event."""
+                if event.is_directory:
+                    return
+
+                # Check for deletion-related events (deleted, moved)
+                # These require checking cached paths for deleted files
+                event_type = getattr(event, 'event_type', event.__class__.__name__).lower()
+                if any(k in event_type for k in ('deleted', 'moved')):
+                    self._check_for_deletions = True
+
+                # Collect paths to process (src_path and potentially dest_path for moves)
+                paths_to_process = []
+
+                # Always check src_path
+                src_path = Path(event.src_path)
+                if detect_language(src_path) != "unknown":
+                    paths_to_process.append(src_path)
+
+                # For FileMovedEvent, also process the destination path
+                if hasattr(event, 'dest_path') and event.dest_path:
+                    dest_path = Path(event.dest_path)
+                    if detect_language(dest_path) != "unknown":
+                        paths_to_process.append(dest_path)
+
+                if not paths_to_process:
+                    return
+
+                # Accumulate changes and debounce
+                with self._lock:
+                    for path in paths_to_process:
+                        self._pending_paths.add(path)
+                    if self._debounce_timer:
+                        self._debounce_timer.cancel()
+                    self._debounce_timer = threading.Timer(
+                        self.debounce_seconds,
+                        self._process_pending_changes
+                    )
+                    self._debounce_timer.start()
+            
+            def _process_pending_changes(self):
+                """Process accumulated changes after debounce period."""
+                with self._lock:
+                    if not self._pending_paths:
+                        return
+                    pending = list(self._pending_paths)
+                    self._pending_paths.clear()
+                    check_deletions = self._check_for_deletions
+                    self._check_for_deletions = False
+
+                try:
+                    # Only include cached paths when deletion-related events occurred
+                    if check_deletions:
+                        all_paths = list(set(pending + [
+                            Path(p) for p in get_all_cached_paths(self.client.repo_name)
+                        ]))
+                    else:
+                        all_paths = pending
+                    
+                    changes = self.client.detect_file_changes(all_paths)
+                    meaningful_changes = (
+                        len(changes.get("created", [])) +
+                        len(changes.get("updated", [])) +
+                        len(changes.get("deleted", [])) +
+                        len(changes.get("moved", []))
+                    )
+                    
+                    if meaningful_changes > 0:
+                        logger.info(f"[watch] Detected {meaningful_changes} changes: { {k: len(v) for k, v in changes.items() if k != 'unchanged'} }")
+                        success = self.client.process_changes_and_upload(changes)
+                        if success:
+                            logger.info("[watch] Successfully uploaded changes")
+                        else:
+                            logger.error("[watch] Failed to upload changes")
+                    else:
+                        # Check for git history updates
+                        git_history = None
+                        try:
+                            git_history = _collect_git_history_for_workspace(self.client.workspace_path)
+                        except Exception:
+                            git_history = None
+                        
+                        if git_history:
+                            logger.info("[watch] Detected git history update; uploading git history metadata")
+                            success = self.client.upload_git_history_only(git_history)
+                            if success:
+                                logger.info("[watch] Successfully uploaded git history metadata")
+                            else:
+                                logger.error("[watch] Failed to upload git history metadata")
+                except Exception as e:
+                    logger.error(f"[watch] Error processing changes: {e}")
+        
+        observer = Observer()
+        handler = CodeFileEventHandler(self, debounce_seconds=2.0)
+        
+        try:
+            observer.schedule(handler, self.workspace_path, recursive=True)
+            observer.start()
+            logger.info("[watch] File watcher started successfully")
+            
+            # Keep the main thread alive
+            while True:
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("[watch] Received interrupt signal, stopping...")
+        except Exception as e:
+            logger.error(f"[watch] Error in watch loop: {e}")
+        finally:
+            # Cancel any pending debounce timer before stopping observer
+            with handler._lock:
+                if handler._debounce_timer:
+                    handler._debounce_timer.cancel()
+                    handler._debounce_timer = None
+            observer.stop()
+            observer.join()
+            logger.info("[watch] File monitoring stopped")
+    
+    def _watch_loop_polling(self, interval: int = 5):
+        """Fallback polling-based file watching (original implementation)."""
+        logger.warning("[watch] watchdog library not available, will fall back to polling mode")
+        logger.info(f"[watch] Starting polling file monitoring (interval: {interval}s)")
         logger.info(f"[watch] Monitoring: {self.workspace_path}")
         logger.info(f"[watch] Press Ctrl+C to stop")
 
@@ -1521,7 +1694,8 @@ class RemoteUploadClient:
                     for p in fs_files:
                         try:
                             resolved = p.resolve()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                         path_map[resolved] = p
 
@@ -1530,7 +1704,8 @@ class RemoteUploadClient:
                         try:
                             cached_path = Path(cached_abs)
                             resolved = cached_path.resolve()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception, continuing: {e}")
                             continue
                         if resolved not in path_map:
                             path_map[resolved] = cached_path
@@ -1769,6 +1944,30 @@ def get_remote_config(cli_path: Optional[str] = None) -> Dict[str, str]:
         "max_retries": int(os.environ.get("REMOTE_UPLOAD_MAX_RETRIES", "5")),
         "timeout": int(os.environ.get("REMOTE_UPLOAD_TIMEOUT", "1800")),
     }
+
+
+def _cleanup_dir_with_retries(path: Optional[str]) -> None:
+    """Best-effort directory cleanup with retries (needed on Windows due to file locks)."""
+    if not path:
+        return
+    try_path = Path(path)
+    if not try_path.exists():
+        return
+
+    last_error: Optional[Exception] = None
+    for attempt in range(DEFAULT_MAX_TEMP_CLEAN_ATTEMPTS):
+        try:
+            shutil.rmtree(try_path)
+            logger.debug(f"[standalone_upload] Cleaned up temporary directory: {path}")
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt < DEFAULT_MAX_TEMP_CLEAN_ATTEMPTS - 1:
+                time.sleep(DEFAULT_TEMP_CLEAN_SLEEP * (attempt + 1))
+            else:
+                logger.warning(f"[standalone_upload] Failed to cleanup temp directory {path}: {exc}")
+    if last_error:
+        logger.debug(f"[standalone_upload] Last cleanup error for {path}: {last_error}")
 
 
 def main():

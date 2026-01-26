@@ -651,9 +651,6 @@ NEO4J_ENABLED=1
 NEO4J_URI=bolt://neo4j:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=contextengine
-
-# Symbol graph
-SYMBOL_GRAPH_ENABLED=1
 """
 
         # Add API keys if configured

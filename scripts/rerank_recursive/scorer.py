@@ -3,6 +3,7 @@ TinyScorer - 2-layer MLP for scoring query-document pairs.
 
 Inspired by TRM: minimal parameters, maximum iterations.
 """
+import logging
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -10,6 +11,8 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 class TinyScorer:
     """
     Tiny 2-layer MLP for scoring query-document pairs.
@@ -118,8 +121,8 @@ class TinyScorer:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def maybe_reload_weights(self):
         """Check if weights file changed and reload if needed (hot reload)."""
@@ -136,8 +139,8 @@ class TinyScorer:
                 mtime = os.path.getmtime(self._weights_path)
                 if mtime > self._weights_mtime:
                     self._load_weights_safe()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _load_weights_safe(self):
         """Load weights with advisory file locking."""
@@ -274,8 +277,8 @@ class TinyScorer:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             if checkpoint or self._version % 100 == 0:
                 self._save_checkpoint()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _save_checkpoint(self):
         """Save a versioned checkpoint and prune old ones."""
@@ -284,8 +287,8 @@ class TinyScorer:
             checkpoint_path = self._weights_path.replace(".npz", f"_v{self._version}.npz")
             shutil.copy2(self._weights_path, checkpoint_path)
             self._prune_old_checkpoints()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _prune_old_checkpoints(self):
         """Remove old checkpoints keeping only the most recent MAX_CHECKPOINTS."""
@@ -297,10 +300,10 @@ class TinyScorer:
                 for old_cp in checkpoints[:-self.MAX_CHECKPOINTS]:
                     try:
                         os.remove(old_cp)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     def _load_weights(self):
         """Load weights from disk with dimension validation."""
@@ -376,6 +379,6 @@ class TinyScorer:
                 shutil.copy2(checkpoint_path, self._weights_path)
                 self._load_weights()
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return False

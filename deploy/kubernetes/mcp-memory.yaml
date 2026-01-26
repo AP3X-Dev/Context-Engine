@@ -26,10 +26,10 @@ spec:
         command:
         - sh
         - -c
-        - mkdir -p /mnt/rerank_weights /mnt/rerank_events && chmod 777 /mnt/rerank_weights /mnt/rerank_events
+        - mkdir -p /work/.codebase/rerank_weights /work/.codebase/rerank_events && chmod 777 /work/.codebase/rerank_weights /work/.codebase/rerank_events
         volumeMounts:
-        - name: metadata-volume
-          mountPath: /mnt
+        - name: codebase-volume
+          mountPath: /work/.codebase
       containers:
       - name: mcp-memory
         image: context-engine-memory
@@ -85,6 +85,8 @@ spec:
         - name: work-volume
           mountPath: /work
           readOnly: true
+        - name: codebase-volume
+          mountPath: /work/.codebase
         - name: metadata-volume
           mountPath: /tmp/rerank_weights
           subPath: rerank_weights
@@ -110,6 +112,9 @@ spec:
       - name: work-volume
         persistentVolumeClaim:
           claimName: code-repos-pvc
+      - name: codebase-volume
+        persistentVolumeClaim:
+          claimName: code-metadata-pvc
       - name: metadata-volume
         persistentVolumeClaim:
           claimName: code-metadata-pvc

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Callable, Iterable, List, Set
@@ -9,6 +10,8 @@ from typing import Callable, Iterable, List, Set
 from .config import DELAY_SECS, LOGGER
 
 
+
+logger = logging.getLogger(__name__)
 class ChangeQueue:
     """Collects file paths and flushes them after a debounce interval."""
 
@@ -76,8 +79,8 @@ class ChangeQueue:
                                 f"original error: {exc}",
                                 file=sys.stderr,
                             )
-                        except Exception:
-                            pass  # Last resort: can't even print
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")  # Last resort: can't even print
                 # drain any pending accumulated during processing
                 with self._lock:
                     if not self._pending:

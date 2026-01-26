@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Tuple
@@ -14,6 +15,8 @@ import scripts.ingest_code as idx
 from .config import LOGGER
 
 
+
+logger = logging.getLogger(__name__)
 def _rename_in_store(
     client: QdrantClient,
     src_collection: str,
@@ -156,8 +159,8 @@ def _rename_in_store(
                 str(dest),
                 exc,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return -1, None
 
 

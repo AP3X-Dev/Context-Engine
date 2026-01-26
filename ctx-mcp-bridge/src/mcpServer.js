@@ -9,7 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { loadAnyAuthEntry, loadAuthEntry } from "./authConfig.js";
+import { loadAnyAuthEntry, loadAuthEntry, readConfig, saveAuthEntry } from "./authConfig.js";
 import { maybeRemapToolArgs, maybeRemapToolResult } from "./resultPathMapping.js";
 import * as oauthHandler from "./oauthHandler.js";
 
@@ -63,11 +63,7 @@ async function listMemoryTools(client) {
     return [];
   }
   try {
-    const remote = await withTimeout(
-      client.listTools(),
-      5000,
-      "memory tools/list",
-    );
+    const remote = await client.listTools();
     return Array.isArray(remote?.tools) ? remote.tools.slice() : [];
   } catch (err) {
     debugLog("[ctxce] Error calling memory tools/list: " + String(err));
@@ -113,15 +109,15 @@ function getBridgeToolTimeoutMs() {
   try {
     const raw = process.env.CTXCE_TOOL_TIMEOUT_MSEC;
     if (!raw) {
-      return 300000;
+      return 600000; // 10 minutes default for remote operations
     }
     const parsed = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 300000;
+      return 600000;
     }
     return parsed;
   } catch {
-    return 300000;
+    return 600000;
   }
 }
 
@@ -130,7 +126,8 @@ function selectClientForTool(name, indexerClient, memoryClient) {
     return indexerClient;
   }
   const lowered = name.toLowerCase();
-  if (memoryClient && (lowered.startsWith("memory.") || lowered.startsWith("mcp_memory_") || lowered.includes("memory"))) {
+  // Route to memory server for any memory-prefixed tool
+  if (memoryClient && lowered.startsWith("memory")) {
     return memoryClient;
   }
   return indexerClient;
@@ -155,11 +152,34 @@ function isSessionError(error) {
   }
 }
 
+/**
+ * Detect actual backend auth rejection (from mcp_auth.py ValidationError).
+ * These indicate the session is truly invalid on the backend, not just
+ * an MCP SDK transport issue that can be fixed by reinit.
+ */
+function isAuthRejectionError(error) {
+  try {
+    const msg =
+      (error && typeof error.message === "string" && error.message) ||
+      (typeof error === "string" ? error : String(error || ""));
+    if (!msg) {
+      return false;
+    }
+    return (
+      msg.includes("Invalid or expired session") ||
+      msg.includes("Missing session for authorized operation") ||
+      msg.includes("Not authenticated")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function getBridgeRetryAttempts() {
   try {
     const raw = process.env.CTXCE_TOOL_RETRY_ATTEMPTS;
     if (!raw) {
-      return 2;
+      return 3; // 3 attempts for better reliability on remote
     }
     const parsed = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -167,7 +187,7 @@ function getBridgeRetryAttempts() {
     }
     return parsed;
   } catch {
-    return 2;
+    return 3;
   }
 }
 
@@ -175,7 +195,7 @@ function getBridgeRetryDelayMs() {
   try {
     const raw = process.env.CTXCE_TOOL_RETRY_DELAY_MSEC;
     if (!raw) {
-      return 200;
+      return 1000; // 1 second delay between retries for remote
     }
     const parsed = Number.parseInt(String(raw), 10);
     if (!Number.isFinite(parsed) || parsed < 0) {
@@ -183,7 +203,7 @@ function getBridgeRetryDelayMs() {
     }
     return parsed;
   } catch {
-    return 200;
+    return 1000;
   }
 }
 
@@ -255,6 +275,15 @@ const ADMIN_SESSION_COOKIE_NAME = "ctxce_session";
 const SLUGGED_REPO_RE = /.+-[0-9a-f]{16}(?:_old)?$/i;
 const BRIDGE_STATE_TOKEN = (process.env.CTXCE_BRIDGE_STATE_TOKEN || "").trim();
 
+function getHostname(candidate) {
+  try {
+    const url = new URL(candidate);
+    return url.hostname;
+  } catch {
+    return "";
+  }
+}
+
 function normalizeBackendUrl(candidate) {
   const trimmed = (candidate || "").trim();
   if (!trimmed) {
@@ -271,11 +300,35 @@ function normalizeBackendUrl(candidate) {
   return trimmed.replace(/\/+$/, "");
 }
 
-function resolveAuthBackendContext() {
+function resolveAuthBackendContext(indexerUrl, memoryUrl) {
   const envBackend = normalizeBackendUrl(process.env.CTXCE_AUTH_BACKEND_URL || "");
   if (envBackend) {
     return { backendUrl: envBackend, source: "CTXCE_AUTH_BACKEND_URL" };
   }
+
+  // If no env override, try to find a saved session.
+  // We prefer one that matches the host of indexer or memory URL if they look like backend roots.
+  const targetHosts = new Set();
+  const ih = getHostname(indexerUrl);
+  if (ih) {
+    targetHosts.add(ih);
+  }
+  const mh = getHostname(memoryUrl);
+  if (mh) {
+    targetHosts.add(mh);
+  }
+
+  if (targetHosts.size > 0) {
+    const all = readConfig();
+    const backends = Object.keys(all);
+    for (const backendUrl of backends) {
+      const bh = getHostname(backendUrl);
+      if (bh && targetHosts.has(bh)) {
+        return { backendUrl, source: "auth_entry_host_match" };
+      }
+    }
+  }
+
   try {
     const any = loadAnyAuthEntry();
     const stored = normalizeBackendUrl(any?.backendUrl || "");
@@ -288,32 +341,22 @@ function resolveAuthBackendContext() {
   return { backendUrl: "", source: "" };
 }
 
-const {
-  backendUrl: AUTH_BACKEND_URL,
-  source: AUTH_BACKEND_SOURCE,
-} = resolveAuthBackendContext();
-const UPLOAD_SERVICE_URL = AUTH_BACKEND_URL;
-const UPLOAD_AUTH_BACKEND = AUTH_BACKEND_URL;
-
-if (UPLOAD_SERVICE_URL) {
-  debugLog(`[ctxce] Upload/auth backend resolved from ${AUTH_BACKEND_SOURCE}: ${UPLOAD_SERVICE_URL}`);
-} else {
-  debugLog("[ctxce] No auth backend detected; bridge/state overrides disabled.");
-}
-
 async function fetchBridgeCollectionState({
   workspace,
   collection,
   sessionId,
   repoName,
   bridgeStateToken,
+  backendHint,
+  uploadServiceUrl,
 }) {
   try {
-    if (!UPLOAD_SERVICE_URL) {
+    if (!uploadServiceUrl) {
       debugLog("[ctxce] Skipping bridge/state fetch: no upload endpoint configured.");
       return null;
     }
-    const url = new URL("/bridge/state", UPLOAD_SERVICE_URL);
+    const url = new URL("/bridge/state", uploadServiceUrl);
+    // ...
     if (collection && collection.trim()) {
       url.searchParams.set("collection", collection.trim());
     } else if (workspace && workspace.trim()) {
@@ -341,8 +384,18 @@ async function fetchBridgeCollectionState({
     if (!resp.ok) {
       if (resp.status === 401 || resp.status === 403) {
         debugLog(
-          `[ctxce] /bridge/state responded ${resp.status}; missing or invalid token/session, falling back to ctx_config defaults.`,
+          `[ctxce] /bridge/state responded ${resp.status}; missing or invalid token/session, marking local session as expired.`,
         );
+        if (backendHint) {
+          try {
+            const entry = loadAuthEntry(backendHint);
+            if (entry) {
+              saveAuthEntry(backendHint, { ...entry, expiresAt: 1 });
+            }
+          } catch {
+            // ignore failures
+          }
+        }
         return null;
       }
       throw new Error(`bridge/state responded ${resp.status}`);
@@ -389,9 +442,23 @@ async function createBridgeServer(options) {
   // future this can be made user-aware (e.g. from auth), but for now we
   // keep it deterministic per workspace to help the indexer reuse
   // session-scoped defaults.
+  const {
+    backendUrl: authBackendUrl,
+    source: authBackendSource,
+  } = resolveAuthBackendContext(indexerUrl, memoryUrl);
+
+  const uploadServiceUrl = authBackendUrl;
+  const uploadAuthBackend = authBackendUrl;
+
+  if (uploadServiceUrl) {
+    debugLog(`[ctxce] Upload/auth backend resolved from ${authBackendSource}: ${uploadServiceUrl}`);
+  } else {
+    debugLog("[ctxce] No auth backend detected; bridge/state overrides disabled.");
+  }
+
   const explicitSession = process.env.CTXCE_SESSION_ID || "";
   const authBackendEnv = (process.env.CTXCE_AUTH_BACKEND_URL || "").trim();
-  let backendHint = authBackendEnv || UPLOAD_AUTH_BACKEND || "";
+  let backendHint = authBackendEnv || uploadAuthBackend || "";
   let sessionId = explicitSession;
 
   function sessionFromEntry(entry) {
@@ -446,7 +513,7 @@ async function createBridgeServer(options) {
     if (explicit) {
       return explicit;
     }
-    return findSavedSession([backendHint, UPLOAD_AUTH_BACKEND, authBackendEnv]);
+    return findSavedSession([backendHint, uploadAuthBackend, authBackendEnv]);
   }
 
   if (!sessionId) {
@@ -473,6 +540,8 @@ async function createBridgeServer(options) {
       sessionId,
       repoName,
       bridgeStateToken: BRIDGE_STATE_TOKEN,
+      backendHint,
+      uploadServiceUrl,
     });
     if (state) {
       const serving = state.serving_collection || state.active_collection;
@@ -502,10 +571,23 @@ async function createBridgeServer(options) {
     }
 
     if (forceRecreate) {
-      try {
-        debugLog("[ctxce] Reinitializing remote MCP clients after session error.");
-      } catch {
-        // ignore logging failures
+      debugLog("[ctxce] Reinitializing remote MCP clients after session error.");
+      
+      if (indexerClient) {
+        try {
+          await indexerClient.close();
+        } catch {
+          // ignore close errors
+        }
+        indexerClient = null;
+      }
+      if (memoryClient) {
+        try {
+          await memoryClient.close();
+        } catch {
+          // ignore close errors
+        }
+        memoryClient = null;
       }
     }
 
@@ -592,11 +674,7 @@ async function createBridgeServer(options) {
       if (!indexerClient) {
         throw new Error("Indexer MCP client not initialized");
       }
-      remote = await withTimeout(
-        indexerClient.listTools(),
-        10000,
-        "indexer tools/list",
-      );
+      remote = await indexerClient.listTools();
     } catch (err) {
       debugLog("[ctxce] Error calling remote tools/list: " + String(err));
       const memoryToolsFallback = await listMemoryTools(memoryClient);
@@ -695,11 +773,29 @@ async function createBridgeServer(options) {
         if (isSessionError(err) && !sessionRetried) {
           debugLog(
             "[ctxce] tools/call: detected remote MCP session error; reinitializing clients and retrying once: " +
-              String(err),
+            String(err),
           );
           await initializeRemoteClients(true);
           sessionRetried = true;
           continue;
+        }
+
+        // Backend auth rejection (mcp_auth.py ValidationError) - expire local auth
+        if (isAuthRejectionError(err)) {
+          debugLog(
+            "[ctxce] tools/call: backend auth rejection; marking local session as expired: " +
+            String(err),
+          );
+          if (backendHint) {
+            try {
+              const entry = loadAuthEntry(backendHint);
+              if (entry) {
+                saveAuthEntry(backendHint, { ...entry, expiresAt: 1 });
+              }
+            } catch {
+              // ignore failures
+            }
+          }
         }
 
         if (!isTransientToolError(err) || attempt === maxAttempts - 1) {
@@ -708,7 +804,7 @@ async function createBridgeServer(options) {
 
         debugLog(
           `[ctxce] tools/call: transient error (attempt ${attempt + 1}/${maxAttempts}), retrying: ` +
-            String(err),
+          String(err),
         );
         // Loop will retry
       }
@@ -830,11 +926,28 @@ export async function runHttpMcpServer(options) {
           return;
         }
 
+        const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
         let body = "";
+        let bodyLimitExceeded = false;
         req.on("data", (chunk) => {
+          if (bodyLimitExceeded) return;
           body += chunk;
+          if (body.length > MAX_BODY_SIZE) {
+            bodyLimitExceeded = true;
+            req.destroy();
+            res.statusCode = 413;
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: { code: -32000, message: "Request body too large" },
+                id: null,
+              }),
+            );
+          }
         });
         req.on("end", async () => {
+          if (bodyLimitExceeded) return;
           let parsed;
           try {
             parsed = body ? JSON.parse(body) : {};
@@ -902,6 +1015,25 @@ export async function runHttpMcpServer(options) {
   httpServer.listen(port, '127.0.0.1', () => {
     debugLog(`[ctxce] HTTP MCP bridge listening on 127.0.0.1:${port}`);
   });
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    debugLog(`[ctxce] Received ${signal}; closing HTTP server (waiting for in-flight requests).`);
+    httpServer.close(() => {
+      debugLog("[ctxce] HTTP server closed.");
+      process.exit(0);
+    });
+    const SHUTDOWN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for long MCP calls
+    setTimeout(() => {
+      debugLog("[ctxce] Forcing exit after shutdown timeout.");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 function loadConfig(startDir) {

@@ -17,6 +17,7 @@ This command orchestrates:
     5. Model warmup for optimal performance (warmup)
 """
 
+import logging
 import sys
 import time
 import os
@@ -25,6 +26,8 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+
+logger = logging.getLogger(__name__)
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -139,8 +142,8 @@ def _find_existing_import(source: Path, dev_workspace: Path) -> Optional[Path]:
         for entry in dev_workspace.iterdir():
             if entry.is_symlink() and entry.resolve() == source_resolved:
                 return entry
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return None
 
@@ -664,8 +667,8 @@ def step_index(
                     all_collections[coll] = stats.get("count", 0)
                 except Exception:
                     all_collections[coll] = 0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         if all_collections:
             console.print(f"\n[bold]Existing collections ({len(all_collections)}):[/bold]")
@@ -775,8 +778,8 @@ def step_index(
                         try:
                             stats = client.call_tool("qdrant_status", collection=verify_collection)
                             chunk_count = stats.get("count", 0)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception: {e}")
 
                     if chunk_count > 0:
                         console.print(

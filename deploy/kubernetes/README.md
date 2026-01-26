@@ -199,6 +199,13 @@ MAX_MICRO_CHUNKS_PER_FILE: "200"
 WATCH_DEBOUNCE_SECS: "1.5"
 ```
 
+Redis-backed .codebase state (K8s):
+
+```yaml
+CODEBASE_STATE_BACKEND: "redis"        # or set CODEBASE_STATE_REDIS_ENABLED: "1"
+CODEBASE_STATE_REDIS_URL: "redis://redis:6379/0"
+```
+
 #### Syncing `configmap.yaml` from `.env`
 
 If you treat a `.env` file as the source of truth for configuration, you can use the helper script `scripts/sync_env_to_k8s.py` to keep `deploy/kubernetes/configmap.yaml` and the workloads in sync:
@@ -558,4 +565,3 @@ kubectl patch deployment -n context-engine mcp-indexer -p \
 - [Multi-Repository Collections Guide](../../docs/MULTI_REPO_COLLECTIONS.md)
 - [MCP API Reference](../../docs/MCP_API.md)
 - [Architecture Overview](../../docs/ARCHITECTURE.md)
-

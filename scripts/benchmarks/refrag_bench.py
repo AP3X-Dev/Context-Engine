@@ -8,6 +8,7 @@ Measures retrieval quality, token budgeting efficiency, and micro-chunking effec
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -16,14 +17,16 @@ from pathlib import Path
 from typing import Any, Dict, List
 import statistics
 
+
+logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Load environment (optional) and fix Docker hostname
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 if "qdrant:" in os.environ.get("QDRANT_URL", ""):
     os.environ["QDRANT_URL"] = "http://localhost:6333"
 
@@ -40,8 +43,8 @@ else:
     # If COLLECTION_NAME is set but empty/unindexed, pick a non-empty collection for benchmarks.
     try:
         os.environ["COLLECTION_NAME"] = resolve_collection_auto(os.environ.get("COLLECTION_NAME"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 print(
     f"[bench] Using QDRANT_URL={os.environ.get('QDRANT_URL', '')} "

@@ -7,6 +7,7 @@ for code chunks using LLM decoders (GLM or llama.cpp).
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Tuple, List
 
@@ -15,6 +16,8 @@ from scripts.ingest.config import (
     set_cached_pseudo,
     compare_symbol_changes,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _pseudo_describe_enabled() -> bool:
@@ -98,8 +101,8 @@ def generate_pseudo_tags(text: str) -> Tuple[str, List[str]]:
                     pseudo = p.strip()[:256]
                 if isinstance(t, list):
                     tags = [str(x).strip() for x in t if str(x).strip()][:6]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     except Exception:
         return "", []
     return pseudo, tags
@@ -136,8 +139,8 @@ def should_process_pseudo_for_chunk(
             cached_pseudo, cached_tags = get_cached_pseudo(file_path, symbol_id)
             if cached_pseudo or cached_tags:
                 return False, cached_pseudo, cached_tags
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return True, "", []
 
     # Unchanged symbol: prefer reuse when cached pseudo/tags exist
@@ -147,8 +150,8 @@ def should_process_pseudo_for_chunk(
                 cached_pseudo, cached_tags = get_cached_pseudo(file_path, symbol_id)
                 if cached_pseudo or cached_tags:
                     return False, cached_pseudo, cached_tags
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         # Unchanged but no cached data yet – process once
         return True, "", []
 
@@ -156,12 +159,23 @@ def should_process_pseudo_for_chunk(
     return True, "", []
 
 
-def should_use_smart_reindexing(file_path: str, file_hash: str) -> Tuple[bool, str]:
+def should_use_smart_reindexing(
+    file_path: str,
+    file_hash: str,
+    content: str | None = None,
+    language: str | None = None,
+) -> Tuple[bool, str]:
     """Determine if smart reindexing should be used for a file.
 
     This function implements a fast-path optimization:
     1. First check if file hash is unchanged - if so, skip AST parsing entirely
     2. Only if file hash changed, do we re-parse and compare symbols
+
+    Args:
+        file_path: Path to the file
+        file_hash: SHA1 hash of file content
+        content: Optional file content to avoid redundant file reads
+        language: Optional language override
 
     Returns:
         (use_smart, reason)
@@ -193,7 +207,7 @@ def should_use_smart_reindexing(file_path: str, file_hash: str) -> Tuple[bool, s
         pass  # Function not available, fall through to symbol comparison
 
     # SLOW PATH: File changed, need to re-parse and compare symbols
-    current_symbols = extract_symbols_with_tree_sitter(file_path)
+    current_symbols = extract_symbols_with_tree_sitter(file_path, content=content, language=language)
     if not current_symbols:
         return False, "no_current_symbols"
 

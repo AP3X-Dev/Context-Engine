@@ -5,10 +5,13 @@
 # CRITICAL: OpenLit must be initialized BEFORE any qdrant_client imports
 # to properly instrument vector DB calls.
 # ---------------------------------------------------------------------------
+import logging
 import os
 import sys as _sys
 
 # Ensure repo roots are importable so 'scripts' resolves inside container
+
+logger = logging.getLogger(__name__)
 _roots_env = os.environ.get("WORK_ROOTS", "")
 _roots = [p.strip() for p in _roots_env.split(",") if p.strip()] or ["/work", "/app"]
 for _root in _roots:
@@ -40,6 +43,7 @@ except Exception:
 from scripts.mcp_auth import (
     require_auth_session as _require_auth_session,
     require_collection_access as _require_collection_access,
+    AUTH_HEADER_TOKEN as _AUTH_HEADER_TOKEN,
 )
 
 from qdrant_client import QdrantClient, models
@@ -65,6 +69,7 @@ DEFAULT_COLLECTION = (
 LEX_VECTOR_NAME = os.environ.get("LEX_VECTOR_NAME", "lex")
 LEX_VECTOR_DIM = int(os.environ.get("LEX_VECTOR_DIM", "4096") or 4096)
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+MEMORY_FIND_LIMIT_DEFAULT = int(os.environ.get("MEMORY_FIND_LIMIT_DEFAULT", "10") or 10)
 
 # Minimal embedding via fastembed (CPU)
 
@@ -134,6 +139,58 @@ def _ensure_once(name: str) -> bool:
         return False
 
 # Disable DNS rebinding protection - breaks Docker internal networking (Host: mcp:8000)
+TOOLS_METADATA: Dict[str, Dict] = {
+    "memory_store": {
+        "name": "memory_store",
+        "category": "memory",
+        "primary_use": "Store knowledge for later retrieval",
+        "choose_when": [
+            "Storing team decisions/notes",
+            "Documenting conventions",
+            "Building institutional memory",
+        ],
+        "choose_instead": {},
+        "parameters": {
+            "essential": ["information"],
+            "common": ["metadata"],
+            "advanced": ["collection", "session"],
+        },
+        "returns": {"ok": "bool", "id": "str", "message": "str"},
+        "related_tools": ["memory_find", "context_search"],
+        "performance": {
+            "typical_latency_ms": (50, 500),
+            "requires_index": False,
+            "requires_decoder": False,
+        },
+    },
+    "memory_find": {
+        "name": "memory_find",
+        "category": "memory",
+        "primary_use": "Retrieve stored memories by similarity",
+        "choose_when": [
+            "Looking for stored notes/decisions",
+            "Recalling team knowledge",
+        ],
+        "choose_instead": {"context_search": "Want code + memories together"},
+        "parameters": {
+            "essential": ["query"],
+            "common": ["limit", "kind", "topic", "tags"],
+            "advanced": ["priority_min", "collection"],
+        },
+        "returns": {
+            "ok": "bool",
+            "results": "list[{id, information, metadata, score}]",
+            "total": "int",
+        },
+        "related_tools": ["memory_store", "context_search"],
+        "performance": {
+            "typical_latency_ms": (50, 300),
+            "requires_index": False,
+            "requires_decoder": False,
+        },
+    },
+}
+
 _security_settings = (
     TransportSecuritySettings(enable_dns_rebinding_protection=False)
     if TransportSecuritySettings
@@ -141,7 +198,49 @@ _security_settings = (
 )
 mcp = FastMCP(name="memory-server", transport_security=_security_settings)
 
-# Capture tool registry automatically by wrapping the decorator once
+
+class _AuthHeaderASGIMiddleware:
+    """Pure ASGI middleware that extracts Authorization header into context var."""
+    def __init__(self, app):
+        self.app = app
+    
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+            if auth_header.lower().startswith("bearer "):
+                token = auth_header[7:].strip()
+            else:
+                token = auth_header.strip() if auth_header else ""
+            _AUTH_HEADER_TOKEN.set(token)
+        return await self.app(scope, receive, send)
+
+
+def _add_auth_middleware():
+    """Wrap FastMCP's ASGI app with auth header extraction middleware."""
+    logger.info("Setting up auth header middleware...")
+    try:
+        if hasattr(mcp, "streamable_http_app"):
+            _orig_streamable = mcp.streamable_http_app
+            def _patched_streamable(*args, **kwargs):
+                app = _orig_streamable(*args, **kwargs)
+                logger.info(f"Wrapping streamable_http_app with auth middleware")
+                return _AuthHeaderASGIMiddleware(app)
+            mcp.streamable_http_app = _patched_streamable
+        
+        if hasattr(mcp, "sse_app"):
+            _orig_sse = mcp.sse_app
+            def _patched_sse(*args, **kwargs):
+                app = _orig_sse(*args, **kwargs)
+                logger.info(f"Wrapping sse_app with auth middleware")
+                return _AuthHeaderASGIMiddleware(app)
+            mcp.sse_app = _patched_sse
+        
+        logger.info("Patched FastMCP app factory methods for auth middleware injection")
+    except Exception as e:
+        logger.warning(f"Failed to patch FastMCP for auth middleware: {e}")
+
+
 _TOOLS_REGISTRY: list[dict] = []
 try:
     _orig_tool = mcp.tool
@@ -153,13 +252,13 @@ try:
                     "name": dkwargs.get("name") or getattr(fn, "__name__", ""),
                     "description": (getattr(fn, "__doc__", None) or "").strip(),
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return orig_deco(fn)
         return _inner
     mcp.tool = _tool_capture_wrapper  # type: ignore
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 
 def _relax_var_kwarg_defaults() -> None:
@@ -205,9 +304,10 @@ def _relax_var_kwarg_defaults() -> None:
             if changed:
                 try:
                     model.model_rebuild(force=True)
-                except Exception:
-                    pass
-        except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
 
@@ -247,7 +347,12 @@ def _start_readyz_server():
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        payload = {"ok": True, "tools": _TOOLS_REGISTRY}
+                        enriched = []
+                        for t in _TOOLS_REGISTRY:
+                            name = t.get("name", "")
+                            meta = TOOLS_METADATA.get(name, {})
+                            enriched.append({**t, **meta})
+                        payload = {"ok": True, "tools": enriched, "metadata": TOOLS_METADATA}
                         self.wfile.write((json.dumps(payload)).encode("utf-8"))
                     else:
                         self.send_response(404)
@@ -256,8 +361,8 @@ def _start_readyz_server():
                     try:
                         self.send_response(500)
                         self.end_headers()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
             def log_message(self, *args, **kwargs):
                 return
@@ -296,8 +401,8 @@ def _return_qdrant_client(client: QdrantClient):
         # Fallback path: close client to avoid socket leak
         try:
             client.close()
-        except Exception:
-            pass  # Best effort cleanup
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")  # Best effort cleanup
 
 
 # Ensure collection exists with dual vectors
@@ -318,8 +423,8 @@ def _ensure_collection(name: str):
     try:
         client.get_collection(name)
         return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     finally:
         _return_qdrant_client(client)
 
@@ -364,8 +469,8 @@ def _ensure_collection(name: str):
                 size=mini_vec_dim,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Add pattern vector for structural similarity search
     try:
@@ -377,8 +482,8 @@ def _ensure_collection(name: str):
                 size=pattern_vector_dim,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Build sparse vector config for lex_sparse (lossless lexical matching)
     sparse_cfg = None
@@ -397,8 +502,8 @@ def _ensure_collection(name: str):
                 except AttributeError:
                     pass  # Older qdrant-client versions
             sparse_cfg = {lex_sparse_name: models.SparseVectorParams(**sparse_params_kwargs)}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Get a fresh client for collection creation
     client = _get_qdrant_client()
@@ -411,7 +516,7 @@ def _ensure_collection(name: str):
         )
         vector_names = list(vectors_cfg.keys())
         sparse_info = f", sparse: {list(sparse_cfg.keys())}" if sparse_cfg else ""
-        print(f"[MEMORY_SERVER] Created collection '{name}' with vectors: {vector_names}{sparse_info}")
+        logger.info(f"Created collection '{name}' with vectors: {vector_names}{sparse_info}")
         return True
     finally:
         _return_qdrant_client(client)
@@ -422,8 +527,8 @@ def _ensure_collection(name: str):
 if MEMORY_ENSURE_ON_START:
     try:
         _ensure_collection(DEFAULT_COLLECTION)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 @mcp.tool()
 def set_session_defaults(
@@ -432,6 +537,12 @@ def set_session_defaults(
     mode: Optional[str] = None,
     language: Optional[str] = None,
     under: Optional[str] = None,
+    repo: Any = None,
+    compact: Any = None,
+    output_format: Optional[str] = None,
+    include_snippet: Any = None,
+    rerank_enabled: Any = None,
+    limit: Any = None,
     ctx: Context = None,
     kwargs: Any = None,
 ) -> Dict[str, Any]:
@@ -443,6 +554,19 @@ def set_session_defaults(
     - Optionally, also supports a lightweight token for clients that prefer cross-connection reuse.
 
     Precedence everywhere: explicit collection > per-connection defaults > token defaults > env default.
+
+    Parameters:
+    - collection: Default collection name
+    - mode: Search mode hint
+    - under: Default path prefix filter
+    - language: Default language filter
+    - repo: Default repo filter for multi-repo setups
+    - compact: Default compact response mode (bool)
+    - output_format: Default output format ("json" or "toon")
+    - include_snippet: Default snippet inclusion (bool)
+    - rerank_enabled: Default reranking toggle (bool)
+    - limit: Default result limit (int)
+    - session: Session token for cross-connection reuse
     """
     # Handle kwargs payload from some clients
     try:
@@ -463,8 +587,20 @@ def set_session_defaults(
                 under = _extra["under"]
             if not session and _extra.get("session"):
                 session = _extra["session"]
-    except Exception:
-        pass
+            if repo is None and _extra.get("repo"):
+                repo = _extra["repo"]
+            if compact is None and _extra.get("compact") is not None:
+                compact = _extra["compact"]
+            if not output_format and _extra.get("output_format"):
+                output_format = _extra["output_format"]
+            if include_snippet is None and _extra.get("include_snippet") is not None:
+                include_snippet = _extra["include_snippet"]
+            if rerank_enabled is None and _extra.get("rerank_enabled") is not None:
+                rerank_enabled = _extra["rerank_enabled"]
+            if limit is None and _extra.get("limit") is not None:
+                limit = _extra["limit"]
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Prepare defaults payload
     defaults: Dict[str, Any] = {}
@@ -476,6 +612,23 @@ def set_session_defaults(
         defaults["language"] = language.strip()
     if isinstance(under, str) and under.strip():
         defaults["under"] = under.strip()
+    if isinstance(repo, str) and repo.strip():
+        defaults["repo"] = repo.strip()
+    elif isinstance(repo, list):
+        defaults["repo"] = repo
+    if isinstance(output_format, str) and output_format.strip():
+        defaults["output_format"] = output_format.strip()
+    if compact is not None:
+        defaults["compact"] = bool(compact) if not isinstance(compact, bool) else compact
+    if include_snippet is not None:
+        defaults["include_snippet"] = bool(include_snippet) if not isinstance(include_snippet, bool) else include_snippet
+    if rerank_enabled is not None:
+        defaults["rerank_enabled"] = bool(rerank_enabled) if not isinstance(rerank_enabled, bool) else rerank_enabled
+    if limit is not None:
+        try:
+            defaults["limit"] = int(limit)
+        except (ValueError, TypeError):
+            pass
 
     # Store per-connection (preferred, no token required)
     try:
@@ -484,8 +637,8 @@ def set_session_defaults(
                 existing = SESSION_DEFAULTS_BY_SESSION.get(ctx.session) or {}
                 existing.update(defaults)
                 SESSION_DEFAULTS_BY_SESSION[ctx.session] = existing
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Optional: also support legacy token
     sid = (str(session).strip() if session is not None else "") or None
@@ -498,8 +651,8 @@ def set_session_defaults(
                 existing = SESSION_DEFAULTS.get(sid) or {}
                 existing.update(defaults)
                 SESSION_DEFAULTS[sid] = existing
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return {
         "ok": True,
@@ -517,9 +670,107 @@ def memory_store(
     session: Optional[str] = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Store a memory entry into Qdrant (dual vectors consistent with indexer).
+    """Store knowledge/notes into the memory system for later retrieval.
 
-    First call may be slower because the embedding model loads lazily.
+    PRIMARY USE: Persist team knowledge, decisions, conventions, or notes
+    that should be retrievable alongside code search results.
+
+    CHOOSE THIS WHEN:
+    - You want to store a decision or convention for future reference
+    - You're documenting why code works a certain way
+    - You want to persist knowledge that context_search can find
+    - You're building institutional memory for the codebase
+
+    WHAT TO STORE:
+    Good candidates for memory storage:
+      - Architecture decisions: "We use JWT for auth because..."
+      - Conventions: "All API responses follow the envelope pattern..."
+      - Gotchas: "The cache has a 5-minute TTL, not configurable..."
+      - Debugging notes: "If X fails, check Y first..."
+      - Integration details: "External API requires header Z..."
+      - Performance notes: "This query is O(n^2), optimize for large N..."
+
+    Bad candidates (don't store these):
+      - Code itself (it's already indexed)
+      - Temporary debug output
+      - Personal notes not relevant to the codebase
+      - Sensitive data (passwords, keys, secrets)
+
+    ESSENTIAL PARAMETERS:
+    - information (str): The knowledge/note to store. Should be clear,
+      self-contained text that will be useful when retrieved later.
+
+    METADATA PARAMETERS:
+    - metadata (dict): Optional structured metadata for filtering.
+      Common keys:
+      - kind: "note", "decision", "convention", "gotcha", "policy"
+      - topic: Subject area ("auth", "caching", "api", "database")
+      - priority: Importance (1=low, 5=high)
+      - tags: List of tags for filtering
+      - author: Who wrote this note
+
+      Auto-added if not provided:
+      - created_at: ISO timestamp
+      - kind: "memory" (default)
+      - source: "memory" (default)
+
+    SESSION PARAMETERS:
+    - collection (str): Target collection. Defaults to workspace collection.
+    - session (str): Session token for multi-user scenarios.
+
+    RETURNS:
+    {
+        "ok": true,
+        "id": "abc123...",           // Unique ID for this memory
+        "message": "Successfully stored information",
+        "collection": "codebase",
+        "vector": "bge-base-en-v1-5"  // Embedding model used
+    }
+
+    USAGE PATTERNS:
+
+    # Store an architecture decision
+    memory_store(
+        information="We chose FastAPI over Flask because we need async support
+        for the WebSocket handlers and automatic OpenAPI documentation.",
+        metadata={
+            "kind": "decision",
+            "topic": "api",
+            "tags": ["framework", "architecture"]
+        }
+    )
+
+    # Store a debugging gotcha
+    memory_store(
+        information="If authentication fails silently, check that the JWT_SECRET
+        env var is set. The auth middleware swallows exceptions.",
+        metadata={
+            "kind": "gotcha",
+            "topic": "auth",
+            "priority": 4
+        }
+    )
+
+    # Store a convention
+    memory_store(
+        information="All database queries must use parameterized statements.
+        Raw string interpolation is forbidden for security.",
+        metadata={
+            "kind": "convention",
+            "topic": "database",
+            "tags": ["security", "sql"]
+        }
+    )
+
+    RETRIEVAL:
+    Stored memories can be retrieved via:
+    - memory_find(query="...") -> searches only memories
+    - context_search(query="...", include_memories=True) -> code + memories
+
+    NOTES:
+    - First call may be slower due to embedding model loading
+    - Memories are embedded using the same model as code for consistent search
+    - Duplicate content is not deduplicated; avoid storing the same thing twice
     """
     sess = _require_auth_session(session)
     coll = _resolve_collection(collection, session=session, ctx=ctx)
@@ -583,10 +834,97 @@ def memory_find(
     priority_min: Optional[int] = None,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Find memory-like entries by vector similarity (dense + lexical fusion).
+    """Retrieve stored memories/notes by semantic similarity.
 
-    Cold-start option: set MEMORY_COLD_SKIP_DENSE=1 to skip dense embedding until the
-    model is cached (useful on slow storage).
+    PRIMARY USE: Find previously stored knowledge, decisions, or notes.
+    Searches ONLY the memory store, not code.
+
+    CHOOSE THIS WHEN:
+    - You want to find previously stored notes/decisions
+    - You're looking for team knowledge without code results
+    - You want to filter memories by metadata (kind, topic, tags)
+    - You need to recall specific documented information
+
+    CHOOSE INSTEAD:
+    - context_search with include_memories=True -> when you want code + memories
+    - repo_search -> when you want code only, no memories
+
+    QUERY EXAMPLES:
+    Good queries (conceptual, knowledge-seeking):
+      "authentication decisions"      - finds auth-related notes
+      "why we chose this approach"    - finds decision rationale
+      "database performance tips"     - finds DB-related notes
+      "API design conventions"        - finds API conventions
+      "deployment gotchas"            - finds deployment notes
+
+    Bad queries:
+      "def authenticate"              - code fragment, use repo_search
+      "src/auth.py"                   - file path, not a memory query
+      "UserService"                   - class name, use repo_search
+
+    ESSENTIAL PARAMETERS:
+    - query (str): Natural language description of what you're looking for.
+
+    ALTERNATIVE QUERY PARAMETERS:
+    - q (str): Alias for query.
+    - top_k (int): Alias for limit.
+
+    FILTER PARAMETERS:
+    - kind (str): Filter by memory kind.
+      Values: "note", "decision", "convention", "gotcha", "policy", "preference"
+    - topic (str): Filter by topic/subject area.
+      Example: "auth", "database", "api", "caching"
+    - tags (str | list[str]): Filter by tags.
+      Example: "security" or ["security", "sql"]
+    - language (str): Filter by programming language context.
+    - priority_min (int): Minimum priority (1-5). Higher = more important.
+
+    COMMON PARAMETERS:
+    - limit (int, default=5): Maximum results to return.
+    - collection (str): Target collection. Defaults to workspace collection.
+    - session (str): Session token for multi-user scenarios.
+
+    RETURNS:
+    {
+        "ok": true,
+        "results": [
+            {
+                "id": "abc123...",
+                "information": "We chose JWT for authentication because...",
+                "metadata": {
+                    "kind": "decision",
+                    "topic": "auth",
+                    "created_at": "2024-01-15T10:30:00Z",
+                    "tags": ["security", "architecture"]
+                },
+                "score": 0.85,
+                "highlights": ["...chose <<JWT>> for <<authentication>>..."]
+            }
+        ],
+        "total": 3,
+        "count": 3,
+        "query": "authentication decisions"
+    }
+
+    USAGE PATTERNS:
+
+    # Find all authentication-related notes
+    memory_find(query="authentication", topic="auth")
+
+    # Find high-priority gotchas
+    memory_find(query="common issues", kind="gotcha", priority_min=4)
+
+    # Find security-related conventions
+    memory_find(query="security best practices", kind="convention", tags="security")
+
+    # Find recent decisions
+    memory_find(query="recent architecture decisions", kind="decision", limit=10)
+
+    NOTES:
+    - Cold start: First call may be slower if embedding model isn't cached
+    - Set MEMORY_COLD_SKIP_DENSE=1 to skip dense embedding on cold start
+    - Highlights show query term matches in context
+    - Results are ranked by hybrid similarity (dense + lexical fusion)
     """
     # Handle 'q' alias for query
     if not query and q:
@@ -608,7 +946,7 @@ def memory_find(
     lex = _lex_hash_vector_text(str(query), LEX_VECTOR_DIM)
 
     # Harmonize alias: top_k -> limit
-    lim = int(limit if limit is not None else (top_k if top_k is not None else 5))
+    lim = int(limit if limit is not None else (top_k if top_k is not None else MEMORY_FIND_LIMIT_DEFAULT))
 
     # Build Qdrant filter
     must = []
@@ -773,15 +1111,15 @@ def _resolve_collection(
             coll = str(payload.get("collection")).strip()
         if isinstance(payload, dict) and payload.get("session") is not None:
             sid = str(payload.get("session")).strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Explicit session parameter wins over payload session
     try:
         if session is not None and str(session).strip():
             sid = str(session).strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Per-connection defaults via Context session
     if not coll and ctx is not None and getattr(ctx, "session", None) is not None:
@@ -791,8 +1129,8 @@ def _resolve_collection(
                 candidate = str(defaults.get("collection") or "").strip()
                 if candidate:
                     coll = candidate
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Legacy token-based session defaults
     if not coll and sid:
@@ -802,8 +1140,8 @@ def _resolve_collection(
                 candidate = str(defaults.get("collection") or "").strip()
                 if candidate:
                     coll = candidate
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return coll or DEFAULT_COLLECTION
 
@@ -813,16 +1151,23 @@ if __name__ == "__main__":
     # Start lightweight /readyz health endpoint in background (best-effort)
     try:
         _start_readyz_server()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Relax Pydantic model defaults for **kwargs compatibility
     # This must be called AFTER all tools are registered but BEFORE mcp.run()
     try:
         _relax_var_kwarg_defaults()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
+    # Enable stateless HTTP mode to avoid session handshake requirement
+    stateless_http = str(os.environ.get("FASTMCP_STATELESS_HTTP", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    
+    # Add auth header extraction middleware for HTTP transports
+    if transport != "stdio":
+        _add_auth_middleware()
+    
     if transport == "stdio":
         # Run over stdio (for clients that don't support network transports)
         mcp.run(transport="stdio")
@@ -831,13 +1176,18 @@ if __name__ == "__main__":
         try:
             mcp.settings.host = HOST
             mcp.settings.port = PORT
-        except Exception:
-            pass
+            # Set stateless mode via settings (not run kwarg)
+            if stateless_http:
+                mcp.settings.stateless_http = True
+        except Exception as e:
+            logger.debug(f"Suppressed exception setting config: {e}")
         # Use the correct FastMCP transport name
         try:
+            logger.info(f"Starting streamable-http transport on {HOST}:{PORT} (stateless={stateless_http})")
             mcp.run(transport="streamable-http")
-        except Exception:
-            # Fallback to SSE only if HTTP truly unavailable
+        except Exception as e:
+            # Log the actual error instead of silently falling back
+            logger.warning(f"streamable-http transport failed: {e}, falling back to SSE")
             mcp.settings.host = HOST
             mcp.settings.port = PORT
             mcp.run(transport="sse")

@@ -5,6 +5,60 @@
 
 version: '3.8'
 
+# YAML Anchors for common configurations
+x-common-config: &common-config
+  env_file:
+    - .env
+  depends_on:
+    - qdrant
+  networks:
+    - dev-remote-network
+
+x-huggingface-cache: &hf-cache
+  HF_HOME: /tmp/huggingface
+  HF_HUB_CACHE: /tmp/huggingface/hub
+  HUGGINGFACE_HUB_CACHE: /tmp/huggingface/hub
+  TRANSFORMERS_CACHE: /tmp/huggingface/transformers
+  FASTEMBED_CACHE_PATH: /tmp/huggingface/fastembed
+  HF_HUB_DISABLE_XET: 1
+
+x-auth-config: &auth-config
+  CTXCE_AUTH_ENABLED: ${CTXCE_AUTH_ENABLED:-0}
+  CTXCE_MCP_ACL_ENFORCE: ${CTXCE_MCP_ACL_ENFORCE:-0}
+  CTXCE_ACL_ALLOW_ALL: ${CTXCE_ACL_ALLOW_ALL:-0}
+  CTXCE_AUTH_SHARED_TOKEN: ${CTXCE_AUTH_SHARED_TOKEN}
+  CTXCE_AUTH_ADMIN_TOKEN: ${CTXCE_AUTH_ADMIN_TOKEN}
+  CTXCE_AUTH_DB_URL: ${CTXCE_AUTH_DB_URL}
+  CTXCE_AUTH_SESSION_TTL_SECONDS: ${CTXCE_AUTH_SESSION_TTL_SECONDS:-0}
+  CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN: ${CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN:-0}
+
+x-embedding-config: &embedding-config
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
+  QWEN3_EMBEDDING_ENABLED: ${QWEN3_EMBEDDING_ENABLED:-0}
+  QWEN3_QUERY_INSTRUCTION: ${QWEN3_QUERY_INSTRUCTION:-1}
+  QWEN3_INSTRUCTION_TEXT: ${QWEN3_INSTRUCTION_TEXT}
+
+x-reranker-config: &reranker-config
+  RERANKER_MODEL: ${RERANKER_MODEL:-}
+  RERANKER_ONNX_PATH: ${RERANKER_ONNX_PATH:-}
+  RERANKER_TOKENIZER_PATH: ${RERANKER_TOKENIZER_PATH:-}
+  RERANK_LEARNING: ${RERANK_LEARNING:-1}
+  RERANKER_WEIGHTS_DIR: /tmp/rerank_weights
+  RERANK_EVENTS_DIR: /tmp/rerank_events
+  RERANK_EVENTS_ENABLED: ${RERANK_EVENTS_ENABLED:-1}
+
+x-common-volumes: &common-volumes
+  - workspace_pvc:/work:ro
+  - rerank_data:/tmp/rerank_weights:rw
+  - rerank_events:/tmp/rerank_events:rw
+
+x-indexer-volumes: &indexer-volumes
+  - workspace_pvc:/work:rw
+  - codebase_pvc:/work/.codebase:rw
+  - rerank_data:/tmp/rerank_weights:rw
+  - rerank_events:/tmp/rerank_events:rw
+
 services:
   # Qdrant vector database - same as base compose
   qdrant:
@@ -20,73 +74,36 @@ services:
 
   # MCP search service - same as base compose
   mcp:
+    <<: *common-config
     build:
       context: .
       dockerfile: Dockerfile.mcp
     container_name: mcp-search-dev-remote
     user: "1000:1000"
-    depends_on:
-      - qdrant
-    env_file:
-      - .env
     environment:
-      - FASTMCP_HOST=${FASTMCP_HOST}
-      - FASTMCP_PORT=${FASTMCP_PORT}
-      - QDRANT_URL=${QDRANT_URL}
+      <<: [ *hf-cache, *auth-config, *embedding-config, *reranker-config ]
+      FASTMCP_HOST: ${FASTMCP_HOST}
+      FASTMCP_PORT: ${FASTMCP_PORT}
+      QDRANT_URL: ${QDRANT_URL}
       # OpenLit observability (optional - enable via OPENLIT_ENABLED=1)
-      - OPENLIT_ENABLED=${OPENLIT_ENABLED:-0}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://openlit:4318}
-      # Optional auth configuration (fully opt-in via .env)
-      - CTXCE_AUTH_ENABLED=${CTXCE_AUTH_ENABLED:-0}
-      - CTXCE_MCP_ACL_ENFORCE=${CTXCE_MCP_ACL_ENFORCE:-0}
-      - CTXCE_ACL_ALLOW_ALL=${CTXCE_ACL_ALLOW_ALL:-0}
-      - CTXCE_AUTH_SHARED_TOKEN=${CTXCE_AUTH_SHARED_TOKEN}
-      - CTXCE_AUTH_ADMIN_TOKEN=${CTXCE_AUTH_ADMIN_TOKEN}
-      - CTXCE_AUTH_DB_URL=${CTXCE_AUTH_DB_URL}
-      - CTXCE_AUTH_SESSION_TTL_SECONDS=${CTXCE_AUTH_SESSION_TTL_SECONDS:-0}
-      - CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN=${CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN:-0}
-      - COLLECTION_NAME=${COLLECTION_NAME}
-      - PATH_EMIT_MODE=auto
-      # Use /tmp for HF caches to avoid root-owned docker volume permissions
-      - HF_HOME=/tmp/huggingface
-      - HF_HUB_CACHE=/tmp/huggingface/hub
-      - HUGGINGFACE_HUB_CACHE=/tmp/huggingface/hub
-      - TRANSFORMERS_CACHE=/tmp/huggingface/transformers
-      - FASTEMBED_CACHE_PATH=/tmp/huggingface/fastembed
-      - HF_HUB_DISABLE_XET=1
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
-      - QWEN3_EMBEDDING_ENABLED=${QWEN3_EMBEDDING_ENABLED:-0}
-      - QWEN3_QUERY_INSTRUCTION=${QWEN3_QUERY_INSTRUCTION:-1}
-      - QWEN3_INSTRUCTION_TEXT=${QWEN3_INSTRUCTION_TEXT}
-      - TOOL_STORE_DESCRIPTION=${TOOL_STORE_DESCRIPTION}
-      - TOOL_FIND_DESCRIPTION=${TOOL_FIND_DESCRIPTION}
-      - FASTMCP_HEALTH_PORT=18000
-      # Cross-encoder reranker configuration
-      - RERANKER_MODEL=${RERANKER_MODEL:-}
-      - RERANKER_ONNX_PATH=${RERANKER_ONNX_PATH:-}
-      - RERANKER_TOKENIZER_PATH=${RERANKER_TOKENIZER_PATH:-}
-      # Learning reranker configuration
-      - RERANK_LEARNING=${RERANK_LEARNING:-1}
-      - RERANKER_WEIGHTS_DIR=/tmp/rerank_weights
-      - RERANK_EVENTS_DIR=/tmp/rerank_events
-      - RERANK_EVENTS_ENABLED=${RERANK_EVENTS_ENABLED:-1}
+      OPENLIT_ENABLED: ${OPENLIT_ENABLED:-0}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://openlit:4318}
+      COLLECTION_NAME: ${COLLECTION_NAME}
+      PATH_EMIT_MODE: auto
+      TOOL_STORE_DESCRIPTION: ${TOOL_STORE_DESCRIPTION}
+      TOOL_FIND_DESCRIPTION: ${TOOL_FIND_DESCRIPTION}
+      FASTMCP_HEALTH_PORT: 18000
       # Lexical sparse vectors for lossless term matching
-      - LEX_SPARSE_MODE=${LEX_SPARSE_MODE:-}
-      - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
-      - LEX_SPARSE_IDF=${LEX_SPARSE_IDF:-1}
+      LEX_SPARSE_MODE: ${LEX_SPARSE_MODE:-}
+      LEX_SPARSE_NAME: ${LEX_SPARSE_NAME:-}
+      LEX_SPARSE_IDF: ${LEX_SPARSE_IDF:-1}
       # Pattern vectors for structural code similarity
-      - PATTERN_VECTORS=${PATTERN_VECTORS:-}
-      - PATTERN_VECTOR_DIM=${PATTERN_VECTOR_DIM:-64}
+      PATTERN_VECTORS: ${PATTERN_VECTORS:-}
+      PATTERN_VECTOR_DIM: ${PATTERN_VECTOR_DIM:-64}
     ports:
       - "18000:18000"
       - "8000:8000"
-    volumes:
-      - workspace_pvc:/work:ro
-      - rerank_data:/tmp/rerank_weights:rw
-      - rerank_events:/tmp/rerank_events:rw
-    networks:
-      - dev-remote-network
+    volumes: *common-volumes
 
   # MCP indexer service - same as base compose
   mcp_indexer:
@@ -99,7 +116,7 @@ services:
     # For Docker Compose dev-remote simulation, create symlink so /work/scripts/ works
     # Use /tmp/huggingface for cache to avoid permission issues (universally writable)
     # Set CORRECT environment variables for HuggingFace and FastEmbed
-    command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/mcp_indexer_server.py"]
+    command: [ "sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/mcp_indexer_server.py" ]
     depends_on:
       - qdrant
     env_file:
@@ -145,7 +162,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       # Lexical vector config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -190,7 +207,7 @@ services:
       dockerfile: Dockerfile.mcp-indexer
     container_name: learning-worker-dev-remote
     user: "1000:1000"
-    command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/learning_reranker_worker.py --daemon"]
+    command: [ "sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/learning_reranker_worker.py --daemon" ]
     depends_on:
       - qdrant
       - mcp_indexer
@@ -313,7 +330,7 @@ services:
     # For Docker Compose dev-remote simulation, create symlink so /work/scripts/ works
     # Use /tmp/huggingface for cache to avoid permission issues (universally writable)
     # Set CORRECT environment variables for HuggingFace and FastEmbed
-    command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/mcp_indexer_server.py"]
+    command: [ "sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/mcp_indexer_server.py" ]
     depends_on:
       - qdrant
     env_file:
@@ -357,7 +374,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       # Lexical vector config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -395,14 +412,20 @@ services:
     container_name: llama-decoder-dev-remote
     environment:
       - LLAMA_ARG_MODEL=/models/model.gguf
-      - LLAMA_ARG_CTX_SIZE=8192
+      - LLAMA_ARG_CTX_SIZE=${LLAMA_ARG_CTX_SIZE:-8192}
       - LLAMA_ARG_HOST=0.0.0.0
       - LLAMA_ARG_PORT=8080
     ports:
       - "8080:8080"
     volumes:
       - ./models:/models:ro
-    command: ["--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--no-warmup"]
+    command: [ "--model", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "--no-warmup", "--n-gpu-layers", "0" ]
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
     networks:
       - dev-remote-network
 
@@ -441,7 +464,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       # Lexical vector config - use ${VAR:-} to properly inherit from .env (not host shell)
@@ -453,15 +476,18 @@ services:
       - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
       # Pattern vectors for structural code similarity
       - PATTERN_VECTORS=${PATTERN_VECTORS:-}
-      # Graph edges for symbol relationships
-      - INDEX_GRAPH_EDGES=${INDEX_GRAPH_EDGES:-1}
+      # Graph edges for symbol relationships (always on)
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
+      # Defer pseudo-tag generation to watcher worker for faster initial indexing
+      - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
+      # Parallel indexing - number of worker threads (default: 4, use -1 for CPU count)
+      - INDEX_WORKERS=${INDEX_WORKERS:-4}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
     entrypoint: ["sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work"]
     restart: "no"  # Run once on startup, do not restart after completion
-    cpus: 2.0
+    cpus: 4.0
     networks:
       - dev-remote-network
 
@@ -500,7 +526,7 @@ services:
       - INDEX_MICRO_CHUNKS=${INDEX_MICRO_CHUNKS:-}
       - MICRO_CHUNK_TOKENS=${MICRO_CHUNK_TOKENS:-}
       - MICRO_CHUNK_STRIDE=${MICRO_CHUNK_STRIDE:-}
-      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-512}
+      - INDEX_UPSERT_BATCH=${INDEX_UPSERT_BATCH:-1024}
       - INDEX_UPSERT_RETRIES=${INDEX_UPSERT_RETRIES:-5}
       - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
       - WATCH_DEBOUNCE_SECS=${WATCH_DEBOUNCE_SECS:-1.5}
@@ -514,16 +540,17 @@ services:
       - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
       # Pattern vectors for structural code similarity
       - PATTERN_VECTORS=${PATTERN_VECTORS:-}
-      # Graph edges for symbol relationships
-      - INDEX_GRAPH_EDGES=${INDEX_GRAPH_EDGES:-1}
+      # Graph edges for symbol relationships (always on - Qdrant flat graph)
       - INDEX_GRAPH_EDGES_MODE=${INDEX_GRAPH_EDGES_MODE:-symbol}
       - GRAPH_BACKFILL_ENABLED=${GRAPH_BACKFILL_ENABLED:-1}
-      # Neo4j graph backend (when set, edges go to Neo4j instead of Qdrant _graph collection)
+      # Neo4j graph backend (optional - takes precedence over Qdrant flat graph)
       - NEO4J_GRAPH=${NEO4J_GRAPH:-}
+      # Defer pseudo-tag generation - watcher runs backfill worker thread
+      - PSEUDO_DEFER_TO_WORKER=${PSEUDO_DEFER_TO_WORKER:-1}
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
-    command: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/watch_index.py"]
+    command: [ "sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/watch_index.py" ]
     cpus: 2
     networks:
       - dev-remote-network
@@ -559,12 +586,8 @@ services:
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
-    command: [
-      "sh",
-      "-c",
-      "mkdir -p /tmp/logs /work/.codebase && (chgrp -R 1000 /work/.codebase 2>/dev/null || true) && (chmod -R g+rwX /work/.codebase 2>/dev/null || true) && (find /work/.codebase -type d -exec chmod g+s {} + 2>/dev/null || true) && echo 'Starting initialization sequence...' && /app/scripts/wait-for-qdrant.sh && PYTHONPATH=/app python /app/scripts/create_indexes.py && echo 'Collections and metadata created' && python /app/scripts/warm_all_collections.py && echo 'Search caches warmed for all collections' && python /app/scripts/health_check.py && echo 'Initialization completed successfully!'"
-    ]
-    restart: "no"  # Run once on startup
+    command: [ "sh", "-c", "mkdir -p /tmp/logs /work/.codebase && (chgrp -R 1000 /work/.codebase 2>/dev/null || true) && (chmod -R g+rwX /work/.codebase 2>/dev/null || true) && (find /work/.codebase -type d -exec chmod g+s {} + 2>/dev/null || true) && echo 'Starting initialization sequence...' && /app/scripts/wait-for-qdrant.sh && PYTHONPATH=/app python /app/scripts/create_indexes.py && echo 'Collections and metadata created' && python /app/scripts/warm_all_collections.py && echo 'Search caches warmed for all collections' && python /app/scripts/health_check.py && echo 'Initialization completed successfully!'" ]
+    restart: "no" # Run once on startup
     networks:
       - dev-remote-network
 
@@ -598,7 +621,7 @@ services:
       - CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN=${CTXCE_AUTH_ALLOW_OPEN_TOKEN_LOGIN:-0}
       - CTXCE_ADMIN_COLLECTION_DELETE_ENABLED=${CTXCE_ADMIN_COLLECTION_DELETE_ENABLED:-0}
       - CTXCE_COLLECTION_REGISTRY_UNDELETE_ON_DISCOVERY=${CTXCE_COLLECTION_REGISTRY_UNDELETE_ON_DISCOVERY:-0}
-      
+
       # Indexing configuration
       - COLLECTION_NAME=${COLLECTION_NAME}
       - HF_HOME=/work/.cache/huggingface
@@ -634,19 +657,15 @@ services:
       - LEX_SPARSE_MODE=${LEX_SPARSE_MODE:-}
       - LEX_SPARSE_NAME=${LEX_SPARSE_NAME:-}
     ports:
-      - "8004:8002"  # Map to different host port to avoid conflicts
-      - "18004:18000"  # Health check port
+      - "8004:8002" # Map to different host port to avoid conflicts
+      - "18004:18000" # Health check port
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
       - upload_temp:/tmp/uploads
-    command: [
-      "sh",
-      "-c",
-      "mkdir -p /work/.codebase && (chgrp -R 1000 /work/.codebase 2>/dev/null || true) && (chmod -R g+rwX /work/.codebase 2>/dev/null || true) && (find /work/.codebase -type d -exec chmod g+s {} + 2>/dev/null || true) && exec python scripts/upload_service.py"
-    ]
+    command: [ "sh", "-c", "mkdir -p /work/.codebase && (chgrp -R 1000 /work/.codebase 2>/dev/null || true) && (chmod -R g+rwX /work/.codebase 2>/dev/null || true) && (find /work/.codebase -type d -exec chmod g+s {} + 2>/dev/null || true) && exec python scripts/upload_service.py" ]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8002/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -655,7 +674,6 @@ services:
     networks:
       - dev-remote-network
 
-  
 # PVCs to simulate CephFS RWX behavior (production-like)
 volumes:
   # Main workspace volume - simulates CephFS RWX for repository storage
@@ -665,7 +683,7 @@ volumes:
       type: none
       o: bind
       device: ${HOST_INDEX_PATH:-./dev-workspace}
-  
+
   # Codebase metadata volume - simulates CephFS RWX for indexing metadata
   codebase_pvc:
     driver: local
@@ -673,19 +691,19 @@ volumes:
       type: none
       o: bind
       device: ./.codebase
-  
+
   # Temporary upload storage
   upload_temp:
     driver: local
-  
+
   # HuggingFace cache for model downloads
   huggingface_cache:
     driver: local
-  
+
   # Indexer cache for model downloads
   indexer_cache:
     driver: local
-  
+
   # Qdrant storage - separate from base compose to avoid conflicts
   qdrant_storage_dev_remote:
     driver: local

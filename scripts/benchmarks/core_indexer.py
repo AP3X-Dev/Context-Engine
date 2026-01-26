@@ -15,6 +15,7 @@ Key features:
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +33,8 @@ from scripts.ingest.pipeline import (
     _select_entity_text,
     _select_relation_text,
 )
+
+logger = logging.getLogger(__name__)
 from scripts.ingest.vectors import project_mini, extract_pattern_vector
 from scripts.ingest.qdrant import (
     hash_id,
@@ -119,8 +122,8 @@ def _generate_heuristic_tags(symbol_name: str, code_text: str, language: str = "
                 call_lower = call.lower()
                 if len(call_lower) > 2 and call_lower not in tags:
                     tags.append(call_lower)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Dedupe and limit
     seen: set = set()
@@ -215,8 +218,8 @@ def get_collection_fingerprint(client: QdrantClient, collection: str) -> Optiona
         )
         if result[0]:
             return result[0][0].payload.get("fingerprint")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return None
 
 
@@ -453,8 +456,8 @@ def create_collection(
                 continue
             try:
                 out[str(name)] = int(size)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         return out
 
     # If collection exists but the embedding model/dimension changed, auto-recreate.
@@ -474,8 +477,8 @@ def create_collection(
             try:
                 client.delete_collection(collection)
                 print(f"Deleted existing collection: {collection}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         else:
             print(f"Collection {collection} exists with {info.points_count} points")
             return
@@ -499,8 +502,8 @@ def create_collection(
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def generate_point_id(doc_id: str) -> str:
@@ -628,8 +631,8 @@ def index_benchmark_corpus(
             if _AST_AVAILABLE:
                 try:
                     symbols = _extract_symbols(doc.language, doc.text)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             if use_semantic:
                 try:
@@ -693,8 +696,8 @@ def index_benchmark_corpus(
                 if _AST_AVAILABLE:
                     try:
                         imports_list, calls_list = _get_imports_calls(doc.language, chunk_text)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
                 payload = {
                     "doc_id": doc.doc_id,
@@ -815,8 +818,8 @@ def index_benchmark_corpus(
                         batch_vecs = list(model.embed(batch_texts))
                         for (orig_idx, _), vec in zip(batch_items, batch_vecs):
                             entity_vecs[orig_idx] = vec.tolist()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
             # Embed relation texts
             if relation_to_embed:
@@ -827,8 +830,8 @@ def index_benchmark_corpus(
                         batch_vecs = list(model.embed(batch_texts))
                         for (orig_idx, _), vec in zip(batch_items, batch_vecs):
                             relation_vecs[orig_idx] = vec.tolist()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
         # Step 2: Build points for this mega-batch
         points = []
@@ -845,16 +848,16 @@ def index_benchmark_corpus(
                 try:
                     mini_vec = project_mini(dense_vec)
                     vectors_dict[MINI_VECTOR_NAME] = mini_vec
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             if PATTERN_VECTOR_NAME in available_dense:
                 try:
                     pattern_vec = extract_pattern_vector(cm.chunk_text, cm.language)
                     if pattern_vec:
                         vectors_dict[PATTERN_VECTOR_NAME] = pattern_vec
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             # Add multi-granular vectors
             if use_mg_in_collection:
@@ -869,8 +872,8 @@ def index_benchmark_corpus(
                     sparse_vec = _lex_sparse_vector_text(cm.chunk_text)
                     if sparse_vec.get("indices"):
                         sparse_dict = {LEX_SPARSE_NAME: models.SparseVector(**sparse_vec)}
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             point_id = generate_point_id(f"{cm.doc_id}:{cm.chunk_idx}")
             point = models.PointStruct(

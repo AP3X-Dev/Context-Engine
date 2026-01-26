@@ -326,6 +326,8 @@ function remapHitPaths(hit, workspaceRoot) {
       out.path = finalRelPath;
     }
   }
+  // Strip internal container_path before returning to client.
+  delete out.container_path;
   return out;
 }
 

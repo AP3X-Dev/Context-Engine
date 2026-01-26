@@ -299,9 +299,27 @@ def search_command(
         print(json.dumps(data, indent=2))
         return 0
 
-    # Extract results
+    # Extract results - handle TOON format if present
     results = data.get("results", [])
-    total = data.get("total", len(results))
+
+    # If results is a TOON string, try to decode it or use results_json fallback
+    if isinstance(results, str):
+        # First try results_json (preserved by server for internal callers)
+        if "results_json" in data and isinstance(data["results_json"], list):
+            results = data["results_json"]
+        else:
+            # Try to decode TOON string
+            try:
+                from toon import decode as toon_decode
+                decoded = toon_decode(results)
+                results = decoded.get("results", [])
+            except Exception:
+                # If TOON decode fails, return error
+                print("Error: Received TOON-formatted results but could not decode", file=sys.stderr)
+                print("Hint: Install toon package or set TOON_ENABLED=0", file=sys.stderr)
+                return 1
+
+    total = data.get("total", len(results) if isinstance(results, list) else 0)
 
     # Handle no results
     if not results:

@@ -4,6 +4,8 @@ import sys
 import types
 import pytest
 
+from conftest import get_results
+
 # Provide a minimal stub for mcp.server.fastmcp.FastMCP so importing the server doesn't exit
 mcp_pkg = types.ModuleType("mcp")
 server_pkg = types.ModuleType("mcp.server")
@@ -98,14 +100,15 @@ async def test_rerank_inproc_changes_order(monkeypatch):
     )
 
     # Baseline (rerank disabled) preserves hybrid order A then B
-    base = await server.repo_search(query="q", limit=2, per_path=2, rerank_enabled=False, compact=True)
-    assert [r["path"] for r in base["results"]] == ["/work/a.py", "/work/b.py"]
+    # Note: lean=False to get rerank_counters in response
+    base = await server.repo_search(query="q", limit=2, per_path=2, rerank_enabled=False, compact=True, lean=False)
+    assert [r["path"] for r in get_results(base)] == ["/work/a.py", "/work/b.py"]
 
     # With rerank enabled, order should flip to B then A; counters should show inproc_hybrid
-    rr = await server.repo_search(query="q", limit=2, per_path=2, rerank_enabled=True, compact=True)
+    rr = await server.repo_search(query="q", limit=2, per_path=2, rerank_enabled=True, compact=True, lean=False)
     assert rr.get("used_rerank") is True
     assert rr.get("rerank_counters", {}).get("inproc_hybrid", 0) >= 1
-    assert [r["path"] for r in rr["results"]] == ["/work/b.py", "/work/a.py"]
+    assert [r["path"] for r in get_results(rr)] == ["/work/b.py", "/work/a.py"]
 
 
 @pytest.mark.service
@@ -180,6 +183,7 @@ async def test_rerank_subprocess_timeout_fallback(monkeypatch):
     monkeypatch.setattr(server, "_get_embedding_model", _fake_embedding_model)
     monkeypatch.setattr(server, "_run_async", fake_run_async)
 
+    # Note: lean=False to get rerank_counters in response
     rr = await server.repo_search(
         query="q",
         limit=2,
@@ -187,9 +191,10 @@ async def test_rerank_subprocess_timeout_fallback(monkeypatch):
         rerank_enabled=True,
         compact=True,
         collection="test-coll",
+        lean=False,
     )
     # Fallback should keep original order from hybrid; timeout counter incremented
     assert rr.get("used_rerank") is False
     assert rr.get("rerank_counters", {}).get("timeout", 0) >= 1
-    assert [r["path"] for r in rr["results"]] == ["/work/a.py", "/work/b.py"]
+    assert [r["path"] for r in get_results(rr)] == ["/work/a.py", "/work/b.py"]
 

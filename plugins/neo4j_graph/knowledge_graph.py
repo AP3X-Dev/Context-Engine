@@ -258,8 +258,8 @@ class Neo4jKnowledgeGraph:
                             FOR (n:Function|Class|Method)
                             ON EACH [n.docstring, n.name]
                         """)
-                    except Exception:
-                        pass  # Fulltext may already exist
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Fulltext may already exist
 
                 self._initialized_databases.add(self._database)
                 logger.info(f"Neo4j schema initialized for {self._database}")
@@ -447,12 +447,14 @@ class Neo4jKnowledgeGraph:
             except Exception:
                 # Fallback: simple in-degree approximation with timeout
                 # Uses OPTIONAL MATCH to give base rank to ALL nodes, not just those with incoming edges
+                # Scopes relationships to same repo to keep PageRank isolated per graph
                 with session.begin_transaction(timeout=timeout) as tx:
                     if repo:
                         result = tx.run("""
                             MATCH (n:Symbol)
                             WHERE n.repo = $repo
-                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-()
+                            OPTIONAL MATCH (n)<-[r:CALLS|IMPORTS]-(caller)
+                            WHERE caller.repo = $repo
                             WITH n, count(r) AS in_degree
                             SET n.pagerank = CASE WHEN in_degree > 0
                                                   THEN toFloat(in_degree) / 100.0
@@ -565,6 +567,7 @@ class Neo4jKnowledgeGraph:
         name: str,
         repo: Optional[str] = None,
         node_type: Optional[NodeType] = None,
+        timeout: int = DEFAULT_TX_TIMEOUT,
     ) -> List[Dict[str, Any]]:
         """Find symbols by name (fuzzy match)."""
         driver = self._get_driver()
@@ -576,19 +579,20 @@ class Neo4jKnowledgeGraph:
         escaped_name = _escape_regex(name)
 
         with driver.session(database=self._database) as session:
-            # Use COALESCE for optional properties to avoid Neo4j warnings
-            result = session.run(f"""
-                MATCH (n{type_filter})
-                WHERE n.name =~ $pattern {repo_filter}
-                RETURN COALESCE(n.id, n.name) AS id, n.name AS name, labels(n)[0] AS type,
-                       n.path AS path, COALESCE(n.start_line, 0) AS start_line,
-                       COALESCE(n.signature, '') AS signature,
-                       COALESCE(n.docstring, '') AS docstring,
-                       COALESCE(n.pagerank, 0.0) AS importance
-                ORDER BY COALESCE(n.pagerank, 0.0) DESC
-                LIMIT 20
-            """, pattern=f"(?i).*{escaped_name}.*", repo=repo)
-            return [dict(r) for r in result]
+            with session.begin_transaction(timeout=timeout) as tx:
+                # n.id is set on all nodes (Symbol nodes have id=name)
+                result = tx.run(f"""
+                    MATCH (n{type_filter})
+                    WHERE n.name =~ $pattern {repo_filter}
+                    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+                           n.path AS path, COALESCE(n.start_line, 0) AS start_line,
+                           COALESCE(n.signature, '') AS signature,
+                           COALESCE(n.docstring, '') AS docstring,
+                           COALESCE(n.pagerank, 0.0) AS importance
+                    ORDER BY COALESCE(n.pagerank, 0.0) DESC
+                    LIMIT 20
+                """, pattern=f"(?i).*{escaped_name}.*", repo=repo)
+                return [dict(r) for r in result]
 
     def get_callers(
         self,
@@ -596,6 +600,7 @@ class Neo4jKnowledgeGraph:
         repo: Optional[str] = None,
         depth: int = 1,
         limit: int = 50,
+        timeout: int = DEFAULT_TX_TIMEOUT,
     ) -> List[Dict[str, Any]]:
         """Get all callers of a symbol (with depth for transitive)."""
         driver = self._get_driver()
@@ -606,21 +611,22 @@ class Neo4jKnowledgeGraph:
         caller_repo_filter = "AND caller.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
-            # Use COALESCE for optional properties to avoid Neo4j warnings
-            result = session.run(f"""
-                MATCH (target {{name: $name}})
-                {target_repo_filter}
-                MATCH (caller)-[:CALLS*1..{safe_depth}]->(target)
-                WHERE caller <> target {caller_repo_filter}
-                RETURN DISTINCT
-                    COALESCE(caller.id, caller.name) AS id, caller.name AS name, labels(caller)[0] AS type,
-                    caller.path AS path, COALESCE(caller.start_line, 0) AS start_line,
-                    COALESCE(caller.signature, '') AS signature,
-                    size((caller)-[:CALLS]->()) AS call_count
-                ORDER BY COALESCE(caller.pagerank, 0.0) DESC
-                LIMIT $limit
-            """, name=symbol_name, repo=repo, limit=limit)
-            return [dict(r) for r in result]
+            with session.begin_transaction(timeout=timeout) as tx:
+                # caller.id is set on all nodes (Symbol nodes have id=name)
+                result = tx.run(f"""
+                    MATCH (target {{name: $name}})
+                    {target_repo_filter}
+                    MATCH (caller)-[:CALLS*1..{safe_depth}]->(target)
+                    WHERE caller <> target {caller_repo_filter}
+                    RETURN DISTINCT
+                        caller.id AS id, caller.name AS name, labels(caller)[0] AS type,
+                        caller.path AS path, COALESCE(caller.start_line, 0) AS start_line,
+                        COALESCE(caller.signature, '') AS signature,
+                        size((caller)-[:CALLS]->()) AS call_count
+                    ORDER BY COALESCE(caller.pagerank, 0.0) DESC
+                    LIMIT $limit
+                """, name=symbol_name, repo=repo, limit=limit)
+                return [dict(r) for r in result]
 
     def get_callees(
         self,
@@ -628,6 +634,7 @@ class Neo4jKnowledgeGraph:
         repo: Optional[str] = None,
         depth: int = 1,
         limit: int = 50,
+        timeout: int = DEFAULT_TX_TIMEOUT,
     ) -> List[Dict[str, Any]]:
         """Get all symbols called by a symbol (with depth for transitive)."""
         driver = self._get_driver()
@@ -638,20 +645,21 @@ class Neo4jKnowledgeGraph:
         callee_repo_filter = "AND callee.repo = $repo" if repo else ""
 
         with driver.session(database=self._database) as session:
-            # Use COALESCE for optional properties to avoid Neo4j warnings
-            result = session.run(f"""
-                MATCH (source {{name: $name}})
-                {source_repo_filter}
-                MATCH (source)-[:CALLS*1..{safe_depth}]->(callee)
-                WHERE source <> callee {callee_repo_filter}
-                RETURN DISTINCT
-                    COALESCE(callee.id, callee.name) AS id, callee.name AS name, labels(callee)[0] AS type,
-                    callee.path AS path, COALESCE(callee.start_line, 0) AS start_line,
-                    COALESCE(callee.signature, '') AS signature
-                ORDER BY COALESCE(callee.pagerank, 0.0) DESC
-                LIMIT $limit
-            """, name=symbol_name, repo=repo, limit=limit)
-            return [dict(r) for r in result]
+            with session.begin_transaction(timeout=timeout) as tx:
+                # callee.id is set on all nodes (Symbol nodes have id=name)
+                result = tx.run(f"""
+                    MATCH (source {{name: $name}})
+                    {source_repo_filter}
+                    MATCH (source)-[:CALLS*1..{safe_depth}]->(callee)
+                    WHERE source <> callee {callee_repo_filter}
+                    RETURN DISTINCT
+                        callee.id AS id, callee.name AS name, labels(callee)[0] AS type,
+                        callee.path AS path, COALESCE(callee.start_line, 0) AS start_line,
+                        COALESCE(callee.signature, '') AS signature
+                    ORDER BY COALESCE(callee.pagerank, 0.0) DESC
+                    LIMIT $limit
+                """, name=symbol_name, repo=repo, limit=limit)
+                return [dict(r) for r in result]
 
     def get_inheritance_chain(
         self,
@@ -699,107 +707,119 @@ class Neo4jKnowledgeGraph:
         symbol_name: str,
         repo: Optional[str] = None,
         max_depth: int = 3,
+        timeout: int = DEFAULT_TX_TIMEOUT,
     ) -> Dict[str, Any]:
         """Analyze impact of changing a symbol."""
         driver = self._get_driver()
         safe_depth = _sanitize_depth(max_depth, default=3)
 
         with driver.session(database=self._database) as session:
-            # Get direct and transitive callers with proper parameterized query
-            if repo:
-                callers = session.run(f"""
-                    MATCH (target {{name: $name}})
-                    WHERE target.repo = $repo
-                    MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
-                    WHERE caller <> target
-                    RETURN caller.name AS name, caller.path AS path,
-                           labels(caller)[0] AS type, length(path) AS depth
-                    ORDER BY depth
-                """, name=symbol_name, repo=repo)
-            else:
-                callers = session.run(f"""
-                    MATCH (target {{name: $name}})
-                    MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
-                    WHERE caller <> target
-                    RETURN caller.name AS name, caller.path AS path,
-                           labels(caller)[0] AS type, length(path) AS depth
-                    ORDER BY depth
-                """, name=symbol_name)
+            with session.begin_transaction(timeout=timeout) as tx:
+                # Get direct and transitive callers with proper parameterized query
+                if repo:
+                    callers = tx.run(f"""
+                        MATCH (target {{name: $name}})
+                        WHERE target.repo = $repo
+                        MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
+                        WHERE caller <> target
+                        RETURN caller.name AS name, caller.path AS path,
+                               labels(caller)[0] AS type, length(path) AS depth
+                        ORDER BY depth
+                    """, name=symbol_name, repo=repo)
+                else:
+                    callers = tx.run(f"""
+                        MATCH (target {{name: $name}})
+                        MATCH path = (caller)-[:CALLS*1..{safe_depth}]->(target)
+                        WHERE caller <> target
+                        RETURN caller.name AS name, caller.path AS path,
+                               labels(caller)[0] AS type, length(path) AS depth
+                        ORDER BY depth
+                    """, name=symbol_name)
 
-            caller_list = [dict(r) for r in callers]
+                # Process results within the transaction context
+                caller_list = [dict(r) for r in callers]
 
-            # Get affected files
-            affected_files = set()
-            for c in caller_list:
-                if c.get("path"):
-                    affected_files.add(c["path"])
+        # Get affected files (processing outside transaction is fine)
+        affected_files = set()
+        for c in caller_list:
+            if c.get("path"):
+                affected_files.add(c["path"])
 
-            # Count by depth
-            by_depth: Dict[int, int] = {}
-            for c in caller_list:
-                d = c.get("depth", 1)
-                by_depth[d] = by_depth.get(d, 0) + 1
+        # Count by depth
+        by_depth: Dict[int, int] = {}
+        for c in caller_list:
+            d = c.get("depth", 1)
+            by_depth[d] = by_depth.get(d, 0) + 1
 
-            return {
-                "symbol": symbol_name,
-                "total_impacted": len(caller_list),
-                "affected_files": len(affected_files),
-                "files": list(affected_files)[:20],
-                "by_depth": by_depth,
-                "callers": caller_list[:50],
-            }
+        return {
+            "symbol": symbol_name,
+            "total_impacted": len(caller_list),
+            "affected_files": len(affected_files),
+            "files": list(affected_files)[:20],
+            "by_depth": by_depth,
+            "callers": caller_list[:50],
+        }
 
     def find_similar(
         self,
         symbol_name: str,
         repo: Optional[str] = None,
         limit: int = 10,
+        timeout: int = DEFAULT_TX_TIMEOUT,
     ) -> List[Dict[str, Any]]:
         """Find similar symbols based on call patterns."""
         driver = self._get_driver()
 
         with driver.session(database=self._database) as session:
-            # Jaccard similarity on callees with proper parameterization
-            if repo:
-                result = session.run("""
-                    MATCH (target {name: $name})
-                    WHERE target.repo = $repo
-                    MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
-                    WHERE similar <> target
-                    WITH target, similar, count(shared) AS shared_calls
-                    MATCH (target)-[:CALLS]->(t_calls)
-                    WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
-                    MATCH (similar)-[:CALLS]->(s_calls)
-                    WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
-                    WITH similar,
-                         toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
-                    WHERE jaccard > 0.1
-                    RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
-                           similar.path AS path, similar.signature AS signature,
-                           jaccard AS similarity
-                    ORDER BY jaccard DESC
-                    LIMIT $limit
-                """, name=symbol_name, repo=repo, limit=limit)
-            else:
-                result = session.run("""
-                    MATCH (target {name: $name})
-                    MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
-                    WHERE similar <> target
-                    WITH target, similar, count(shared) AS shared_calls
-                    MATCH (target)-[:CALLS]->(t_calls)
-                    WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
-                    MATCH (similar)-[:CALLS]->(s_calls)
-                    WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
-                    WITH similar,
-                         toFloat(shared_calls) / (target_calls + similar_calls - shared_calls) AS jaccard
-                    WHERE jaccard > 0.1
-                    RETURN similar.id AS id, similar.name AS name, labels(similar)[0] AS type,
-                           similar.path AS path, similar.signature AS signature,
-                           jaccard AS similarity
-                    ORDER BY jaccard DESC
-                    LIMIT $limit
-                """, name=symbol_name, limit=limit)
-            return [dict(r) for r in result]
+            with session.begin_transaction(timeout=timeout) as tx:
+                # Jaccard similarity on callees with proper parameterization
+                # Jaccard similarity: intersection / union
+                # Safeguard against division by zero with CASE (though should never happen
+                # since MATCH requires shared_calls >= 1)
+                if repo:
+                    result = tx.run("""
+                        MATCH (target {name: $name})
+                        WHERE target.repo = $repo
+                        MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
+                        WHERE similar <> target
+                        WITH target, similar, count(shared) AS shared_calls
+                        MATCH (target)-[:CALLS]->(t_calls)
+                        WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
+                        MATCH (similar)-[:CALLS]->(s_calls)
+                        WITH similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                        WITH similar, shared_calls, target_calls, similar_calls,
+                             (target_calls + similar_calls - shared_calls) AS union_size
+                        WITH similar,
+                             CASE WHEN union_size > 0 THEN toFloat(shared_calls) / union_size ELSE 0.0 END AS jaccard
+                        WHERE jaccard > 0.1
+                        RETURN similar.name AS id, similar.name AS name, labels(similar)[0] AS type,
+                               similar.path AS path, similar.signature AS signature,
+                               jaccard AS similarity
+                        ORDER BY jaccard DESC
+                        LIMIT $limit
+                    """, name=symbol_name, repo=repo, limit=limit)
+                else:
+                    result = tx.run("""
+                        MATCH (target {name: $name})
+                        MATCH (target)-[:CALLS]->(shared)<-[:CALLS]-(similar)
+                        WHERE similar <> target
+                        WITH target, similar, count(shared) AS shared_calls
+                        MATCH (target)-[:CALLS]->(t_calls)
+                        WITH similar, shared_calls, count(DISTINCT t_calls) AS target_calls
+                        MATCH (similar)-[:CALLS]->(s_calls)
+                        With similar, shared_calls, target_calls, count(DISTINCT s_calls) AS similar_calls
+                        WITH similar, shared_calls, target_calls, similar_calls,
+                             (target_calls + similar_calls - shared_calls) AS union_size
+                        WITH similar,
+                             CASE WHEN union_size > 0 THEN toFloat(shared_calls) / union_size ELSE 0.0 END AS jaccard
+                        WHERE jaccard > 0.1
+                        RETURN similar.name AS id, similar.name AS name, labels(similar)[0] AS type,
+                               similar.path AS path, similar.signature AS signature,
+                               jaccard AS similarity
+                        ORDER BY jaccard DESC
+                        LIMIT $limit
+                    """, name=symbol_name, limit=limit)
+                return [dict(r) for r in result]
 
     def get_subgraph_context(
         self,
@@ -1104,14 +1124,14 @@ def _cleanup_knowledge_graph() -> None:
         try:
             _KNOWLEDGE_GRAPH.close()
             logger.debug("Knowledge graph driver closed on shutdown")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         _KNOWLEDGE_GRAPH = None
     if _EXECUTOR is not None:
         try:
             _EXECUTOR.shutdown(wait=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         _EXECUTOR = None
 
 

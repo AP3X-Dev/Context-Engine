@@ -21,6 +21,27 @@ try:
 except ImportError:
     _AST_ANALYZER_AVAILABLE = False
 
+# Import Semantic Density Chunker (SDC) - our improved token-aware chunking
+try:
+    from scripts.ingest.semantic_chunker import chunk_semantic_density, SDCConfig
+    _SDC_AVAILABLE = True
+except ImportError:
+    _SDC_AVAILABLE = False
+
+# Import Search-Optimized Semantic Chunker (SOSC) - concept-aware chunking for search
+try:
+    from scripts.ingest.search_chunker import chunk_search_optimized, SOSCConfig
+    _SOSC_AVAILABLE = True
+except ImportError:
+    _SOSC_AVAILABLE = False
+
+# Import CAST+ Hybrid Chunker - concept-aware merging with density scoring
+try:
+    from scripts.ingest.cast_chunker import chunk_cast_plus, CASTPlusConfig
+    _CAST_AVAILABLE = True
+except ImportError:
+    _CAST_AVAILABLE = False
+
 
 # Cache tokenizers loaded from TOKENIZER_JSON (or default) to avoid repeatedly
 # re-reading tokenizer.json from disk during micro-chunking.
@@ -284,3 +305,89 @@ def chunk_by_tokens(
             break
         i = i + s if s > 0 else i + 1
     return chunks
+
+
+def chunk_semantic_v2(
+    text: str,
+    language: str,
+    min_tokens: int = 200,
+    target_tokens: int = 800,
+    max_tokens: int = 1500,
+) -> List[Dict]:
+    """
+    Semantic Density Chunking (SDC) - token-aware, AST-driven chunking.
+
+    This is the improved chunking algorithm that:
+    - Uses token budgets instead of line counts
+    - Respects AST boundaries (functions, classes, methods)
+    - Merges small adjacent units for optimal density
+    - Scores chunks by information density
+
+    Args:
+        text: Source code content
+        language: Programming language
+        min_tokens: Minimum tokens per chunk (default: 200)
+        target_tokens: Target tokens per chunk (default: 800)
+        max_tokens: Maximum tokens per chunk (default: 1500)
+
+    Returns:
+        List of chunk dicts with text, start, end, symbol, kind, token_count, density_score
+    """
+    if not _SDC_AVAILABLE:
+        # Fall back to existing semantic chunking
+        return chunk_semantic(text, language)
+
+    # Check for env var overrides
+    min_tokens = int(os.environ.get("SDC_MIN_TOKENS", str(min_tokens)))
+    target_tokens = int(os.environ.get("SDC_TARGET_TOKENS", str(target_tokens)))
+    max_tokens = int(os.environ.get("SDC_MAX_TOKENS", str(max_tokens)))
+
+    config = SDCConfig(
+        min_tokens=min_tokens,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+    )
+
+    return chunk_semantic_density(text, language, config)
+
+
+def chunk_search_optimized_v1(
+    text: str,
+    language: str,
+    max_chars: int = 1200,
+    min_chars: int = 50,
+) -> List[Dict]:
+    """Search-Optimized Semantic Chunking (SOSC) - concept-aware chunking for search."""
+    if not _SOSC_AVAILABLE:
+        return chunk_semantic(text, language)
+
+    max_chars = int(os.environ.get("SOSC_MAX_CHARS", str(max_chars)))
+    min_chars = int(os.environ.get("SOSC_MIN_CHARS", str(min_chars)))
+
+    config = SOSCConfig(
+        max_chunk_chars=max_chars,
+        min_chunk_chars=min_chars,
+    )
+
+    return chunk_search_optimized(text, language, config)
+
+
+def chunk_cast_plus_v1(
+    text: str,
+    language: str,
+    max_size: int = 1200,
+    min_size: int = 50,
+) -> List[Dict]:
+    """CAST+ Hybrid Chunking - concept-aware merging with density scoring."""
+    if not _CAST_AVAILABLE:
+        return chunk_semantic(text, language)
+
+    max_size = int(os.environ.get("CAST_MAX_SIZE", str(max_size)))
+    min_size = int(os.environ.get("CAST_MIN_SIZE", str(min_size)))
+
+    config = CASTPlusConfig(
+        max_chunk_size=max_size,
+        min_chunk_size=min_size,
+    )
+
+    return chunk_cast_plus(text, language, config=config)

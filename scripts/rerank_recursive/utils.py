@@ -6,6 +6,7 @@ Contains:
 - Identifier tokenization
 - Embedding cache management
 """
+import logging
 import re
 import hashlib
 import threading
@@ -15,6 +16,8 @@ import numpy as np
 
 
 # Very common tokens that appear everywhere - reduce their weight
+
+logger = logging.getLogger(__name__)
 _COMMON_TOKENS = frozenset({
     "index", "main", "app", "utils", "util", "helper", "helpers", "common",
     "base", "core", "lib", "src", "test", "tests", "spec", "specs",
@@ -131,8 +134,8 @@ def _candidate_path_for_fname_boost(candidate: Dict[str, Any]) -> str:
                 val = md.get(key)
                 if isinstance(val, str) and val.strip():
                     return val
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     return ""
 

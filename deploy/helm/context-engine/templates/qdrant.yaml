@@ -20,18 +20,6 @@ spec:
         {{- include "context-engine.labels" . | nindent 8 }}
         component: qdrant
     spec:
-      {{- with .Values.qdrant.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.qdrant.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.qdrant.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
         - name: qdrant
           image: {{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}
@@ -48,19 +36,8 @@ spec:
               value: {{ .Values.qdrant.service.httpPort | quote }}
             - name: QDRANT__SERVICE__GRPC_PORT
               value: {{ .Values.qdrant.service.grpcPort | quote }}
-            {{- if .Values.qdrant.config }}
-            - name: QDRANT__STORAGE__ON_DISK
-              value: {{ .Values.qdrant.config.storage.on_disk | default false | quote }}
-            {{- end }}
-            {{- with .Values.qdrant.extraEnv }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
           {{- with .Values.qdrant.readinessProbe }}
           readinessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.qdrant.livenessProbe }}
-          livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           resources:
@@ -68,17 +45,6 @@ spec:
           volumeMounts:
             - name: qdrant-storage
               mountPath: /qdrant/storage
-            {{- if .Values.qdrant.config }}
-            - name: qdrant-config
-              mountPath: /qdrant/config/config.yaml
-              subPath: config.yaml
-            {{- end }}
-      {{- if .Values.qdrant.config }}
-      volumes:
-        - name: qdrant-config
-          configMap:
-            name: qdrant-config
-      {{- end }}
   {{- if .Values.qdrant.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:

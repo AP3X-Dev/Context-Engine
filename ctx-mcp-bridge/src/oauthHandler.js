@@ -17,20 +17,93 @@ const pendingCodes = new Map();
 const registeredClients = new Map();
 
 // ============================================================================
+// Storage Limits and Cleanup Configuration
+// ============================================================================
+
+const MAX_TOKEN_STORE_SIZE = 10000;
+const MAX_PENDING_CODES_SIZE = 1000;
+const MAX_REGISTERED_CLIENTS_SIZE = 1000;
+const TOKEN_EXPIRY_MS = 86400000; // 24 hours
+const CODE_EXPIRY_MS = 600000; // 10 minutes
+const CLIENT_EXPIRY_MS = 7 * 86400000; // 7 days
+const CLEANUP_INTERVAL_MS = 300000; // 5 minutes
+
+// Cleanup interval reference (for cleanup on shutdown if needed)
+let cleanupIntervalId = null;
+
+// ============================================================================
 // OAuth Utilities
 // ============================================================================
 
-/**
- * Clean up expired tokens from tokenStore
- * Called periodically to prevent unbounded memory growth
- */
 function cleanupExpiredTokens() {
   const now = Date.now();
-  const expiryMs = 86400000; // 24 hours
   for (const [token, data] of tokenStore.entries()) {
-    if (now - data.createdAt > expiryMs) {
+    if (now - data.createdAt > TOKEN_EXPIRY_MS) {
       tokenStore.delete(token);
     }
+  }
+}
+
+function cleanupExpiredCodes() {
+  const now = Date.now();
+  for (const [code, data] of pendingCodes.entries()) {
+    if (now - data.createdAt > CODE_EXPIRY_MS) {
+      pendingCodes.delete(code);
+    }
+  }
+}
+
+function cleanupExpiredClients() {
+  const now = Date.now();
+  for (const [clientId, data] of registeredClients.entries()) {
+    if (now - data.createdAt > CLIENT_EXPIRY_MS) {
+      registeredClients.delete(clientId);
+    }
+  }
+}
+
+function enforceStorageLimits() {
+  if (tokenStore.size > MAX_TOKEN_STORE_SIZE) {
+    const entries = [...tokenStore.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
+    const toRemove = entries.slice(0, tokenStore.size - MAX_TOKEN_STORE_SIZE);
+    for (const [key] of toRemove) {
+      tokenStore.delete(key);
+    }
+  }
+  if (pendingCodes.size > MAX_PENDING_CODES_SIZE) {
+    const entries = [...pendingCodes.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
+    const toRemove = entries.slice(0, pendingCodes.size - MAX_PENDING_CODES_SIZE);
+    for (const [key] of toRemove) {
+      pendingCodes.delete(key);
+    }
+  }
+  if (registeredClients.size > MAX_REGISTERED_CLIENTS_SIZE) {
+    const entries = [...registeredClients.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
+    const toRemove = entries.slice(0, registeredClients.size - MAX_REGISTERED_CLIENTS_SIZE);
+    for (const [key] of toRemove) {
+      registeredClients.delete(key);
+    }
+  }
+}
+
+function runPeriodicCleanup() {
+  cleanupExpiredTokens();
+  cleanupExpiredCodes();
+  cleanupExpiredClients();
+  enforceStorageLimits();
+}
+
+export function startCleanupInterval() {
+  if (!cleanupIntervalId) {
+    cleanupIntervalId = setInterval(runPeriodicCleanup, CLEANUP_INTERVAL_MS);
+    cleanupIntervalId.unref?.();
+  }
+}
+
+export function stopCleanupInterval() {
+  if (cleanupIntervalId) {
+    clearInterval(cleanupIntervalId);
+    cleanupIntervalId = null;
   }
 }
 
@@ -545,20 +618,14 @@ export function handleOAuthToken(req, res) {
   });
 }
 
-/**
- * Validate Bearer token and return session info
- * @param {string} token - Bearer token
- * @returns {{sessionId: string, backendUrl: string} | null}
- */
 export function validateBearerToken(token) {
   const tokenData = tokenStore.get(token);
   if (!tokenData) {
     return null;
   }
 
-  // Check token age (24 hour expiry)
   const tokenAge = Date.now() - tokenData.createdAt;
-  if (tokenAge > 86400000) {
+  if (tokenAge > TOKEN_EXPIRY_MS) {
     tokenStore.delete(token);
     return null;
   }
@@ -583,3 +650,5 @@ export function isOAuthEndpoint(pathname) {
     pathname === "/oauth/token"
   );
 }
+
+startCleanupInterval();

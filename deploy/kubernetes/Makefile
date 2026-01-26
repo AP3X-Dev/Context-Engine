@@ -30,6 +30,7 @@ deploy-core: check-kubectl ## Deploy only core services (Qdrant + MCP servers)
 	kubectl apply -f namespace.yaml
 	kubectl apply -f configmap.yaml
 	kubectl apply -f qdrant.yaml
+	kubectl apply -f redis.yaml
 	kubectl apply -f mcp-memory.yaml
 	kubectl apply -f mcp-indexer.yaml
 

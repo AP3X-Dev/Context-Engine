@@ -9,6 +9,7 @@ to improve search relevance by finding conceptually related terms.
 import os
 import math
 import re
+import threading
 from typing import List, Dict, Any, Tuple, Optional, Set
 from collections import defaultdict
 import logging
@@ -72,7 +73,40 @@ try:
     )
     _UNIFIED_CACHE = True
 except ImportError:
-    _expansion_cache: Dict[str, List[str]] = {}  # type: ignore
+    # Fallback: bounded OrderedDict with FIFO eviction
+    from collections import OrderedDict
+
+    class _BoundedExpansionCache(OrderedDict):
+        """Bounded cache with FIFO eviction when UnifiedCache unavailable."""
+
+        def __init__(self, maxsize: int = 1000):
+            super().__init__()
+            self._maxsize = maxsize
+            self._lock = threading.Lock()
+
+        def get(self, key: str, default: Any = None) -> Any:
+            with self._lock:
+                if key in self:
+                    self.move_to_end(key)  # LRU behavior
+                    return super().__getitem__(key)
+                return default
+
+        def set(self, key: str, value: Any, ttl: Optional[float] = None) -> None:
+            """Set with optional TTL (ignored in fallback)."""
+            with self._lock:
+                if key in self:
+                    self.move_to_end(key)
+                self[key] = value
+                while len(self) > self._maxsize:
+                    self.popitem(last=False)
+
+        def __setitem__(self, key: str, value: Any) -> None:
+            with self._lock:
+                super().__setitem__(key, value)
+                while len(self) > self._maxsize:
+                    self.popitem(last=False)
+
+    _expansion_cache = _BoundedExpansionCache(maxsize=SEMANTIC_EXPANSION_CACHE_SIZE)  # type: ignore
     _UNIFIED_CACHE = False
 
 _cache_hits = 0
@@ -392,7 +426,8 @@ def expand_queries_semantically(
             if i < len(candidate_embeddings):
                 try:
                     candidate_vector = _coerce_embedding_vector(candidate_embeddings[i])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception, continuing: {e}")
                     continue
                 if not candidate_vector:
                     continue

@@ -1,6 +1,6 @@
 {
   "name": "@context-engine-bridge/context-engine-mcp-bridge",
-  "version": "0.0.13",
+  "version": "0.0.17",
   "description": "Context Engine MCP bridge (http/stdio proxy combining indexer + memory servers)",
   "bin": {
     "ctxce": "bin/ctxce.js",
@@ -8,7 +8,8 @@
   },
   "type": "module",
   "scripts": {
-    "start": "node bin/ctxce.js"
+    "start": "node bin/ctxce.js",
+    "postinstall": "node -e \"try{require('fs').chmodSync('bin/ctxce.js',0o755)}catch(e){}\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.3",

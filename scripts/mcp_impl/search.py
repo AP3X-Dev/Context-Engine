@@ -62,6 +62,7 @@ SNIPPET_MAX_BYTES = safe_int(
     logger=logger,
     context="MCP_SNIPPET_MAX_BYTES",
 )
+SEARCH_COMPACT_DEFAULT = os.environ.get("SEARCH_COMPACT_DEFAULT", "0").lower() in {"1", "true", "yes", "on"}
 
 
 async def _repo_search_impl(
@@ -100,6 +101,7 @@ async def _repo_search_impl(
     # Response shaping
     compact: Any = None,
     output_format: Any = None,  # "json" (default) or "toon" for token-efficient format
+    lean: Any = None,  # If true, strip debug/internal fields (args echo, counters, components)
     args: Any = None,  # Compatibility shim for mcp-remote/Claude wrappers that send args/kwargs
     kwargs: Any = None,
     # Injected dependencies from facade
@@ -132,9 +134,10 @@ async def _repo_search_impl(
 
     Returns:
     - Dict with keys:
-      - results: list of {score, path, symbol, start_line, end_line, why[, components][, relations][, related_paths][, snippet]}
-      - total: int; used_rerank: bool; rerank_counters: dict
-    - If compact=true (and snippets not requested), results contain only {path,start_line,end_line}.
+      - results: list of {score, path, symbol, start_line, end_line[, snippet]}
+      - total: int; ok: bool; used_rerank: bool
+    - If compact=true, results contain only {path, start_line, end_line, symbol}.
+    - If lean=true (or LEAN_RESPONSES=1), strips debug fields: args echo, rerank_counters, components, why, null IDs.
 
     Examples:
     - path_glob=["scripts/**","**/*.py"], language="python"
@@ -159,8 +162,8 @@ async def _repo_search_impl(
             q_alt = kwargs.get("q") or kwargs.get("text")
             if q_alt is not None:
                 query = q_alt
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Leniency: absorb nested 'kwargs' JSON payload some clients send
     try:
@@ -267,8 +270,8 @@ async def _repo_search_impl(
                 mode is None or (isinstance(mode, str) and str(mode).strip() == "")
             ) and _extra.get("mode") is not None:
                 mode = _extra.get("mode")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Leniency shim: coerce null/invalid args to sane defaults so buggy clients don't fail schema
     def _to_int(x, default):
@@ -276,7 +279,8 @@ async def _repo_search_impl(
             if x is None or (isinstance(x, str) and x.strip() == ""):
                 return default
             return int(x)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (int coercion failed): {e}")
             return default
 
     def _to_bool(x, default):
@@ -320,6 +324,9 @@ async def _repo_search_impl(
     rerank_timeout_ms = _to_int(
         rerank_timeout_ms, int(os.environ.get("RERANKER_TIMEOUT_MS", "3000") or 3000)
     )
+    # Clamp rerank timeout to prevent unreasonably low deadlines
+    _MIN_RERANK_TIMEOUT_MS = int(os.environ.get("RERANK_TIMEOUT_MIN_MS", "10000") or 10000)
+    rerank_timeout_ms = max(rerank_timeout_ms, _MIN_RERANK_TIMEOUT_MS)
     highlight_snippet = _to_bool(highlight_snippet, True)
 
     # Resolve collection and related hints: explicit > per-connection defaults > token defaults > env
@@ -349,8 +356,8 @@ async def _repo_search_impl(
                     _sl2 = str((_d2.get("language") or "")).strip()
                     if _sl2:
                         lang_hint = _sl2
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # 2) Legacy token-based defaults
     if sid:
@@ -373,8 +380,8 @@ async def _repo_search_impl(
                     _sl = str((_d.get("language") or "")).strip()
                     if _sl:
                         lang_hint = _sl
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # 3) Environment default (collection only for now)
     env_coll = (os.environ.get("DEFAULT_COLLECTION") or os.environ.get("COLLECTION_NAME") or "").strip()
@@ -451,7 +458,7 @@ async def _repo_search_impl(
             repo_filter = [detected_repo]
 
     compact_raw = compact
-    compact = _to_bool(compact, False)
+    compact = _to_bool(compact, SEARCH_COMPACT_DEFAULT)
     # If snippets are requested, do not compact (we need snippet field in results)
     if include_snippet:
         compact = False
@@ -491,8 +498,8 @@ async def _repo_search_impl(
     try:
         combined_query = " ".join(queries)
         code_signals = _detect_code_signals(combined_query)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # If code signals detected and no explicit symbol filter, use extracted symbols for boosting
     auto_symbol_hints: list[str] = []
@@ -540,13 +547,15 @@ async def _repo_search_impl(
         # Determine effective candidate pool (respect rerank_top_n if rerank is enabled)
         try:
             base_limit = int(limit)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (dense limit parse): {e}")
             base_limit = 10
         eff_limit = base_limit
         if rerank_enabled:
             try:
                 rt = int(rerank_top_n)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (dense rerank_top_n parse): {e}")
                 rt = 0
             if rt > eff_limit:
                 eff_limit = rt
@@ -592,8 +601,8 @@ async def _repo_search_impl(
                 try:
                     if not _re.search(path_regex_norm, path, flags=flags):
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             
             # Apply path_glob filter
             if path_globs_norm and not any(_match_glob(g, path) for g in path_globs_norm):
@@ -640,18 +649,21 @@ async def _repo_search_impl(
                 # Determine effective hybrid candidate limit: if rerank is enabled, search up to rerank_top_n
                 try:
                     base_limit = int(limit)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (hybrid limit parse): {e}")
                     base_limit = 10
                 eff_limit = base_limit
                 if rerank_enabled:
                     try:
                         rt = int(rerank_top_n)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception (hybrid rerank_top_n parse): {e}")
                         rt = 0
                     if rt > eff_limit:
                         eff_limit = rt
                 # In-process path_glob/not_glob accept a single string; reduce list inputs safely
-                print(f"[debug] DEBUG_SEARCH_TIMING={os.environ.get('DEBUG_SEARCH_TIMING', 'not set')}", flush=True)
+                if os.environ.get("DEBUG_SEARCH_TIMING"):
+                    logger.debug(f"DEBUG_SEARCH_TIMING={os.environ.get('DEBUG_SEARCH_TIMING', 'not set')}")
                 items = await asyncio.to_thread(
                     lambda: run_hybrid_search(
                         queries=queries,
@@ -683,24 +695,23 @@ async def _repo_search_impl(
                 json_lines = items  # reuse downstream shaping
             except Exception as e:
                 # Fallback to subprocess path if in-process fails
-                logger.debug(f"In-process hybrid search failed, falling back to subprocess: {type(e).__name__}: {e}")
-                # VISIBLE ERROR for debugging silent failures during benchmark runs
-                print(f"[ERROR] In-process hybrid failed: {type(e).__name__}: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
+                # Use logger.exception to capture traceback without corrupting stdio JSON-RPC
+                logger.error(f"In-process hybrid search failed, falling back to subprocess: {type(e).__name__}: {e}", exc_info=True)
                 use_hybrid_inproc = False
 
         if not use_hybrid_inproc:
             # Try hybrid search via subprocess (JSONL output)
             try:
                 base_limit = int(limit)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (subprocess limit parse): {e}")
                 base_limit = 10
             eff_limit = base_limit
             if rerank_enabled:
                 try:
                     rt = int(rerank_top_n)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (subprocess rerank_top_n parse): {e}")
                     rt = 0
                 if rt > eff_limit:
                     eff_limit = rt
@@ -783,11 +794,12 @@ async def _repo_search_impl(
                         )
                     )
                     json_lines = items
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Optional rerank fallback path: if enabled, attempt; on timeout or error, keep hybrid
     used_rerank = False
+    learning_results = None  # May hold learning reranker output for fallback
     rerank_counters = {
         "inproc_hybrid": 0,
         "inproc_dense": 0,
@@ -863,11 +875,13 @@ async def _repo_search_impl(
                         tmp.append(item)
 
                     if tmp:
+                        # Store learning results separately; may be used as fallback
+                        learning_results = tmp
                         results = tmp
                         used_rerank = True
                         rerank_counters["learning"] += 1
-            except Exception:
-                pass  # Fall through to standard reranking
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")  # Fall through to standard reranking
 
         # Resolve in-process gating once and reuse
         use_rerank_inproc = str(
@@ -920,9 +934,10 @@ async def _repo_search_impl(
                                         tags_text = str(tags_val)[:128]
                                         if tags_text:
                                             meta_lines.append(f"Tags: {tags_text}")
-                                except Exception:
-                                    pass
-                        except Exception:
+                                except Exception as e:
+                                    logger.debug(f"Suppressed exception: {e}")
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (rerank metadata fallback): {e}")
                             # If any of the above fails, we just keep header-only
                             pass
 
@@ -971,7 +986,8 @@ async def _repo_search_impl(
                                 meta = "\n".join(meta_lines) if meta_lines else header
                                 return (meta + "\n\n" + snippet).strip()
                             return "\n".join(meta_lines) if meta_lines else header
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Suppressed exception (rerank snippet read): {e}")
                             return "\n".join(meta_lines) if meta_lines else header
 
                     # Build docs concurrently
@@ -1069,7 +1085,8 @@ async def _repo_search_impl(
                             _rr_scores = [(t.get("path", "?").split("/")[-1], t.get("why", [])) for t in tmp[:5]]
                             for p, w in _rr_scores:
                                 logger.info(f"[rerank A/B] {p}: {w}")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (rerank hybrid): {e}")
                 used_rerank = False
         # Fallback paths (in-process reranker dense candidates, then subprocess)
         if not used_rerank:
@@ -1095,7 +1112,8 @@ async def _repo_search_impl(
                         results = items
                         used_rerank = True
                         rerank_counters["inproc_dense"] += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (rerank inproc): {e}")
                     use_rerank_inproc = False
             if (not use_rerank_inproc) and (not used_rerank):
                 try:
@@ -1124,7 +1142,8 @@ async def _repo_search_impl(
                     _floor_ms = int(os.environ.get("RERANK_TIMEOUT_FLOOR_MS", "1000"))
                     try:
                         _req_ms = int(rerank_timeout_ms)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception (rerank timeout parse): {e}")
                         _req_ms = _floor_ms
                     _eff_ms = max(_floor_ms, _req_ms)
                     _t_sec = max(0.1, _eff_ms / 1000.0)
@@ -1174,9 +1193,16 @@ async def _repo_search_impl(
                             results = tmp
                             used_rerank = True
                             rerank_counters["subprocess"] += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Suppressed exception (rerank subprocess): {e}")
                     rerank_counters["error"] += 1
                     used_rerank = False
+
+    # Fallback to learning reranker results if subprocess failed but learning succeeded
+    if (not used_rerank) and learning_results:
+        results = learning_results
+        used_rerank = True
+        logger.debug("Falling back to learning reranker results after subprocess failure")
 
     if not used_rerank:
         # Build results from hybrid JSON lines
@@ -1258,7 +1284,8 @@ async def _repo_search_impl(
         try:
             raw_path = item.get("path") or ""
             p = str(raw_path)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (core item path parse): {e}")
             return False
         if not p:
             return False
@@ -1272,8 +1299,8 @@ async def _repo_search_impl(
             if comps:
                 if comps.get("config_penalty") or comps.get("test_penalty") or comps.get("doc_penalty"):
                     return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Defer to hybrid_search helpers when available to avoid duplicating
         # extension and path-based logic.
@@ -1283,7 +1310,8 @@ async def _repo_search_impl(
                 is_test_file as _hy_is_test_file,
                 is_vendor_path as _hy_is_vendor_path,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (hybrid helper import): {e}")
             _hy_core_file = None
             _hy_is_test_file = None
             _hy_is_vendor_path = None
@@ -1292,20 +1320,21 @@ async def _repo_search_impl(
             try:
                 if not _hy_core_file(p):
                     return False
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (core file check): {e}")
                 return False
         if _hy_is_test_file:
             try:
                 if _hy_is_test_file(p):
                     return False
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         if _hy_is_vendor_path:
             try:
                 if _hy_is_vendor_path(p):
                     return False
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         # If helper imports failed, fall back to a permissive classification:
         # treat the item as core code (we already filtered obvious docs/config/tests).
@@ -1327,11 +1356,13 @@ async def _repo_search_impl(
 
         try:
             _min_core = int(os.environ.get("REPO_SEARCH_CODE_FIRST_MIN_CORE", "2") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (code_first min_core parse): {e}")
             _min_core = 2
         try:
             _top_k = int(os.environ.get("REPO_SEARCH_CODE_FIRST_TOP_K", "8") or 8)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception (code_first top_k parse): {e}")
             _top_k = 8
         if _min_core > 0 and results:
             top_k = max(0, min(_top_k, len(results)))
@@ -1367,7 +1398,8 @@ async def _repo_search_impl(
     # Enforce user-requested limit on final result count
     try:
         _limit_n = int(limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception (limit enforcement parse): {e}")
         _limit_n = 0
     if _limit_n > 0 and len(results) > _limit_n:
         results = results[:_limit_n]
@@ -1418,7 +1450,8 @@ async def _repo_search_impl(
                     _trimmed = _bytes[:_keep]
                     snippet = _trimmed.decode("utf-8", "ignore") + _suffix
                 return (i, snippet)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception (snippet read): {e}")
                 return (i, "")
 
         max_workers = min(16, (os.cpu_count() or 4) * 4)
@@ -1426,8 +1459,8 @@ async def _repo_search_impl(
             for i, snip in ex.map(_read_snip, list(enumerate(results))):
                 try:
                     results[i]["snippet"] = snip
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     # Smart default: compact true for multi-query calls if compact not explicitly set
     if (len(queries) > 1) and (
@@ -1500,51 +1533,81 @@ async def _repo_search_impl(
             # Re-sort results by updated score so fname_boost affects ranking
             results = sorted(results, key=lambda x: float(x.get("score", 0)), reverse=True)
 
+    # Determine if lean mode is enabled (strips debug/internal fields for agent ROI)
+    # Default ON for better agent token efficiency; set LEAN_RESPONSES=0 to disable
+    _lean = _to_bool(lean, os.environ.get("LEAN_RESPONSES", "1").lower() not in ("0", "false", "no"))
+
+    # Compact mode: minimal result fields
     if compact:
         results = [
             {
                 "path": r.get("path", ""),
+                "symbol": r.get("symbol", ""),
                 "start_line": int(r.get("start_line") or 0),
                 "end_line": int(r.get("end_line") or 0),
             }
             for r in results
         ]
+    elif _lean:
+        # Lean mode: keep useful fields, strip debug bloat (components, why, null IDs, duplicate paths)
+        lean_results = []
+        for r in results:
+            lr = {
+                "score": round(float(r.get("score", 0)), 3),
+                "path": r.get("path", ""),
+                "symbol": r.get("symbol", ""),
+                "start_line": int(r.get("start_line") or 0),
+                "end_line": int(r.get("end_line") or 0),
+            }
+            # Keep snippet if present
+            if r.get("snippet"):
+                lr["snippet"] = r["snippet"]
+            lean_results.append(lr)
+        results = lean_results
 
-    response = {
-        "args": {
-            "queries": queries,
-            "limit": int(limit),
-            "per_path": int(per_path),
-            "include_snippet": bool(include_snippet),
-            "context_lines": int(context_lines),
-            "rerank_enabled": bool(rerank_enabled),
-            "rerank_top_n": int(rerank_top_n),
-            "rerank_return_m": int(rerank_return_m),
-            "rerank_timeout_ms": int(rerank_timeout_ms),
-            "collection": collection,
-            "language": language,
-            "under": under,
-            "kind": kind,
-            "symbol": symbol,
-            "ext": ext,
-            "not": not_,
-            "case": case,
-            "path_regex": path_regex,
-            "path_glob": path_globs,
-            "not_glob": not_globs,
-            # Echo the user-provided compact flag in args, normalized via _to_bool to respect strings like "false"/"0"
-            "compact": (_to_bool(compact_raw, compact)),
-        },
-        "used_rerank": bool(used_rerank),
-        "rerank_counters": rerank_counters,
-        "code_signals": code_signals if code_signals.get("has_code_signals") else None,
-        "total": len(results),
-        "results": results,
-        **res,
-    }
+    # Build response - lean mode strips args echo and internal counters
+    if _lean:
+        response = {
+            "ok": True,
+            "total": len(results),
+            "used_rerank": bool(used_rerank),
+            "results": results,
+        }
+    else:
+        response = {
+            "args": {
+                "queries": queries,
+                "limit": int(limit),
+                "per_path": int(per_path),
+                "include_snippet": bool(include_snippet),
+                "context_lines": int(context_lines),
+                "rerank_enabled": bool(rerank_enabled),
+                "rerank_top_n": int(rerank_top_n),
+                "rerank_return_m": int(rerank_return_m),
+                "rerank_timeout_ms": int(rerank_timeout_ms),
+                "collection": collection,
+                "language": language,
+                "under": under,
+                "kind": kind,
+                "symbol": symbol,
+                "ext": ext,
+                "not": not_,
+                "case": case,
+                "path_regex": path_regex,
+                "path_glob": path_globs,
+                "not_glob": not_globs,
+                "compact": (_to_bool(compact_raw, compact)),
+            },
+            "used_rerank": bool(used_rerank),
+            "rerank_counters": rerank_counters,
+            "code_signals": code_signals if code_signals.get("has_code_signals") else None,
+            "total": len(results),
+            "results": results,
+            **res,
+        }
 
     # Apply TOON formatting if requested or enabled globally
     # Full mode (compact=False) still saves tokens vs JSON while preserving all fields
     if _should_use_toon(output_format):
-        return _format_results_as_toon(response, compact=bool(compact))
+        return _format_results_as_toon(response, compact=bool(compact or _lean), lean=bool(_lean))
     return response

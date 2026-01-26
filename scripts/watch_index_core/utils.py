@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
@@ -21,13 +22,15 @@ from scripts.workspace_state import (
     update_workspace_state,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def safe_print(*args: Any, **kwargs: Any) -> None:
     """Best-effort print that swallows IO errors."""
     try:
         print(*args, **kwargs)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 def get_boolean_env(name: str, default: bool = False) -> bool:
@@ -78,16 +81,16 @@ def create_observer(use_polling: bool, observer_cls: Type[Observer] = Observer) 
             obs = PollingObserver()
             try:
                 safe_print("[watch_mode] Using polling observer for filesystem events")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return obs
         except Exception:
             try:
                 safe_print(
                     "[watch_mode] Polling observer unavailable, falling back to default Observer"
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     return observer_cls()
 
 
@@ -153,8 +156,8 @@ def _get_collection_for_repo(repo_path: Path) -> str:
                 invalid = {default_coll}
                 try:
                     invalid.update(set(PLACEHOLDER_COLLECTION_NAMES or []))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 if serving_coll not in invalid:
                     return serving_coll
@@ -163,8 +166,8 @@ def _get_collection_for_repo(repo_path: Path) -> str:
         if logical_repo_reuse_enabled():
             try:
                 state = ensure_logical_repo_id(state, ws_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
             lrid = state.get("logical_repo_id")
             if isinstance(lrid, str) and lrid:
@@ -182,8 +185,8 @@ def _get_collection_for_repo(repo_path: Path) -> str:
                             updates={"qdrant_collection": coll, "logical_repo_id": lrid},
                             repo_name=repo_name,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                     return coll
 
         # Legacy behaviour: derive per-repo collection name
@@ -197,8 +200,8 @@ def _get_collection_for_repo(repo_path: Path) -> str:
                     updates={"qdrant_collection": derived, "serving_collection": derived},
                     repo_name=repo_name,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             return derived
         except Exception:
             return default_coll
@@ -207,8 +210,8 @@ def _get_collection_for_repo(repo_path: Path) -> str:
     try:
         if repo_name:
             return get_collection_name(repo_name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return default_coll
 
 
@@ -225,8 +228,8 @@ def safe_log_error(logger, message: str, extra: dict | None = None) -> None:
     """Safely log an error with optional extra context, suppressing any logging failures."""
     try:
         logger.error(message, extra=extra or {}, exc_info=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 __all__ = [

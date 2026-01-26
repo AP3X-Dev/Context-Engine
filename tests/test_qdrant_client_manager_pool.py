@@ -18,7 +18,7 @@ pytestmark = pytest.mark.unit
 
 
 class _DummyQdrantClient:
-    def __init__(self, url=None, api_key=None):
+    def __init__(self, url=None, api_key=None, **kwargs):
         self.url = url
         self.api_key = api_key
         self.closed = False

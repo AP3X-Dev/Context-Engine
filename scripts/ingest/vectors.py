@@ -18,16 +18,28 @@ from scripts.ingest.config import (
     _STOP,
 )
 
+# Try to use numpy for faster vector operations (10-50x speedup)
+try:
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    np = None  # type: ignore
+    _NUMPY_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Mini vector projection cache
 # ---------------------------------------------------------------------------
-_MINI_PROJ_CACHE: dict[tuple[int, int, int], list[list[float]]] = {}
+# Cache stores numpy arrays when numpy is available, else nested lists
+_MINI_PROJ_CACHE: dict[tuple[int, int, int], Any] = {}
 
 
 def _get_mini_proj(
     in_dim: int, out_dim: int, seed: int | None = None
-) -> list[list[float]]:
-    """Get or create a random projection matrix for mini vectors."""
+) -> Any:
+    """Get or create a random projection matrix for mini vectors.
+
+    Returns numpy array if numpy is available, else nested list.
+    """
     import math
     import random
 
@@ -38,31 +50,54 @@ def _get_mini_proj(
         rnd = random.Random(s)
         scale = 1.0 / math.sqrt(out_dim)
         # Dense Rademacher matrix (+/-1) scaled; good enough for fast gating
-        M = [
-            [scale * (1.0 if rnd.random() < 0.5 else -1.0) for _ in range(out_dim)]
-            for _ in range(in_dim)
-        ]
+        if _NUMPY_AVAILABLE:
+            # Use numpy for faster matrix operations
+            # Generate same values as pure Python for reproducibility
+            M_list = [
+                [scale * (1.0 if rnd.random() < 0.5 else -1.0) for _ in range(out_dim)]
+                for _ in range(in_dim)
+            ]
+            M = np.array(M_list, dtype=np.float32)
+        else:
+            M = [
+                [scale * (1.0 if rnd.random() < 0.5 else -1.0) for _ in range(out_dim)]
+                for _ in range(in_dim)
+            ]
         _MINI_PROJ_CACHE[key] = M
     return M
 
 
 def project_mini(vec: list[float], out_dim: int | None = None) -> list[float]:
-    """Project a dense vector to a compact mini vector using random projection."""
+    """Project a dense vector to a compact mini vector using random projection.
+
+    Uses numpy when available for 10-50x speedup, falls back to pure Python.
+    """
     if not vec:
         return [0.0] * (int(out_dim or MINI_VEC_DIM))
     od = int(out_dim or MINI_VEC_DIM)
     M = _get_mini_proj(len(vec), od)
-    out = [0.0] * od
-    # y = x @ M
-    for i, val in enumerate(vec):
-        if val == 0.0:
-            continue
-        row = M[i]
-        for j in range(od):
-            out[j] += val * row[j]
-    # L2 normalize to keep scale consistent
-    norm = (sum(x * x for x in out) or 0.0) ** 0.5 or 1.0
-    return [x / norm for x in out]
+
+    if _NUMPY_AVAILABLE:
+        # Fast path: numpy matrix multiply + normalize
+        x = np.array(vec, dtype=np.float32)
+        out = x @ M  # (in_dim,) @ (in_dim, out_dim) -> (out_dim,)
+        norm = np.linalg.norm(out)
+        if norm > 0:
+            out = out / norm
+        return out.tolist()
+    else:
+        # Fallback: pure Python implementation
+        out = [0.0] * od
+        # y = x @ M
+        for i, val in enumerate(vec):
+            if val == 0.0:
+                continue
+            row = M[i]
+            for j in range(od):
+                out[j] += val * row[j]
+        # L2 normalize to keep scale consistent
+        norm = (sum(x * x for x in out) or 0.0) ** 0.5 or 1.0
+        return [x / norm for x in out]
 
 
 def _split_ident_lex(s: str) -> List[str]:
@@ -77,8 +112,19 @@ def _split_ident_lex(s: str) -> List[str]:
     return [x.lower() for x in out if x and x.lower() not in _STOP]
 
 
+# Try to use xxhash for faster hashing (10x faster than MD5)
+try:
+    import xxhash
+    _XXHASH_AVAILABLE = True
+except ImportError:
+    _XXHASH_AVAILABLE = False
+
+
 def _lex_hash_vector(text: str, dim: int = LEX_VECTOR_DIM) -> list[float]:
-    """Create a lexical hash vector from text using hashing trick."""
+    """Create a lexical hash vector from text using hashing trick.
+
+    Uses xxhash when available (10x faster than MD5), falls back to MD5.
+    """
     if not text:
         return [0.0] * dim
     vec = [0.0] * dim
@@ -86,10 +132,20 @@ def _lex_hash_vector(text: str, dim: int = LEX_VECTOR_DIM) -> list[float]:
     toks = _split_ident_lex(text)
     if not toks:
         return vec
-    for t in toks:
-        h = int(hashlib.md5(t.encode("utf-8", errors="ignore")).hexdigest()[:8], 16)
-        idx = h % dim
-        vec[idx] += 1.0
+
+    if _XXHASH_AVAILABLE:
+        # xxhash is ~10x faster than MD5
+        for t in toks:
+            h = xxhash.xxh32(t.encode("utf-8", errors="ignore")).intdigest()
+            idx = h % dim
+            vec[idx] += 1.0
+    else:
+        # Fallback to MD5
+        for t in toks:
+            h = int(hashlib.md5(t.encode("utf-8", errors="ignore")).hexdigest()[:8], 16)
+            idx = h % dim
+            vec[idx] += 1.0
+
     # L2 normalize (avoid huge magnitudes)
     import math
     norm = math.sqrt(sum(v * v for v in vec)) or 1.0

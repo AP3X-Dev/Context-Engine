@@ -20,6 +20,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import sys
 import subprocess
@@ -29,6 +30,8 @@ from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 import socket
 
+
+logger = logging.getLogger(__name__)
 try:
     from rich.console import Console
     from rich.table import Table
@@ -378,7 +381,8 @@ def get_graph_status(collection_name: str) -> Tuple[bool, Optional[Dict[str, Any
                         graph_info["backend"] = "qdrant"
                         success = True
                         break  # Success, stop trying other URLs
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue  # Try next URL
 
     # Check Neo4j - always try to connect for status
@@ -415,8 +419,8 @@ def get_graph_status(collection_name: str) -> Tuple[bool, Optional[Dict[str, Any
         driver.close()
     except ImportError:
         pass  # neo4j package not installed
-    except Exception:
-        pass  # Neo4j not available
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")  # Neo4j not available
 
     return success, graph_info if success else None
 

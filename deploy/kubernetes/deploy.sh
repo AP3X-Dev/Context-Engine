@@ -72,9 +72,15 @@ deploy_core() {
     log_info "Deploying Qdrant database..."
     kubectl apply -f qdrant.yaml
 
+    # Deploy Redis
+    log_info "Deploying Redis..."
+    kubectl apply -f redis.yaml
+
     # Wait for Qdrant to be ready
     log_info "Waiting for Qdrant to be ready..."
     kubectl wait --for=condition=ready pod -l component=qdrant -n "$NAMESPACE" --timeout=300s
+    log_info "Waiting for Redis to be ready..."
+    kubectl wait --for=condition=ready pod -l component=redis -n "$NAMESPACE" --timeout=300s
 
     log_success "Core services deployed"
 }
@@ -190,8 +196,9 @@ apply_with_kustomize() {
   log_info "Building temporary kustomize overlay at ${tmp_dir}"
 
   # Copy manifests to temp dir to avoid absolute path issues
-  cp namespace.yaml configmap.yaml qdrant.yaml mcp-memory.yaml mcp-indexer.yaml \
-     mcp-http.yaml indexer-services.yaml rbac.yaml hpa.yaml networkpolicy.yaml "${tmp_dir}/"
+  cp namespace.yaml configmap.yaml qdrant.yaml redis.yaml mcp-memory.yaml mcp-indexer.yaml \
+     mcp-http.yaml indexer-services.yaml rbac.yaml hpa.yaml networkpolicy.yaml \
+     upload-pvc.yaml code-models-pvc.yaml upload-service.yaml learning-reranker-worker.yaml "${tmp_dir}/"
 
   if [[ "${SKIP_LLAMACPP}" != "true" ]]; then
     cp llamacpp.yaml "${tmp_dir}/"
@@ -210,9 +217,14 @@ apply_with_kustomize() {
     echo "  - namespace.yaml"
     echo "  - configmap.yaml"
     echo "  - qdrant.yaml"
+    echo "  - redis.yaml"
+    echo "  - upload-pvc.yaml"
+    echo "  - code-models-pvc.yaml"
     echo "  - mcp-memory.yaml"
     echo "  - mcp-indexer.yaml"
     echo "  - mcp-http.yaml"
+    echo "  - upload-service.yaml"
+    echo "  - learning-reranker-worker.yaml"
     echo "  - indexer-services.yaml"
     echo "  - rbac.yaml"
     echo "  - hpa.yaml"

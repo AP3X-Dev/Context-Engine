@@ -7,6 +7,7 @@ which files and directories should be skipped during indexing.
 """
 from __future__ import annotations
 
+import logging
 import os
 import fnmatch
 from pathlib import Path
@@ -21,6 +22,8 @@ from scripts.ingest.config import (
     _ANY_DEPTH_EXCLUDE_DIR_NAMES,
     _env_truthy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _Excluder:
@@ -88,8 +91,8 @@ class _Excluder:
         try:
             if base in _ANY_DEPTH_EXCLUDE_DIR_NAMES and ("/" + base) in self.dir_prefixes:
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Also allow dir name-only patterns in file_globs (e.g., node_modules)
         for g in self.file_globs:

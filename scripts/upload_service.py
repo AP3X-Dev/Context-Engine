@@ -44,8 +44,14 @@ import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlencode
 
 from scripts.upload_delta_bundle import get_workspace_key, process_delta_bundle
+
+try:
+    from scripts.collection_health import get_collection_points_count
+except ImportError:
+    get_collection_points_count = None  # type: ignore
 
 from scripts.indexing_admin import (
     build_admin_collections_view,
@@ -253,6 +259,22 @@ class BridgeCollectionStateResponse(BaseModel):
     staging: Optional[Dict[str, Any]]
 
 
+class IndexingStatusResponse(BaseModel):
+    """Comprehensive indexing status for a workspace/collection."""
+    workspace_path: str
+    collection_name: str
+    repo_name: Optional[str] = None
+    indexing_state: str  # idle, indexing, watching, error
+    points_count: Optional[int] = None
+    progress: Optional[Dict[str, Any]] = None  # files_processed, total_files, current_file
+    started_at: Optional[str] = None
+    last_upload_at: Optional[str] = None
+    last_indexed_at: Optional[str] = None
+    qdrant_healthy: bool = False
+    watcher_active: bool = False
+    error: Optional[str] = None
+
+
 class AuthLoginRequest(BaseModel):
     client: str
     workspace: Optional[str] = None
@@ -279,6 +301,17 @@ class AuthUserCreateRequest(BaseModel):
 class AuthUserCreateResponse(BaseModel):
     user_id: str
     username: str
+
+
+class AuthValidateRequest(BaseModel):
+    session_id: str
+
+
+class AuthValidateResponse(BaseModel):
+    valid: bool
+    user_id: Optional[str] = None
+    expires_at: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class PasswordLoginRequest(BaseModel):
@@ -326,8 +359,8 @@ def _set_admin_session_cookie(resp: Any, session_id: str) -> Any:
         if ttl > 0:
             kwargs["max_age"] = ttl
         resp.set_cookie(**kwargs)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return resp
 
 
@@ -363,8 +396,8 @@ def _bridge_state_authorized(request: Request) -> None:
             try:
                 if secrets.compare_digest(header_token, BRIDGE_STATE_TOKEN):
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         try:
             _require_admin_session(request)
             return
@@ -445,14 +478,28 @@ def validate_bundle_format(bundle_path: Path) -> Dict[str, Any]:
                 if not any(req_file in member for member in members):
                     raise ValueError(f"Missing required file: {req_file}")
 
-            # Extract and validate manifest
+            # Extract and validate manifest - look for root-level manifest.json only
+            # The bundle structure is {bundle_id}/manifest.json at the root
             manifest_member = None
+            manifest_candidates = [m for m in members if m.endswith("manifest.json")]
+            logger.debug(f"[upload_service] Bundle members: {members[:20]}...")
+            logger.debug(f"[upload_service] Manifest candidates: {manifest_candidates}")
+            
+            # Prefer root-level manifest (exactly one path component before manifest.json)
             for member in members:
-                if member.endswith("manifest.json"):
+                if member.endswith("/manifest.json") and member.count("/") == 1:
                     manifest_member = member
                     break
+            
+            # Fallback: if no root-level manifest, try any manifest.json (but NOT in files/ subdirs)
+            if not manifest_member:
+                for member in members:
+                    if member.endswith("manifest.json") and "/files/" not in member:
+                        manifest_member = member
+                        break
 
             if not manifest_member:
+                logger.error(f"[upload_service] No valid manifest.json found. Candidates were: {manifest_candidates}")
                 raise ValueError("manifest.json not found in bundle")
 
             manifest_file = tar.extractfile(manifest_member)
@@ -460,11 +507,13 @@ def validate_bundle_format(bundle_path: Path) -> Dict[str, Any]:
                 raise ValueError("Cannot extract manifest.json")
 
             manifest = json.loads(manifest_file.read().decode('utf-8'))
+            logger.debug(f"[upload_service] Parsed manifest keys: {list(manifest.keys())}")
 
             # Validate manifest structure
             required_fields = ["version", "bundle_id", "workspace_path", "created_at", "sequence_number"]
             for field in required_fields:
                 if field not in manifest:
+                    logger.error(f"[upload_service] Manifest missing field '{field}'. Got keys: {list(manifest.keys())}")
                     raise ValueError(f"Missing required field in manifest: {field}")
 
             return manifest
@@ -512,8 +561,8 @@ async def _process_bundle_background(
     finally:
         try:
             bundle_path.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 @app.get("/auth/status", response_model=AuthStatusResponse)
@@ -559,6 +608,41 @@ async def auth_login(payload: AuthLoginRequest):
         user_id=session.get("user_id"),
         expires_at=session.get("expires_at"),
     )
+
+
+@app.post("/auth/validate", response_model=AuthValidateResponse)
+async def auth_validate(payload: AuthValidateRequest):
+    """Validate a session ID and return session info if valid.
+
+    This endpoint allows remote MCP servers to validate sessions against the
+    auth backend that issued them, enabling distributed auth validation.
+    """
+    try:
+        if not AUTH_ENABLED:
+            # When auth is disabled, all sessions are considered valid
+            return AuthValidateResponse(valid=True, user_id=None, expires_at=None, metadata=None)
+
+        sid = (payload.session_id or "").strip()
+        if not sid:
+            return AuthValidateResponse(valid=False)
+
+        try:
+            record = validate_session(sid)
+        except AuthDisabledError:
+            return AuthValidateResponse(valid=True, user_id=None, expires_at=None, metadata=None)
+
+        if record is None:
+            return AuthValidateResponse(valid=False)
+
+        return AuthValidateResponse(
+            valid=True,
+            user_id=record.get("user_id"),
+            expires_at=record.get("expires_at"),
+            metadata=record.get("metadata"),
+        )
+    except Exception as e:
+        logger.error(f"[upload_service] Failed to validate session: {e}")
+        raise HTTPException(status_code=500, detail="Failed to validate session")
 
 
 @app.get("/admin")
@@ -711,6 +795,21 @@ async def admin_acl_page(request: Request):
         build_admin_collections_view, collections=collections, work_dir=WORK_DIR
     )
 
+    flash: Optional[Dict[str, str]] = None
+    deleted = request.query_params.get("deleted")
+    if deleted:
+        graph_flag = request.query_params.get("graph_deleted")
+        if graph_flag == "1":
+            message = f"Collection {deleted} and its graph clone were deleted."
+            level = "success"
+        elif graph_flag == "0":
+            message = f"Collection {deleted} was deleted. Graph clone was not found or could not be deleted."
+            level = "warning"
+        else:
+            message = f"Collection {deleted} was deleted."
+            level = "success"
+        flash = {"message": message, "level": level}
+
     resp = render_admin_acl(
         request,
         users=users,
@@ -719,6 +818,7 @@ async def admin_acl_page(request: Request):
         deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
         work_dir=WORK_DIR,
         refresh_ms=ADMIN_COLLECTION_REFRESH_MS,
+        flash=flash,
     )
     candidate = _get_session_candidate_from_request(request)
     if candidate.get("source") and candidate.get("source") != "cookie":
@@ -935,7 +1035,7 @@ async def admin_delete_collection(
         cleanup_fs = False
 
     try:
-        delete_collection_everywhere(
+        delete_result = delete_collection_everywhere(
             collection=name,
             work_dir=WORK_DIR,
             qdrant_url=QDRANT_URL,
@@ -949,7 +1049,21 @@ async def admin_delete_collection(
             back_href="/admin/acl",
         )
 
-    return RedirectResponse(url="/admin/acl", status_code=302)
+    query_params = {"deleted": name}
+    graph_deleted = None
+    if isinstance(delete_result, dict):
+        value = delete_result.get("graph_collection_deleted")
+        if value is True:
+            graph_deleted = "1"
+        elif value is False:
+            graph_deleted = "0"
+    if graph_deleted is not None:
+        query_params["graph_deleted"] = graph_deleted
+
+    redirect_url = "/admin/acl"
+    if query_params:
+        redirect_url = f"{redirect_url}?{urlencode(query_params)}"
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @app.post("/admin/staging/start")
@@ -1376,6 +1490,112 @@ async def get_status(workspace_path: str):
         logger.error(f"Error getting status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/v1/indexing/status", response_model=IndexingStatusResponse)
+async def get_indexing_status(
+    workspace_path: Optional[str] = None,
+    collection: Optional[str] = None,
+    repo_name: Optional[str] = None,
+):
+    """Get comprehensive indexing status for a workspace/collection.
+
+    This endpoint provides detailed information about:
+    - Current indexing state (idle, indexing, watching, error)
+    - Progress information (files processed, total files)
+    - Qdrant collection health and point count
+    - Watcher status
+
+    Use this to poll for indexing completion after upload.
+    """
+    try:
+        # Resolve workspace and repo
+        ws_path = (workspace_path or "").strip() or WORK_DIR
+        repo = (repo_name or "").strip() or None
+        coll_name = (collection or "").strip() or None
+
+        # Try to resolve from collection if provided
+        if coll_name and resolve_collection_root:
+            try:
+                root, resolved_repo = resolve_collection_root(collection=coll_name, work_dir=WORK_DIR)
+                if root:
+                    ws_path = root
+                    repo = resolved_repo
+            except Exception:
+                pass
+
+        # Get repo name from path if not provided
+        if not repo and _extract_repo_name_from_path:
+            repo = _extract_repo_name_from_path(ws_path)
+
+        # Get collection name
+        if not coll_name:
+            if get_collection_name and repo:
+                coll_name = get_collection_name(repo)
+            else:
+                coll_name = DEFAULT_COLLECTION
+
+        # Get workspace state snapshot for indexing status
+        indexing_state = "unknown"
+        progress = None
+        started_at = None
+        last_indexed_at = None
+        error_msg = None
+
+        if get_collection_state_snapshot:
+            try:
+                snapshot = get_collection_state_snapshot(workspace_path=ws_path, repo_name=repo)
+                if snapshot:
+                    idx_status = snapshot.get("indexing_status") or {}
+                    indexing_state = idx_status.get("state", "idle")
+                    progress = idx_status.get("progress")
+                    started_at = idx_status.get("started_at")
+                    # Check staging info for additional context
+                    staging = snapshot.get("staging")
+                    if staging and staging.get("status"):
+                        staging_status = staging.get("status", {})
+                        if staging_status.get("state"):
+                            indexing_state = staging_status.get("state")
+            except Exception as e:
+                logger.debug(f"Failed to get workspace state: {e}")
+                error_msg = str(e)
+
+        # Get Qdrant collection point count
+        points_count = None
+        qdrant_healthy = False
+        if get_collection_points_count and coll_name:
+            try:
+                count = await asyncio.to_thread(
+                    get_collection_points_count, coll_name, QDRANT_URL
+                )
+                if count >= 0:
+                    points_count = count
+                    qdrant_healthy = True
+            except Exception as e:
+                logger.debug(f"Failed to get collection point count: {e}")
+
+        # Determine if watcher is active (based on indexing state)
+        watcher_active = indexing_state in ("watching", "indexing")
+
+        return IndexingStatusResponse(
+            workspace_path=ws_path,
+            collection_name=coll_name or DEFAULT_COLLECTION,
+            repo_name=repo,
+            indexing_state=indexing_state,
+            points_count=points_count,
+            progress=progress,
+            started_at=started_at,
+            last_upload_at=None,  # TODO: track in state
+            last_indexed_at=last_indexed_at,
+            qdrant_healthy=qdrant_healthy,
+            watcher_active=watcher_active,
+            error=error_msg,
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting indexing status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/v1/delta/upload", response_model=UploadResponse)
 async def upload_delta_bundle(
     request: Request,
@@ -1515,8 +1735,8 @@ async def upload_delta_bundle(
                     marker_dir = Path(WORK_DIR) / ".codebase" / "repos" / slug_repo_name
                     marker_dir.mkdir(parents=True, exist_ok=True)
                     (marker_dir / ".ctxce_managed_upload").write_text("1\n")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 # Persist logical_repo_id mapping for this slug/workspace when provided (feature-gated)
                 if logical_repo_reuse_enabled() and logical_repo_id and update_workspace_state:
@@ -1575,8 +1795,8 @@ async def upload_delta_bundle(
                     try:
                         temp_file.close()
                         bundle_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                     raise HTTPException(
                         status_code=413,
                         detail=f"Bundle too large. Max size: {MAX_BUNDLE_SIZE_MB}MB"
@@ -1637,8 +1857,8 @@ async def upload_delta_bundle(
             if not handed_off:
                 try:
                     bundle_path.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     except HTTPException:
         raise

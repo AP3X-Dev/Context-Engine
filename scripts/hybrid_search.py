@@ -30,10 +30,20 @@ import json
 import math
 import logging
 import threading
+import contextvars
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, TYPE_CHECKING
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+
+
+# Placeholder for per-request ReFRAG config (currently uses env vars; see TODO below)
+# TODO: Implement contextvars-based config passing for concurrent request isolation
+def _get_contextvar_refrag_config() -> Dict[str, Any]:
+    """Placeholder for per-request config. Currently returns empty dict.
+    Config is read from env vars as fallback in _run_hybrid_search_impl.
+    """
+    return {}
 
 # Ensure /work or repo root is in sys.path for scripts imports
 _ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -164,6 +174,9 @@ from scripts.hybrid_embed import (
 )
 
 # Import unified cache objects from cache_manager when available
+# Use OrderedDict for fallback caches to support popitem(last=False) eviction
+from collections import OrderedDict as _OD
+
 if UNIFIED_CACHE_AVAILABLE:
     try:
         from scripts.cache_manager import get_search_cache, get_embedding_cache, get_expansion_cache
@@ -172,18 +185,14 @@ if UNIFIED_CACHE_AVAILABLE:
         _EXPANSION_CACHE = get_expansion_cache()
     except ImportError:
         _EMBED_CACHE = None
-        _RESULTS_CACHE = {}
+        _RESULTS_CACHE = _OD()  # Bounded OrderedDict for FIFO eviction
         _EXPANSION_CACHE = None
 else:
     _EMBED_CACHE = None
-    _RESULTS_CACHE = {}
+    _RESULTS_CACHE = _OD()  # Bounded OrderedDict for FIFO eviction
     _EXPANSION_CACHE = None
 
 # Lightweight local fallback cache for deterministic test hits
-try:
-    from collections import OrderedDict as _OD
-except Exception:
-    _OD = dict  # pragma: no cover
 _RESULTS_CACHE_OD = _OD()
 _RESULTS_LOCK = threading.RLock()
 
@@ -247,6 +256,23 @@ from scripts.hybrid_ranking import (
 )
 
 # ---------------------------------------------------------------------------
+# Elbow detection for adaptive filtering
+# ---------------------------------------------------------------------------
+# Lazy import to avoid hard numpy dependency when feature is disabled
+_filter_by_elbow = None
+
+def _get_filter_by_elbow():
+    """Lazy load filter_by_elbow to avoid numpy import when disabled."""
+    global _filter_by_elbow
+    if _filter_by_elbow is None:
+        from scripts.hybrid.elbow_detection import filter_by_elbow
+        _filter_by_elbow = filter_by_elbow
+    return _filter_by_elbow
+
+# Environment variable for elbow filtering (opt-in)
+ELBOW_FILTER_ENABLED = _env_truthy(os.environ.get("HYBRID_ELBOW_FILTER"), False)
+
+# ---------------------------------------------------------------------------
 # Re-exports from hybrid_expand
 # ---------------------------------------------------------------------------
 from scripts.hybrid_expand import (
@@ -260,6 +286,9 @@ from scripts.hybrid_expand import (
     _prf_terms_from_results,
     # Availability flag
     SEMANTIC_EXPANSION_AVAILABLE,
+    # IAEC exports
+    IAEC_ENABLED,
+    get_expansion_strategy,
 )
 
 # Conditionally re-export semantic expansion functions
@@ -502,11 +531,13 @@ def run_pure_dense_search(
     # Use query_embed if available (asymmetric models like Jina v3)
     try:
         embeddings = _embed_queries_cached(model, queries_to_embed)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to embed queries with cached method: {e}")
         embed_fn = getattr(model, "query_embed", None) or model.embed
         try:
             embeddings = list(embed_fn(queries_to_embed))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to embed queries with batch method, falling back to per-query: {e}")
             embeddings = [next(embed_fn([q])) for q in queries_to_embed]
 
     if not embeddings:
@@ -604,7 +635,8 @@ def _get_symbol_importance_boost(symbol: str, rec: Dict[str, Any]) -> float:
             from scripts.graph_backends.graph_rag import get_symbol_importance
             importance = get_symbol_importance(symbol) or 0.0
             _IMPORTANCE_CACHE[cache_key] = importance
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get symbol importance for '{symbol}': {e}")
             _IMPORTANCE_CACHE[cache_key] = 0.0
             importance = 0.0
 
@@ -658,7 +690,8 @@ def _inject_graph_neighbors(
     try:
         from scripts.graph_backends import get_graph_backend
         backend = get_graph_backend()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to load graph backend: {e}")
         backend = None
 
     neighbor_ids = set()
@@ -701,7 +734,8 @@ def _inject_graph_neighbors(
                     p_sym = edge.get("caller_symbol")
                     if p_path and p_sym:
                         neighbor_refs.append((p_path, p_sym))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to fetch graph edges for symbol '{sym}': {e}")
             continue
 
     # 1. Fetch by direct IDs (fast path)
@@ -715,8 +749,8 @@ def _inject_graph_neighbors(
             )
             for p in points:
                 _inject_point_to_map(p, score_map)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # 2. Fetch by path + symbol fallback (if IDs not available)
     if neighbor_refs and len(score_map) < 50:  # Safety cap for injection
@@ -749,7 +783,8 @@ def _inject_graph_neighbors(
                     )
                     if res:
                         _inject_point_to_map(res[0], score_map)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Suppressed exception, continuing: {e}")
                 continue
 
 def _inject_point_to_map(p: Any, score_map: Dict[str, Dict[str, Any]]) -> None:
@@ -795,6 +830,11 @@ def run_hybrid_search(
     mode: str | None = None,
     repo: str | list[str] | None = None,  # Filter by repo name(s); "*" to disable auto-filter
     per_query: int | None = None,  # Base candidate retrieval per query (default: adaptive)
+    # ReFRAG config - pass explicitly to avoid env var mutation (thread-safe)
+    refrag_mode: bool | None = None,
+    refrag_gate_first: bool | None = None,
+    refrag_candidates: int | None = None,
+    budget_tokens: int | None = None,
 ) -> List[Dict[str, Any]]:
     # Clear importance cache for fresh lookups
     _clear_importance_cache()
@@ -808,7 +848,11 @@ def run_hybrid_search(
         return _run_hybrid_search_impl(
             client, queries, limit, per_path, language, under, kind, symbol, ext,
             not_filter, case, path_regex, path_glob, not_glob, expand, model,
-            collection, mode, repo, per_query
+            collection, mode, repo, per_query,
+            refrag_mode=refrag_mode,
+            refrag_gate_first=refrag_gate_first,
+            refrag_candidates=refrag_candidates,
+            budget_tokens=budget_tokens,
         )
     finally:
         return_qdrant_client(client)
@@ -835,6 +879,11 @@ def _run_hybrid_search_impl(
     mode: str | None,
     repo: str | list[str] | None,
     per_query: int | None,
+    # ReFRAG config - pass explicitly to avoid env var mutation (thread-safe)
+    refrag_mode: bool | None = None,
+    refrag_gate_first: bool | None = None,
+    refrag_candidates: int | None = None,
+    budget_tokens: int | None = None,
 ) -> List[Dict[str, Any]]:
     """Internal implementation of hybrid search with provided client."""
     # Optional timing for debugging (set DEBUG_SEARCH_TIMING=1 to enable)
@@ -918,8 +967,8 @@ def _run_hybrid_search_impl(
                     stripped = s.lstrip("/")
                     out.append("/work/" + stripped)
                     out.append("/work/*/" + stripped)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Dedup while preserving order
         seen = set()
         dedup: list[str] = []
@@ -955,7 +1004,8 @@ def _run_hybrid_search_impl(
         llm_max = 0
     try:
         _semantic_enabled = _env_truthy(os.environ.get("SEMANTIC_EXPANSION_ENABLED"), True)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse SEMANTIC_EXPANSION_ENABLED, using default True: {e}")
         _semantic_enabled = True
     try:
         _semantic_max_terms = int(os.environ.get("SEMANTIC_EXPANSION_MAX_TERMS", "3") or 3)
@@ -995,7 +1045,8 @@ def _run_hybrid_search_impl(
                 _env_truthy(os.environ.get("HYBRID_MMR"), True),
                 str(mode or ""),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to create cache key: {e}")
             cache_key = None
         if cache_key is not None:
             if UNIFIED_CACHE_AVAILABLE:
@@ -1011,8 +1062,8 @@ def _run_hybrid_search_impl(
                             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                                 logger.debug("cache hit for hybrid results (fallback OD)")
                             return _RESULTS_CACHE_OD[cache_key]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             else:
                 with _RESULTS_LOCK:
                     if cache_key in _RESULTS_CACHE:
@@ -1108,8 +1159,8 @@ def _run_hybrid_search_impl(
                                 if os.environ.get("DEBUG_HYBRID_SEARCH"):
                                     logger.debug("duplicate served from cache (fallback OD)")
                                 return _RESULTS_CACHE_OD[cache_key]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 else:
                     with _RESULTS_LOCK:
                         if cache_key in _RESULTS_CACHE:
@@ -1141,7 +1192,8 @@ def _run_hybrid_search_impl(
                     key="metadata.path", match=models.MatchText(text=eff_not)
                 )
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"MatchText not supported, will use post-filter for exclusion: {e}")
             # Will be handled by post-filter
             pass
 
@@ -1184,6 +1236,20 @@ def _run_hybrid_search_impl(
     _query_weights: List[float] = [1.0] * len(qlist)  # Default weight 1.0 for originals
 
     if expand:
+        # IAEC: Classify intent to select expansion strategy
+        _iaec_intent: str | None = None
+        if IAEC_ENABLED and qlist:
+            try:
+                from scripts.mcp_router.intent import classify_intent, get_last_intent_debug
+                _iaec_intent = classify_intent(" ".join(qlist[:3]))
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    _debug = get_last_intent_debug()
+                    _iaec_conf = _debug.get("confidence", 0.0)
+                    logger.debug(f"IAEC intent: {_iaec_intent} (conf={_iaec_conf:.2f})")
+            except Exception as e:
+                if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                    logger.debug(f"IAEC intent classification failed: {e}")
+        
         # Use weighted expansion to track query quality tiers
         if SEMANTIC_EXPANSION_AVAILABLE:
             qlist, _query_weights = expand_queries_weighted(
@@ -1197,6 +1263,7 @@ def _run_hybrid_search_impl(
                 symbol=eff_symbol,
                 ext=eff_ext,
                 repo=eff_repo,
+                intent=_iaec_intent,
             )
         else:
             qlist = expand_queries(qlist, eff_language)
@@ -1235,8 +1302,8 @@ def _run_hybrid_search_impl(
                     last3 = "/".join(parts[-3:])
                     if last3 and last3 not in qlist:
                         qlist.append(last3)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # --- Code signal symbols: add extracted symbols from query analysis ---
     # These are passed via CODE_SIGNAL_SYMBOLS env var from repo_search
@@ -1247,8 +1314,8 @@ def _run_hybrid_search_impl(
                 sym = sym.strip()
                 if sym and len(sym) > 1 and sym not in qlist:
                     qlist.append(sym)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # === Large codebase scaling (automatic) ===
     _coll_stats = _get_collection_stats(client, _collection(collection))
@@ -1349,7 +1416,8 @@ def _run_hybrid_search_impl(
                     lex_vec = lex_hash_vector(qlist)
                     lex_results = lex_query(client, lex_vec, flt, _scaled_per_query, collection)
                     logger.warning("LEX_SPARSE_MODE sparse query failed (%s); fell back to dense lex", e)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Dense lex fallback also failed: {e}")
                     lex_results = []
             else:
                 lex_results = []
@@ -1361,7 +1429,8 @@ def _run_hybrid_search_impl(
     if _USE_ADAPT:
         try:
             _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W, _AD_ENT_W, _AD_REL_W = _adaptive_weights(_compute_query_stats(qlist))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to compute adaptive weights, using defaults: {e}")
             _AD_DENSE_W, _AD_LEX_VEC_W, _AD_LEX_TEXT_W = DENSE_WEIGHT, LEX_VECTOR_WEIGHT, LEXICAL_WEIGHT
             _AD_ENT_W, _AD_REL_W = ENTITY_DENSE_WEIGHT, RELATION_DENSE_WEIGHT
     else:
@@ -1473,25 +1542,39 @@ def _run_hybrid_search_impl(
         if embedded:
             dim = len(embedded[0])
             _ensure_collection(client, _collection(collection), dim, vec_name)
-    except Exception:
-        pass
+    except Exception as e:
+        # Log collection schema issues - these can cause search failures
+        logger.warning(f"Failed to ensure collection schema for {_collection(collection)}: {e}")
     # Optional gate-first using mini vectors to restrict dense search to candidates
     # Adaptive gating: disable for short/ambiguous queries to avoid over-filtering
     flt_gated = flt
     try:
-        gate_first = str(os.environ.get("REFRAG_GATE_FIRST", "0")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        refrag_on = str(os.environ.get("REFRAG_MODE", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        cand_n = int(os.environ.get("REFRAG_CANDIDATES", "200") or 200)
+        # Check contextvars first (set by context_answer for concurrent request isolation)
+        _cv_cfg = _get_contextvar_refrag_config()
+
+        # Use explicit parameters if provided, else contextvar, else env vars (thread-safe)
+        if refrag_gate_first is not None:
+            gate_first = refrag_gate_first
+        elif _cv_cfg.get("refrag_gate_first") is not None:
+            gate_first = _cv_cfg["refrag_gate_first"]
+        else:
+            gate_first = str(os.environ.get("REFRAG_GATE_FIRST", "0")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        if refrag_mode is not None:
+            refrag_on = refrag_mode
+        elif _cv_cfg.get("refrag_mode") is not None:
+            refrag_on = _cv_cfg["refrag_mode"]
+        else:
+            refrag_on = str(os.environ.get("REFRAG_MODE", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        if refrag_candidates is not None:
+            cand_n = refrag_candidates
+        elif _cv_cfg.get("refrag_candidates") is not None:
+            cand_n = _cv_cfg["refrag_candidates"]
+        else:
+            cand_n = int(os.environ.get("REFRAG_CANDIDATES", "200") or 200)
     except (ValueError, TypeError):
         gate_first, refrag_on, cand_n = False, False, 200
 
@@ -1518,8 +1601,8 @@ def _run_hybrid_search_impl(
                 cand_n = max(cand_n, limit * 5)
                 if os.environ.get("DEBUG_HYBRID_SEARCH"):
                     logger.debug(f"Adaptive gate relaxed candidate count to {cand_n} due to filters")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     _gate_first_ran = False
     if gate_first and refrag_on and not should_bypass_gate:
@@ -1534,6 +1617,12 @@ def _run_hybrid_search_impl(
                 for result in mini_results:
                     if hasattr(result, 'id'):
                         candidate_ids.add(result.id)
+                # Cap check: if union exceeds REFRAG_CANDIDATES, gating hurts more than helps
+                if len(candidate_ids) > cand_n:
+                    if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                        logger.debug(f"ReFRAG gate-first skipped: {len(candidate_ids)} candidates exceeds cap {cand_n}")
+                    candidate_ids = set()  # Clear to skip gating
+                    break
 
             if candidate_ids:
                 # Server-side gating without requiring payload fields: prefer HasIdCondition
@@ -1541,7 +1630,8 @@ def _run_hybrid_search_impl(
                 try:
                     gating_cond = _models.HasIdCondition(has_id=list(candidate_ids))
                     gating_kind = "has_id"
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"HasIdCondition not available, falling back to pid_str: {e}")
                     # Fallback to pid_str if HasIdCondition unavailable
                     id_vals = [str(cid) for cid in candidate_ids]
                     gating_cond = _models.FieldCondition(
@@ -1580,8 +1670,8 @@ def _run_hybrid_search_impl(
             _mn = [c for c in (getattr(flt_gated, "must_not", None) or []) if c is not None]
             if not _m and not _s and not _mn:
                 flt_gated = None
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     flt_gated = _sanitize_filter_obj(flt_gated)
 
@@ -1728,12 +1818,8 @@ def _run_hybrid_search_impl(
     # Optional ReFRAG-style mini-vector gating: add compact-vector RRF if enabled
     # Skip in dense-preserving mode (would distort pure dense ordering)
     try:
-        if not _DENSE_PRESERVING and not _gate_first_ran and os.environ.get("REFRAG_MODE", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
+        # Use explicit refrag_on from earlier (thread-safe, already resolved from param or env)
+        if not _DENSE_PRESERVING and not _gate_first_ran and refrag_on:
             try:
                 mini_queries = [_project_mini(list(v), MINI_VEC_DIM) for v in embedded]
                 mini_sets: List[List[Any]] = [
@@ -1763,10 +1849,10 @@ def _run_hybrid_search_impl(
                         dens = float(HYBRID_MINI_WEIGHT) * _scaled_rrf(rank)
                         score_map[pid]["d"] += dens
                         score_map[pid]["s"] += dens
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Enhanced PRF with semantic similarity
     # Skip in dense-preserving mode (would distort pure dense ordering)
@@ -1774,7 +1860,8 @@ def _run_hybrid_search_impl(
         # Local PRF dense weight (fallback if not set later)
         try:
             prf_dw = float(os.environ.get("PRF_DENSE_WEIGHT", "0.4") or 0.4)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse PRF_DENSE_WEIGHT, using default 0.4: {e}")
             prf_dw = 0.4
 
         try:
@@ -1847,11 +1934,13 @@ def _run_hybrid_search_impl(
     # Lightweight BM25-style lexical boost (default ON)
     try:
         _USE_BM25 = _env_truthy(os.environ.get("HYBRID_BM25"), True)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse HYBRID_BM25, using default True: {e}")
         _USE_BM25 = True
     try:
         _BM25_W = float(os.environ.get("HYBRID_BM25_WEIGHT", "0.2") or 0.2)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse HYBRID_BM25_WEIGHT, using default 0.2: {e}")
         _BM25_W = 0.2
     _bm25_tok_w = (
         _bm25_token_weights_from_results(
@@ -1867,23 +1956,28 @@ def _run_hybrid_search_impl(
     if not _DENSE_PRESERVING and not _use_dense_only and prf_enabled and score_map:
         try:
             top_docs = int(os.environ.get("PRF_TOP_DOCS", "8") or 8)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse PRF_TOP_DOCS, using default 8: {e}")
             top_docs = 8
         try:
             max_terms = int(os.environ.get("PRF_MAX_TERMS", "6") or 6)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse PRF_MAX_TERMS, using default 6: {e}")
             max_terms = 6
         try:
             extra_q = int(os.environ.get("PRF_EXTRA_QUERIES", "4") or 4)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse PRF_EXTRA_QUERIES, using default 4: {e}")
             extra_q = 4
         try:
             prf_dw = float(os.environ.get("PRF_DENSE_WEIGHT", "0.4") or 0.4)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse PRF_DENSE_WEIGHT, using default 0.4: {e}")
             prf_dw = 0.4
         try:
             prf_lw = float(os.environ.get("PRF_LEX_WEIGHT", "0.6") or 0.6)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse PRF_LEX_WEIGHT, using default 0.6: {e}")
             prf_lw = 0.6
         terms = _prf_terms_from_results(
             score_map, top_docs=top_docs, max_terms=max_terms
@@ -1909,12 +2003,14 @@ def _run_hybrid_search_impl(
                 else:
                     lex_vec2 = lex_hash_vector(prf_qs)
                     lex_results2 = lex_query(client, lex_vec2, flt, _prf_limit, collection)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"PRF lexical query failed: {e}")
                 if LEX_SPARSE_MODE:
                     try:
                         lex_vec2 = lex_hash_vector(prf_qs)
                         lex_results2 = lex_query(client, lex_vec2, flt, _prf_limit, collection)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"PRF dense lex fallback also failed: {e}")
                         lex_results2 = []
                 else:
                     lex_results2 = []
@@ -1971,8 +2067,8 @@ def _run_hybrid_search_impl(
                         dens = prf_dw * _scaled_rrf(rank)
                         score_map[pid]["d"] += dens
                         score_map[pid]["s"] += dens
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"PRF dense pass failed: {e}")
     _dt("prf_passes")
 
     # Add dense scores (with scaled RRF and tier-based query weighting)
@@ -2161,8 +2257,8 @@ def _run_hybrid_search_impl(
                 if fname_boost > 0:
                     rec["fname"] += fname_boost
                     rec["s"] += fname_boost
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
         if CORE_FILE_BOOST > 0.0 and path and is_core_file(path):
             rec["core"] += CORE_FILE_BOOST
             rec["s"] += CORE_FILE_BOOST
@@ -2226,8 +2322,8 @@ def _run_hybrid_search_impl(
                         # Strong penalty for irrelevant memories
                         rec["mem_penalty"] -= 0.5
                         rec["s"] -= 0.5
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
     _dt("boost_loop")
 
@@ -2267,7 +2363,8 @@ def _run_hybrid_search_impl(
     try:
         kb = float(os.environ.get("HYBRID_KEYWORD_BUMP", "0.3") or 0.3)
         kcap = float(os.environ.get("HYBRID_KEYWORD_CAP", "0.6") or 0.6)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse keyword bump settings, using defaults: {e}")
         kb, kcap = 0.3, 0.6
     # Build lowercase keyword set from queries (simple split, keep >=3 chars + special tokens)
     kw: set[str] = set()
@@ -2314,7 +2411,8 @@ def _run_hybrid_search_impl(
             p = os.path.join("/work", p)
         try:
             cache_key = os.path.realpath(p)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to resolve realpath for {p}, using original: {e}")
             cache_key = p  # Fallback if realpath fails
 
         with _file_lines_cache_lock:
@@ -2362,8 +2460,8 @@ def _run_hybrid_search_impl(
                     _file_lines_cache_total_size += file_size
                     _file_lines_cache.move_to_end(cache_key)
                 return lines
-        except Exception:
-            logging.debug("Failed to read file for snippet lines: %s", path, exc_info=True)
+        except Exception as e:
+            logger.debug(f"Failed to read file for snippet lines: {path}: {e}")
         return []
 
     def _snippet_contains(md: dict) -> int:
@@ -2387,7 +2485,8 @@ def _run_hybrid_search_impl(
                 if t and t in lt:
                     hits += 1
             return hits
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check snippet keyword hits: {e}")
             return 0
 
     def _snippet_comment_ratio(md: dict) -> float:
@@ -2444,7 +2543,8 @@ def _run_hybrid_search_impl(
             if total == 0:
                 return 0.0
             return comment / float(total)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to compute comment ratio: {e}")
             return 0.0
 
     # Apply bump to top-N ranked (limited for speed)
@@ -2469,8 +2569,8 @@ def _run_hybrid_search_impl(
                     if pen > 0:
                         m["cmt"] = float(m.get("cmt", 0.0)) - pen
                         m["s"] -= pen
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to apply comment penalty: {e}")
 
     # Re-sort after bump
     ranked = sorted(ranked, key=_tie_key)
@@ -2513,11 +2613,13 @@ def _run_hybrid_search_impl(
     if not _DENSE_PRESERVING and _env_truthy(os.environ.get("HYBRID_MMR"), True):
         try:
             _mmr_k = min(len(ranked), max(20, int(os.environ.get("MMR_K", str((limit or 10) * 3)) or 30)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse MMR_K, using adaptive default: {e}")
             _mmr_k = min(len(ranked), max(20, (limit or 10) * 3))
         try:
             _mmr_lambda = float(os.environ.get("MMR_LAMBDA", "0.7") or 0.7)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse MMR_LAMBDA, using default 0.7: {e}")
             _mmr_lambda = 0.7
         if (limit or 0) >= 10 or (not per_path) or (per_path <= 0):
             ranked = _mmr_diversify(ranked, k=_mmr_k, lambda_=_mmr_lambda)
@@ -2559,8 +2661,8 @@ def _run_hybrid_search_impl(
                 try:
                     if not _re.search(eff_path_regex, path, flags=flags):
                         return False
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             if eff_path_globs_norm and not any(_match_glob(g, path) or _match_glob(g, rel) for g in eff_path_globs_norm):
                 return False
             return True
@@ -2611,15 +2713,15 @@ def _run_hybrid_search_impl(
                 elif path:
                     # File-level entity (fallback when no symbol)
                     return f"file:{path}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Fallback: use point ID (no deduplication)
         try:
             pt_id = m.get("pt")
             if pt_id and hasattr(pt_id, "id"):
                 return f"point:{pt_id.id}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         return f"point:{id(m)}"
 
     if _entity_dedup_enabled:
@@ -2680,14 +2782,16 @@ def _run_hybrid_search_impl(
             _p = str(_md.get("path") or "")
             if _pp and _p:
                 dir_to_paths.setdefault(_pp, set()).add(_p)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to build directory to paths map: {e}")
         dir_to_paths = {}
     # Precompute known paths for quick membership checks
     all_paths: set = set()
     try:
         for _s in dir_to_paths.values():
             all_paths |= set(_s)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to precompute all paths: {e}")
         all_paths = set()
 
     # Build path -> host_path map so we can emit related_paths in host space
@@ -2701,7 +2805,8 @@ def _run_hybrid_search_impl(
             _h = str(_md.get("host_path") or "").strip()
             if _p and _h:
                 host_map[_p] = _h
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to build host path map: {e}")
         host_map = {}
 
     items: List[Dict[str, Any]] = []
@@ -2784,8 +2889,8 @@ def _run_hybrid_search_impl(
                 for p in dir_to_paths[_pp]:
                     if p != _path:
                         _related_set.add(p)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Import-based hints: resolve relative/quoted path-like imports
         try:
             import re as _re, posixpath as _ppath
@@ -2827,7 +2932,8 @@ def _run_hybrid_search_impl(
                         if c.startswith("/work/") and c[len("/work/"):] in all_paths:
                             out.add(c[len("/work/"):])
                     return list(out)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to resolve path segment '{seg}': {e}")
                     return []
 
             for imp in (_imports or []):
@@ -2835,8 +2941,8 @@ def _run_hybrid_search_impl(
                     for cand in _resolve(seg):
                         if cand != _path:
                             _related_set.add(cand)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to resolve import-based related paths: {e}")
 
         _related = sorted(_related_set)[:10]
         # Align related_paths with PATH_EMIT_MODE when possible: in host/auto
@@ -2845,7 +2951,8 @@ def _run_hybrid_search_impl(
         _related_out = _related
         try:
             _mode_related = str(os.environ.get("PATH_EMIT_MODE", "auto")).strip().lower()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse PATH_EMIT_MODE, using default auto: {e}")
             _mode_related = "auto"
         if _mode_related in {"host", "auto"}:
             try:
@@ -2853,7 +2960,8 @@ def _run_hybrid_search_impl(
                 for rp in _related:
                     _mapped.append(host_map.get(rp, rp))
                 _related_out = _mapped
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to map related paths to host paths: {e}")
                 _related_out = _related
         # Best-effort snippet text directly from payload for downstream LLM stitching
         _payload = (m["pt"].payload or {}) if m.get("pt") is not None else {}
@@ -2914,8 +3022,8 @@ def _run_hybrid_search_impl(
                             _rel = _emit_path[len(_cwd):]
                             if _rel:
                                 _emit_path = "/work/" + _rel
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Extract payload for benchmark consumers (code_id, _id, etc.)
         _payload_out = None
@@ -2926,8 +3034,8 @@ def _run_hybrid_search_impl(
                 _payload_out = dict(_pt.payload)
                 # Remove 'metadata' if present - it's already unpacked into result fields
                 _payload_out.pop("metadata", None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         item = {
             "score": round(float(m["s"]), 4),
@@ -2953,6 +3061,24 @@ def _run_hybrid_search_impl(
         if why is not None:
             item["why"] = why
         items.append(item)
+
+    # Apply elbow detection filter if enabled (adaptive threshold based on score distribution)
+    if ELBOW_FILTER_ENABLED and items:
+        original_count = len(items)
+        # Use rerank_score if available, otherwise use score
+        items = _get_filter_by_elbow()(
+            items,
+            score_key="rerank_score",
+            fallback_score_key="score",
+            min_results=max(1, limit // 2) if limit > 0 else 0,  # Keep at least half the requested limit
+        )
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(
+                f"Elbow filter: {original_count} -> {len(items)} results "
+                f"(threshold based on curvature method)"
+            )
+        _dt("elbow_filter")
+
     if _USE_CACHE and cache_key is not None:
         if UNIFIED_CACHE_AVAILABLE:
             _RESULTS_CACHE.set(cache_key, items)
@@ -2964,10 +3090,11 @@ def _run_hybrid_search_impl(
                         # pop oldest inserted (like LRU/FIFO)
                         try:
                             _RESULTS_CACHE_OD.popitem(last=False)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to evict from cache: {e}")
                             break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to mirror results to fallback cache: {e}")
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                 logger.debug("cache store for hybrid results")
         else:

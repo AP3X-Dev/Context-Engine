@@ -685,6 +685,204 @@ async function importProfilesWizard() {
   _vscode.window.showInformationMessage(`Context Engine Uploader: imported ${incoming.length} profile(s).`);
 }
 
+async function deleteProfileWizard(profileIdFromContext) {
+  if (!_vscode) {
+    return;
+  }
+  const db = loadProfilesDb();
+  const profiles = Array.isArray(db.profiles) ? db.profiles : [];
+  if (!profiles.length) {
+    _vscode.window.showInformationMessage('Context Engine: no profiles to delete.');
+    return;
+  }
+
+  const activeId = getActiveProfileId();
+  let targetId = profileIdFromContext;
+  let targetLabel;
+
+  if (targetId) {
+    const targetProfile = profiles.find(p => p && p.id === targetId);
+    if (targetProfile) {
+      targetLabel = targetProfile.name || targetProfile.id;
+    }
+  }
+
+  if (!targetId) {
+    const items = profiles
+      .filter(p => p && typeof p === 'object' && p.id)
+      .map(p => ({
+        label: `${(p.name || p.id || '').trim() || 'Unnamed profile'}${p.id === activeId ? ' (active)' : ''}`,
+        description: p.id,
+        id: p.id,
+      }));
+
+    const picked = await _vscode.window.showQuickPick(items, {
+      placeHolder: 'Select profile to delete',
+      canPickMany: false,
+    });
+    if (!picked) {
+      return;
+    }
+    targetId = picked.id;
+    targetLabel = picked.label;
+  }
+
+  const confirm = await _vscode.window.showWarningMessage(
+    `Delete profile "${targetLabel}"?`,
+    { modal: true },
+    'Delete',
+  );
+  if (confirm !== 'Delete') {
+    return;
+  }
+
+  db.profiles = profiles.filter(p => p && p.id !== targetId);
+
+  if (!await saveProfilesDb(db)) {
+    _vscode.window.showErrorMessage('Context Engine: failed to save profiles database after delete.');
+    return;
+  }
+
+  if (activeId === targetId) {
+    await setActiveProfileId(undefined);
+    _vscode.window.showInformationMessage(`Context Engine: deleted profile "${targetLabel}" and cleared active profile.`);
+  } else {
+    _vscode.window.showInformationMessage(`Context Engine: deleted profile "${targetLabel}".`);
+  }
+}
+
+async function renameProfileWizard(profileIdFromContext) {
+  if (!_vscode) {
+    return;
+  }
+  const db = loadProfilesDb();
+  const profiles = Array.isArray(db.profiles) ? db.profiles : [];
+  if (!profiles.length) {
+    _vscode.window.showInformationMessage('Context Engine: no profiles to rename.');
+    return;
+  }
+
+  let targetProfile;
+  if (profileIdFromContext) {
+    targetProfile = profiles.find(p => p && p.id === profileIdFromContext);
+  }
+
+  if (!targetProfile) {
+    const items = profiles.map(p => ({
+      label: p.name || p.id,
+      description: p.id,
+      id: p.id,
+    }));
+
+    const picked = await _vscode.window.showQuickPick(items, {
+      placeHolder: 'Select profile to rename',
+      canPickMany: false,
+    });
+    if (!picked) {
+      return;
+    }
+    targetProfile = profiles.find(p => p && p.id === picked.id);
+  }
+
+  if (!targetProfile) {
+    return;
+  }
+
+  const newName = await _vscode.window.showInputBox({
+    prompt: 'Enter new name for the profile',
+    value: targetProfile.name || targetProfile.id,
+    validateInput: (value) => {
+      if (!value || !value.trim()) {
+        return 'Name cannot be empty';
+      }
+      return undefined;
+    },
+  });
+
+  if (!newName) {
+    return;
+  }
+
+  targetProfile.name = newName.trim();
+
+  if (!await saveProfilesDb(db)) {
+    _vscode.window.showErrorMessage('Context Engine: failed to save profiles database after rename.');
+    return;
+  }
+
+  _vscode.window.showInformationMessage(`Context Engine: renamed profile to "${newName.trim()}".`);
+}
+
+async function duplicateProfileWizard(profileIdFromContext) {
+  if (!_vscode) {
+    return;
+  }
+  const db = loadProfilesDb();
+  const profiles = Array.isArray(db.profiles) ? db.profiles : [];
+  if (!profiles.length) {
+    _vscode.window.showInformationMessage('Context Engine: no profiles to duplicate.');
+    return;
+  }
+
+  let sourceProfile;
+  if (profileIdFromContext) {
+    sourceProfile = profiles.find(p => p && p.id === profileIdFromContext);
+  }
+
+  if (!sourceProfile) {
+    const items = profiles.map(p => ({
+      label: p.name || p.id,
+      description: p.id,
+      id: p.id,
+    }));
+
+    const picked = await _vscode.window.showQuickPick(items, {
+      placeHolder: 'Select profile to duplicate',
+      canPickMany: false,
+    });
+    if (!picked) {
+      return;
+    }
+    sourceProfile = profiles.find(p => p && p.id === picked.id);
+  }
+
+  if (!sourceProfile) {
+    return;
+  }
+
+  const newName = await _vscode.window.showInputBox({
+    prompt: 'Enter name for the duplicated profile',
+    value: `${sourceProfile.name || sourceProfile.id} (Copy)`,
+    validateInput: (value) => {
+      if (!value || !value.trim()) {
+        return 'Name cannot be empty';
+      }
+      return undefined;
+    },
+  });
+
+  if (!newName) {
+    return;
+  }
+
+  const newId = `p_${Math.random().toString(36).slice(2, 12)}_${Date.now().toString(36)}`;
+  const newProfile = {
+    ...JSON.parse(JSON.stringify(sourceProfile)),
+    id: newId,
+    name: newName.trim(),
+    createdAt: Date.now(),
+  };
+
+  db.profiles.push(newProfile);
+
+  if (!await saveProfilesDb(db)) {
+    _vscode.window.showErrorMessage('Context Engine: failed to save profiles database after duplicate.');
+    return;
+  }
+
+  _vscode.window.showInformationMessage(`Context Engine: created duplicate profile "${newName.trim()}".`);
+}
+
 function registerCommands(deps) {
   if (!_vscode || !_context) {
     throw new Error('profiles.registerCommands called before profiles.init');
@@ -695,6 +893,9 @@ function registerCommands(deps) {
     _vscode.commands.registerCommand('contextEngineUploader.createProfileFromCurrentSettings', () => createProfileFromCurrentSettingsWizard()),
     _vscode.commands.registerCommand('contextEngineUploader.exportProfiles', () => exportProfilesWizard()),
     _vscode.commands.registerCommand('contextEngineUploader.importProfiles', () => importProfilesWizard()),
+    _vscode.commands.registerCommand('contextEngineUploader.deleteProfile', (item) => deleteProfileWizard(item && item.id)),
+    _vscode.commands.registerCommand('contextEngineUploader.renameProfile', (item) => renameProfileWizard(item && item.id)),
+    _vscode.commands.registerCommand('contextEngineUploader.duplicateProfile', (item) => duplicateProfileWizard(item && item.id)),
   ];
 }
 

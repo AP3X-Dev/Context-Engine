@@ -11,11 +11,17 @@ def test_rerank_timeout_floor_and_env_defaults(monkeypatch):
     # Force rerank via env default when arg not provided
     monkeypatch.setenv("RERANKER_ENABLED", "1")
     monkeypatch.setenv("RERANK_IN_PROCESS", "0")
+    # Disable learning reranker to force subprocess rerank path
+    monkeypatch.setenv("RERANK_LEARNING", "0")
+    # Force subprocess hybrid search to ensure rerank subprocess is called
+    monkeypatch.delenv("HYBRID_IN_PROCESS", raising=False)
 
     # Floor 1500ms; client asks 200ms -> effective >= 1500ms -> 1.5s
     monkeypatch.setenv("RERANK_TIMEOUT_FLOOR_MS", "1500")
     # Fix default timeout for test determinism (CI may set a higher value)
     monkeypatch.setenv("RERANKER_TIMEOUT_MS", "200")
+    # Override the min clamp so the floor takes effect
+    monkeypatch.setenv("RERANK_TIMEOUT_MIN_MS", "0")
 
     # Fake _run_async to capture calls
     calls = []
@@ -43,7 +49,7 @@ def test_rerank_timeout_floor_and_env_defaults(monkeypatch):
     monkeypatch.setattr(srv, "_run_async", fake_run)
 
     # Call repo_search with no rerank_enabled arg to pick env default
-    res = srv.asyncio.get_event_loop().run_until_complete(
+    res = srv.asyncio.run(
         srv.repo_search(query="foo", limit=3, per_path=1)
     )
 

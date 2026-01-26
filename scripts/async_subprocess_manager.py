@@ -220,7 +220,8 @@ class AsyncSubprocessManager:
         This is useful for operations that don't benefit from true async I/O
         but need to run without blocking the event loop.
         """
-        loop = asyncio.get_event_loop()
+        # Use asyncio.get_running_loop() instead of deprecated get_event_loop()
+        loop = asyncio.get_running_loop()
         
         try:
             # Run in thread pool
@@ -407,12 +408,17 @@ class AsyncSubprocessManager:
     def __del__(self):
         """Destructor to ensure cleanup."""
         try:
-            # Clean up remaining processes
-            loop = asyncio.get_event_loop()
+            # Clean up remaining processes - use get_running_loop() with fallback
+            # In destructors, the event loop may not be running, so we need to be defensive
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop - can't schedule cleanup
+                return
             if loop and not loop.is_closed():
                 loop.create_task(self.cleanup_all_processes())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 # Global async subprocess manager instance
@@ -462,13 +468,17 @@ async def run_subprocess_async(
         Dictionary with execution results
     """
     manager = await get_async_subprocess_manager()
-    
+
     if timeout is not None:
-        # Create a temporary manager with custom timeout
+        # Create a temporary manager with custom timeout and ensure cleanup
         temp_manager = AsyncSubprocessManager(timeout=timeout)
-        return await temp_manager.run_async(
-            cmd, env=env, cwd=cwd, input_data=input_data, shell=shell
-        )
+        try:
+            return await temp_manager.run_async(
+                cmd, env=env, cwd=cwd, input_data=input_data, shell=shell
+            )
+        finally:
+            # Clean up any lingering processes from the temp manager
+            await temp_manager.cleanup_all_processes()
     else:
         return await manager.run_async(
             cmd, env=env, cwd=cwd, input_data=input_data, shell=shell

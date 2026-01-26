@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import subprocess
 import sys
@@ -25,6 +26,8 @@ from scripts.workspace_state import (
 )
 
 from .config import QDRANT_URL, ROOT, ROOT_DIR, LOGGER as logger
+
+logger = logging.getLogger(__name__)
 from .utils import (
     _detect_repo_for_file, 
     _get_collection_for_file,
@@ -55,8 +58,8 @@ def _process_git_history_manifest(
                 f"[git_history_manifest] launching ingest_history.py for {p} "
                 f"collection={collection} repo={repo_name}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Use subprocess.run for better error observability.
         # NOTE: This blocks until ingest_history.py completes. If history ingestion
         # is slow, this may need revisiting (e.g., revert to Popen fire-and-forget
@@ -88,8 +91,8 @@ def _advance_progress(
             len(repo_files),
             current_file,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
 
 def _build_subprocess_env(
@@ -101,8 +104,8 @@ def _build_subprocess_env(
     try:
         if env_snapshot:
             env.update({str(k): str(v) for k, v in env_snapshot.items() if k})
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     if collection:
         env["COLLECTION_NAME"] = collection
     if QDRANT_URL:
@@ -209,11 +212,11 @@ def _process_paths(
                         repo_name=repo_name,
                         pending=True,
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             _set_status_indexing(str(repo_path), len(repo_files))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     repo_progress: Dict[str, int] = {key: 0 for key in repo_groups.keys()}
 
@@ -250,8 +253,8 @@ def _process_paths(
                 try:
                     idx.delete_points_by_path(client, collection, str(p))
                     safe_print(f"[deleted] {p} -> {collection}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 # Also delete graph edges for this file
                 try:
                     from scripts.graph_backends import get_graph_backend
@@ -269,13 +272,13 @@ def _process_paths(
                         )
                         graph_coll = get_graph_collection_name(collection)
                         delete_edges_by_path(client, graph_coll, str(p), repo=repo_name)
-                except Exception:
-                    pass  # Graph collection may not exist yet
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")  # Graph collection may not exist yet
             try:
                 if repo_name:
                     remove_cached_file(str(p), repo_name)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             _log_activity(repo_key, "deleted", p)
             _advance_progress(repo_progress, repo_key, repo_files, started_at, p)
             continue
@@ -341,8 +344,8 @@ def _process_paths(
                 repo_name=repo_name,
                 status={"state": "watching"},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
@@ -372,8 +375,8 @@ def _run_indexing_strategy(
         return False
     try:
         idx.ensure_collection_and_indexes_once(client, collection, model_dim, vector_name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     text, file_hash = _read_text_and_sha1(path)
     ok = False
@@ -391,7 +394,9 @@ def _run_indexing_strategy(
                 ok = True
                 raise _SkipUnchanged()
             try:
-                use_smart, smart_reason = idx.should_use_smart_reindexing(str(path), file_hash)
+                use_smart, smart_reason = idx.should_use_smart_reindexing(
+                    str(path), file_hash, content=text, language=language
+                )
             except Exception:
                 use_smart, smart_reason = False, "smart_check_failed"
             # Bootstrap: if we have no symbol cache yet, still run smart path once

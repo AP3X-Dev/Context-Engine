@@ -1,13 +1,52 @@
+const net = require('net');
+
+// Max attempts to find an available port (auto-increment from base port)
+const MAX_PORT_ATTEMPTS = 10;
+
+/**
+ * Check if a port is available by attempting to bind to it.
+ * Returns a Promise that resolves to true if port is free, false otherwise.
+ */
+function isPortAvailable(port, host = '127.0.0.1') {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => {
+      // Port is in use or inaccessible
+      resolve(false);
+    });
+    server.once('listening', () => {
+      server.close(() => {
+        resolve(true);
+      });
+    });
+    server.listen(port, host);
+  });
+}
+
+/**
+ * Find the first available port starting from basePort.
+ * Returns the port number if found, undefined if all attempts fail.
+ */
+async function findAvailablePort(basePort, maxAttempts = MAX_PORT_ATTEMPTS, host = '127.0.0.1') {
+  for (let i = 0; i < maxAttempts; i++) {
+    const port = basePort + i;
+    const available = await isPortAvailable(port, host);
+    if (available) {
+      return port;
+    }
+  }
+  return undefined;
+}
+
 function createBridgeManager(deps) {
   const vscode = deps.vscode;
   const spawn = deps.spawn;
+  const path = deps.path;
+  const fs = deps.fs;
   const log = deps.log;
 
   const getEffectiveConfig = deps.getEffectiveConfig;
   const resolveBridgeWorkspacePath = deps.resolveBridgeWorkspacePath;
-  const normalizeBridgeUrl = deps.normalizeBridgeUrl;
-  const normalizeWorkspaceForBridge = deps.normalizeWorkspaceForBridge;
-  const resolveBridgeCliInvocation = deps.resolveBridgeCliInvocation;
   const attachOutput = deps.attachOutput;
   const terminateProcess = deps.terminateProcess;
   const scheduleMcpConfigRefreshAfterBridge = deps.scheduleMcpConfigRefreshAfterBridge;
@@ -16,6 +55,81 @@ function createBridgeManager(deps) {
   let httpBridgePort;
   let httpBridgeWorkspace;
   let stopInFlight;
+
+  function normalizeBridgeUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return '';
+    }
+    const trimmed = url.trim();
+    if (!trimmed) {
+      return '';
+    }
+    return trimmed;
+  }
+
+  function normalizeWorkspaceForBridge(workspacePath) {
+    if (!workspacePath || typeof workspacePath !== 'string') {
+      return '';
+    }
+    try {
+      const resolved = path.resolve(workspacePath);
+      if (process.platform === 'win32') {
+        return resolved.replace(/\//g, '\\');
+      }
+      return resolved;
+    } catch (_) {
+      return workspacePath;
+    }
+  }
+
+  function findLocalBridgeBin() {
+    let localOnly = true;
+    let configured = '';
+    try {
+      const settings = getEffectiveConfig();
+      localOnly = settings.get('mcpBridgeLocalOnly', true);
+      configured = (settings.get('mcpBridgeBinPath') || '').trim();
+    } catch (_) {
+      // ignore config lookup failures
+    }
+    // When local-only is disabled, skip local resolution and always fall back to npx
+    if (localOnly === false) {
+      return undefined;
+    }
+    if (configured && fs.existsSync(configured)) {
+      return path.resolve(configured);
+    }
+    const envOverride = (process.env.CTXCE_BRIDGE_BIN || '').trim();
+    if (envOverride && fs.existsSync(envOverride)) {
+      return path.resolve(envOverride);
+    }
+    return undefined;
+  }
+
+  function resolveBridgeCliInvocation() {
+    const binPath = findLocalBridgeBin();
+    if (binPath) {
+      return {
+        command: 'node',
+        args: [binPath],
+        kind: 'local'
+      };
+    }
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      return {
+        command: 'cmd',
+        args: ['/c', 'npx', '@context-engine-bridge/context-engine-mcp-bridge'],
+        kind: 'npx'
+      };
+    }
+    return {
+      command: 'npx',
+      args: ['@context-engine-bridge/context-engine-mcp-bridge'],
+      kind: 'npx'
+    };
+  }
+
 
   function getState() {
     return {
@@ -35,6 +149,12 @@ function createBridgeManager(deps) {
 
   function resolveBridgeHttpUrl() {
     try {
+      // If bridge is running, return the actual port it's listening on
+      if (httpBridgeProcess && httpBridgePort) {
+        const hostname = '127.0.0.1';
+        return `http://${hostname}:${httpBridgePort}/mcp`;
+      }
+      // Otherwise fall back to configured port (pre-start state)
       const settings = getEffectiveConfig();
       let port = Number(settings.get('mcpBridgePort') || 30810);
       if (!Number.isFinite(port) || port <= 0) {
@@ -100,6 +220,21 @@ function createBridgeManager(deps) {
       vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for HTTP bridge.');
       return undefined;
     }
+
+    // Find an available port, auto-incrementing if the configured port is in use
+    const basePort = options.port;
+    const actualPort = await findAvailablePort(basePort, MAX_PORT_ATTEMPTS);
+    if (!actualPort) {
+      const errorMsg = `Context Engine Uploader: could not find available port in range ${basePort}-${basePort + MAX_PORT_ATTEMPTS - 1}. Check if another process is using these ports.`;
+      log(errorMsg);
+      vscode.window.showErrorMessage(errorMsg);
+      return undefined;
+    }
+
+    if (actualPort !== basePort) {
+      log(`Configured port ${basePort} is in use; using port ${actualPort} instead.`);
+    }
+
     const cliArgs = ['mcp-http-serve'];
     if (options.workspacePath) {
       cliArgs.push('--workspace', normalizeWorkspaceForBridge(options.workspacePath));
@@ -110,9 +245,9 @@ function createBridgeManager(deps) {
     if (options.memoryUrl) {
       cliArgs.push('--memory-url', options.memoryUrl);
     }
-    if (options.port) {
-      cliArgs.push('--port', String(options.port));
-    }
+    // Use the actually resolved port (may differ from config if port was in use)
+    cliArgs.push('--port', String(actualPort));
+
     const finalArgs = [...invocation.args, ...cliArgs];
     log(`Starting HTTP MCP bridge via ${invocation.command} ${finalArgs.join(' ')}`);
     const child = spawn(invocation.command, finalArgs, {
@@ -120,7 +255,7 @@ function createBridgeManager(deps) {
       env: process.env,
     });
     httpBridgeProcess = child;
-    httpBridgePort = options.port;
+    httpBridgePort = actualPort;
     httpBridgeWorkspace = options.workspacePath;
     attachOutput(child, 'mcp-http');
     child.on('exit', (code, signal) => {
@@ -139,11 +274,11 @@ function createBridgeManager(deps) {
         httpBridgeWorkspace = undefined;
       }
     });
-    vscode.window.showInformationMessage(`Context Engine HTTP MCP bridge listening on http://127.0.0.1:${options.port}/mcp`);
+    vscode.window.showInformationMessage(`Context Engine HTTP MCP bridge listening on http://127.0.0.1:${actualPort}/mcp`);
     if (typeof scheduleMcpConfigRefreshAfterBridge === 'function') {
       scheduleMcpConfigRefreshAfterBridge();
     }
-    return options.port;
+    return actualPort;
   }
 
   function stop() {
@@ -206,7 +341,7 @@ function createBridgeManager(deps) {
   function dispose() {
     try {
       // Best-effort shutdown; ignore errors
-      stop().catch(() => {});
+      stop().catch(() => { });
     } catch (_) {
       // ignore
     }
@@ -222,6 +357,10 @@ function createBridgeManager(deps) {
     stop,
     handleSettingsChanged,
     dispose,
+    // Utility functions for mcpConfigManager
+    normalizeBridgeUrl,
+    normalizeWorkspaceForBridge,
+    resolveBridgeCliInvocation,
   };
 }
 

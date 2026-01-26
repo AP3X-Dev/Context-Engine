@@ -1,15 +1,60 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
 
 from qdrant_client import QdrantClient
 from watchdog.observers import Observer
 
+
+logger = logging.getLogger(__name__)
+
+# Health server state
+_watcher_healthy = False
+_watcher_started_at: Optional[str] = None
+
+
+def _start_health_server() -> bool:
+    """Start a lightweight HTTP health server in a background thread."""
+    port = int(os.environ.get("WATCHER_HEALTH_PORT", "18004") or "18004")
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/readyz" or self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                payload = {
+                    "ok": _watcher_healthy,
+                    "app": "watcher",
+                    "started_at": _watcher_started_at,
+                }
+                self.wfile.write(json.dumps(payload).encode("utf-8"))
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *args, **kwargs):
+            # Quiet health server logs
+            return
+
+    try:
+        srv = HTTPServer(("0.0.0.0", port), HealthHandler)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        print(f"[health] Health server started on port {port}")
+        return True
+    except Exception as e:
+        print(f"[health] Failed to start health server: {e}")
+        return False
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -59,6 +104,13 @@ def get_collection() -> str:
 
 
 def main() -> None:
+    global _watcher_healthy, _watcher_started_at
+    from datetime import datetime, timezone
+
+    # Start health server first (even before full initialization)
+    _start_health_server()
+    _watcher_started_at = datetime.now(timezone.utc).isoformat()
+
     # Resolve collection name from workspace state before any client/state ops
     try:
         from scripts.workspace_state import get_collection_name_with_staging as _get_coll
@@ -79,8 +131,8 @@ def main() -> None:
             resolved = _get_coll(str(ROOT))
             if resolved:
                 default_collection = resolved
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     if multi_repo_enabled:
         print("[multi_repo] Multi-repo mode enabled - per-repo collections in use")
     else:
@@ -163,8 +215,8 @@ def main() -> None:
             idx.ensure_collection_and_indexes_once(
                 client, default_collection, model_dim, vector_name
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         _start_pseudo_backfill_worker(client, default_collection, model_dim, vector_name)
 
@@ -185,12 +237,18 @@ def main() -> None:
     obs.schedule(handler, str(ROOT), recursive=True)
     obs.start()
 
+    # Mark watcher as healthy after observer starts
+    global _watcher_healthy
+    _watcher_healthy = True
+    print("[health] Watcher is now healthy and monitoring for changes")
+
     try:
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
         pass
     finally:
+        _watcher_healthy = False
         obs.stop()
         obs.join()
 

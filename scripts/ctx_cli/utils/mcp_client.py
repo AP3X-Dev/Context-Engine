@@ -11,8 +11,11 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 from scripts.ctx_cli.utils.config import ConfigManager
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 class MCPClient:
     """
     MCP HTTP client with session handshake.
@@ -158,8 +161,8 @@ class MCPClient:
             error_body = ""
             try:
                 error_body = e.read().decode("utf-8")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
             raise MCPError(
                 f"HTTP {e.code}: {e.reason}",

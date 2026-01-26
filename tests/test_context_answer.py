@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import types
 import pytest
@@ -51,7 +52,7 @@ def test_context_answer_happy_path(monkeypatch):
     monkeypatch.setattr(ref, "LlamaCppRefragClient", FakeLlama)
     monkeypatch.setattr(ref, "is_decoder_enabled", lambda: True)
 
-    out = srv.asyncio.get_event_loop().run_until_complete(
+    out = asyncio.run(
         srv.context_answer(query="how to do x", limit=2, per_path=1)
     )
 
@@ -82,7 +83,7 @@ def test_context_answer_decoder_disabled(monkeypatch):
     monkeypatch.setattr(ref, "LlamaCppRefragClient", FakeLlama)
     monkeypatch.setattr(ref, "is_decoder_enabled", lambda: False)
 
-    out = srv.asyncio.get_event_loop().run_until_complete(
+    out = asyncio.run(
         srv.context_answer(query="how to do y", limit=1)
     )
 
@@ -130,7 +131,7 @@ def test_context_answer_prefers_identifier_spans(monkeypatch):
     monkeypatch.setattr(ref, "LlamaCppRefragClient", FakeLlama)
     monkeypatch.setattr(ref, "is_decoder_enabled", lambda: True)
 
-    out = srv.asyncio.get_event_loop().run_until_complete(
+    out = asyncio.run(
         srv.context_answer(query="what is RRF_K in hybrid_search.py?", limit=1, per_path=1)
     )
 
@@ -179,7 +180,7 @@ def test_context_answer_tier2_retry_without_gating(monkeypatch):
     monkeypatch.setattr(ref, "LlamaCppRefragClient", FakeLlama)
     monkeypatch.setattr(ref, "is_decoder_enabled", lambda: True)
 
-    out = srv.asyncio.get_event_loop().run_until_complete(
+    out = asyncio.run(
         srv.context_answer(query="RRF_K", limit=1, per_path=1)
     )
 
@@ -199,12 +200,12 @@ def test_context_answer_tier2_retry_without_gating(monkeypatch):
 
 
 
-def test_context_answer_env_lock_release_on_retrieval_exception(monkeypatch):
+def test_context_answer_env_restore_on_retrieval_exception(monkeypatch):
     # Mock embedding model to avoid loading real model
     monkeypatch.setattr(srv, "_get_embedding_model", lambda *a, **k: None)
 
     import os
-    # Force retrieval to raise and ensure env/lock are restored
+    # Force retrieval to raise and ensure env vars are restored
     prev = {k: os.environ.get(k) for k in (
         "REFRAG_MODE", "REFRAG_GATE_FIRST", "REFRAG_CANDIDATES", "COLLECTION_NAME", "MICRO_BUDGET_TOKENS"
     )}
@@ -214,15 +215,12 @@ def test_context_answer_env_lock_release_on_retrieval_exception(monkeypatch):
 
     monkeypatch.setattr(srv, "_ca_prepare_filters_and_retrieve", _raise_retrieval)
 
-    out = srv.asyncio.get_event_loop().run_until_complete(
+    out = asyncio.run(
         srv.context_answer(query="x", limit=1, per_path=1)
     )
     assert "error" in out
 
-    # Lock should be free after failure
-    assert srv._ENV_LOCK.acquire(blocking=False), "_ENV_LOCK should be released on exception"
-    srv._ENV_LOCK.release()
-
+    # Note: Locks were removed for concurrency; env restoration still happens in finally block
     # Env should be restored
     for k, v in prev.items():
         assert os.environ.get(k) == v
@@ -248,7 +246,7 @@ def test_context_answer_env_lock_release_on_retrieval_exception(monkeypatch):
     import scripts.refrag_llamacpp as ref
     monkeypatch.setattr(ref, "is_decoder_enabled", lambda: False)
 
-    out2 = srv.asyncio.get_event_loop().run_until_complete(
+    out2 = asyncio.run(
         srv.context_answer(query="x", limit=1, per_path=1)
     )
     assert isinstance(out2, dict)

@@ -7,11 +7,14 @@ and vector schema handling for the indexing pipeline.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from qdrant_client import QdrantClient, models
 
@@ -131,16 +134,16 @@ def _desired_vector_configs(
                 size=int(os.environ.get("MINI_VEC_DIM", MINI_VEC_DIM) or MINI_VEC_DIM),
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     # Multi-granular vectors for improved retrieval
     try:
@@ -153,8 +156,8 @@ def _desired_vector_configs(
                 size=RELATION_DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     sparse_cfg = _get_sparse_config()
     return vectors_cfg, sparse_cfg
@@ -255,8 +258,7 @@ def _ensure_collection_with_mode(
     mode: str,
 ) -> None:
     if not name:
-        print("[BUG] ensure_collection called with name=None! Fix the caller - collection name is required.", flush=True)
-        return
+        raise ValueError("ensure_collection called with name=None - collection name is required. Check caller stack trace.")
 
     vectors_cfg, sparse_cfg = _desired_vector_configs(dim, vector_name)
     desired_vectors = set(vectors_cfg.keys())
@@ -361,13 +363,15 @@ def ensure_collection(
     Always includes dense (vector_name) and lexical (LEX_VECTOR_NAME).
     When REFRAG_MODE=1, also includes a compact mini vector (MINI_VECTOR_NAME).
     When PATTERN_VECTORS=1, also includes pattern_vector for structural similarity.
+
+    Raises:
+        ValueError: If name is None or empty.
     """
+    if not name:
+        raise ValueError("ensure_collection called with name=None - collection name is required. Check caller stack trace.")
     mode = _normalize_schema_mode(schema_mode)
     if mode != "legacy":
         _ensure_collection_with_mode(client, name, dim, vector_name, mode)
-        return
-    if not name:
-        print("[BUG] ensure_collection called with name=None! Fix the caller - collection name is required.", flush=True)
         return
     backup_file = None
     try:
@@ -396,8 +400,8 @@ def ensure_collection(
                                     f"[COLLECTION_INFO] Collection {name} has sparse vectors but lacks IDF modifier. "
                                     "Consider recreating with 'ctx index --recreate' for improved BM25-style term weighting."
                                 )
-                    except Exception:
-                        pass  # Ignore detection errors
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")  # Ignore detection errors
 
                 missing = {}
                 if not has_lex:
@@ -462,8 +466,8 @@ def ensure_collection(
                         )
                         print(f"[COLLECTION_SUCCESS] Successfully updated collection {name} with missing vectors")
                     except Exception as update_e:
-                        print(
-                            f"[COLLECTION_WARNING] Cannot add missing vectors to {name} ({update_e}). "
+                        logger.debug(
+                            f"Cannot add missing vectors to {name} ({update_e}). "
                             "Continuing without them for this run."
                         )
         except Exception as e:
@@ -486,16 +490,16 @@ def ensure_collection(
                 size=int(os.environ.get("MINI_VEC_DIM", MINI_VEC_DIM) or MINI_VEC_DIM),
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     # Multi-granular vectors for new collection
     try:
         if MULTI_GRANULAR_VECTORS:
@@ -507,8 +511,8 @@ def ensure_collection(
                 size=RELATION_DENSE_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
 
     sparse_cfg = _get_sparse_config()
     quant_cfg = _get_quantization_config()
@@ -597,8 +601,8 @@ def _restore_memories_after_recreate(name: str, backup_file: Optional[str]):
             try:
                 os.unlink(backup_file)
                 print(f"[MEMORY_RESTORE] Cleaned up backup file {backup_file}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
         elif backup_file:
             print(f"[MEMORY_RESTORE_WARNING] Backup file {backup_file} not found")
@@ -610,14 +614,17 @@ def _restore_memories_after_recreate(name: str, backup_file: Optional[str]):
 
 
 def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: str):
-    """Drop and recreate collection with named vectors."""
+    """Drop and recreate collection with named vectors.
+
+    Raises:
+        ValueError: If name is None or empty.
+    """
     if not name:
-        print("[BUG] recreate_collection called with name=None! Fix the caller - collection name is required.", flush=True)
-        return
+        raise ValueError("recreate_collection called with name=None - collection name is required. Check caller stack trace.")
     try:
         client.delete_collection(name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Collection {name} could not be deleted (may not exist): {e}")
     vectors_cfg = {
         vector_name: models.VectorParams(size=dim, distance=models.Distance.COSINE),
         LEX_VECTOR_NAME: models.VectorParams(
@@ -630,16 +637,16 @@ def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: 
                 size=int(os.environ.get("MINI_VEC_DIM", MINI_VEC_DIM) or MINI_VEC_DIM),
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     try:
         if os.environ.get("PATTERN_VECTORS", "").strip().lower() in {"1", "true", "yes", "on"}:
             vectors_cfg[PATTERN_VECTOR_NAME] = models.VectorParams(
                 size=PATTERN_VECTOR_DIM,
                 distance=models.Distance.COSINE,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     sparse_cfg = _get_sparse_config()
     quant_cfg = _get_quantization_config()
     client.create_collection(
@@ -652,16 +659,52 @@ def recreate_collection(client: QdrantClient, name: str, dim: int, vector_name: 
 
 
 def ensure_payload_indexes(client: QdrantClient, collection: str):
-    """Create helpful payload indexes if they don't exist (idempotent)."""
-    for field in PAYLOAD_INDEX_FIELDS:
+    """Create helpful payload indexes if they don't exist (idempotent).
+
+    Uses concurrent execution to reduce latency. Concurrency is controlled via
+    QDRANT_INDEX_WORKERS env var (default: 2, set to 1 for sequential).
+    In K8s with multiple pods, keep this low to avoid overwhelming Qdrant.
+    """
+    # Configurable concurrency - default 2 is safe for K8s multi-pod scenarios
+    try:
+        max_workers = int(os.environ.get("QDRANT_INDEX_WORKERS", "2"))
+    except (ValueError, TypeError):
+        max_workers = 2
+    max_workers = max(1, min(max_workers, len(PAYLOAD_INDEX_FIELDS)))
+
+    # Sequential fallback when workers=1 (no thread overhead)
+    if max_workers == 1:
+        for field in PAYLOAD_INDEX_FIELDS:
+            try:
+                client.create_payload_index(
+                    collection_name=collection,
+                    field_name=field,
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            except Exception as e:
+                logger.debug(f"Suppressed exception for {field}: {e}")
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _create_index(field: str) -> tuple[str, bool, str]:
+        """Create a single payload index. Returns (field, success, error_msg)."""
         try:
             client.create_payload_index(
                 collection_name=collection,
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
-        except Exception:
-            pass
+            return (field, True, "")
+        except Exception as e:
+            return (field, False, str(e))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_create_index, field): field for field in PAYLOAD_INDEX_FIELDS}
+        for future in as_completed(futures):
+            field, success, error_msg = future.result()
+            if not success:
+                logger.debug(f"Suppressed exception for {field}: {error_msg}")
 
 
 def ensure_collection_and_indexes_once(
@@ -672,9 +715,15 @@ def ensure_collection_and_indexes_once(
     *,
     schema_mode: str | None = None,
 ) -> None:
-    """Ensure collection and indexes exist (cached per-process)."""
+    """Ensure collection and indexes exist (cached per-process).
+
+    Raises:
+        ValueError: If collection or vector_name is None or empty.
+    """
     if not collection:
-        return
+        raise ValueError("ensure_collection_and_indexes_once called with collection=None - collection name is required.")
+    if not vector_name:
+        raise ValueError("ensure_collection_and_indexes_once called with vector_name=None - vector name is required.")
     mode = _normalize_schema_mode(schema_mode)
     if mode not in {"validate", "create"} and collection in ENSURED_COLLECTIONS:
         try:
@@ -696,12 +745,12 @@ def ensure_collection_and_indexes_once(
         except Exception:
             try:
                 ENSURED_COLLECTIONS.discard(collection)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             try:
                 ENSURED_COLLECTIONS_LAST_CHECK.pop(collection, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
     ensure_collection(client, collection, dim, vector_name, schema_mode=mode)
     if mode in {"legacy", "migrate"}:
         ensure_payload_indexes(client, collection)
@@ -709,8 +758,8 @@ def ensure_collection_and_indexes_once(
         ENSURED_COLLECTIONS.add(collection)
         try:
             ENSURED_COLLECTIONS_LAST_CHECK[collection] = time.time()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
 
 def get_indexed_file_hash(
@@ -721,10 +770,13 @@ def get_indexed_file_hash(
     repo_id: str | None = None,
     repo_rel_path: str | None = None,
 ) -> str:
-    """Return previously indexed file hash for this logical path, or empty string."""
+    """Return previously indexed file hash for this logical path, or empty string.
+
+    Raises:
+        ValueError: If collection is None or empty.
+    """
     if not collection:
-        print("[BUG] get_indexed_file_hash called with collection=None! Fix the caller.", flush=True)
-        return ""
+        raise ValueError("get_indexed_file_hash called with collection=None - collection name is required. Check caller stack trace.")
     if logical_repo_reuse_enabled() and repo_id and repo_rel_path:
         try:
             filt = models.Filter(
@@ -749,8 +801,8 @@ def get_indexed_file_hash(
                 fh = md.get("file_hash")
                 if fh:
                     return str(fh)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     try:
         filt = models.Filter(
@@ -777,10 +829,13 @@ def get_indexed_file_hash(
 
 
 def delete_points_by_path(client: QdrantClient, collection: str, file_path: str):
-    """Delete all points for a given file path."""
+    """Delete all points for a given file path.
+
+    Raises:
+        ValueError: If collection is None or empty.
+    """
     if not collection:
-        print("[BUG] delete_points_by_path called with collection=None! Fix the caller.", flush=True)
-        return
+        raise ValueError("delete_points_by_path called with collection=None - collection name is required. Check caller stack trace.")
     try:
         filt = models.Filter(
             must=[
@@ -794,19 +849,32 @@ def delete_points_by_path(client: QdrantClient, collection: str, file_path: str)
             points_selector=models.FilterSelector(filter=filt),
             wait=True,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # Log deletion failures for debugging (could indicate Qdrant connectivity issues)
+        print(f"[DELETE_WARNING] Failed to delete points for {file_path}: {e}", flush=True)
 
 
 def upsert_points(
-    client: QdrantClient, collection: str, points: List[models.PointStruct]
+    client: QdrantClient, collection: str, points: List[models.PointStruct],
+    *, wait: bool = None
 ):
-    """Upsert points with retry and batching."""
+    """Upsert points with retry and batching.
+
+    Args:
+        client: Qdrant client instance
+        collection: Collection name
+        points: List of points to upsert
+        wait: Whether to wait for upsert to complete. Default is controlled by
+              INDEX_UPSERT_ASYNC env var (0=sync/wait, 1=async/no-wait).
+              Async mode is faster but may cause read-after-write issues.
+
+    Raises:
+        ValueError: If collection is None or empty.
+    """
     if not points:
         return
     if not collection:
-        print("[BUG] upsert_points called with collection=None! Fix the caller.", flush=True)
-        return
+        raise ValueError("upsert_points called with collection=None - collection name is required. Check caller stack trace.")
     try:
         bsz = int(os.environ.get("INDEX_UPSERT_BATCH", "256") or 256)
     except Exception:
@@ -819,32 +887,86 @@ def upsert_points(
         backoff = float(os.environ.get("INDEX_UPSERT_BACKOFF", "0.5") or 0.5)
     except Exception:
         backoff = 0.5
+    
+    # Determine wait mode: explicit param > env var > default (sync)
+    if wait is None:
+        async_mode = os.environ.get("INDEX_UPSERT_ASYNC", "0").strip().lower() in {"1", "true", "yes", "on"}
+        wait = not async_mode
 
+    failed_count = 0
     for i in range(0, len(points), max(1, bsz)):
         batch = points[i : i + max(1, bsz)]
         attempt = 0
         while True:
             try:
-                client.upsert(collection_name=collection, points=batch, wait=True)
+                client.upsert(collection_name=collection, points=batch, wait=wait)
                 break
-            except Exception:
+            except Exception as e:
                 attempt += 1
                 if attempt >= retries:
+                    # Final fallback: try smaller sub-batches (always sync for reliability)
                     sub_size = max(1, bsz // 4)
+                    sub_failed = 0
                     for j in range(0, len(batch), sub_size):
                         sub = batch[j : j + sub_size]
                         try:
                             client.upsert(
                                 collection_name=collection, points=sub, wait=True
                             )
-                        except Exception:
-                            pass
+                        except Exception as sub_e:
+                            sub_failed += len(sub)
+                            print(f"[UPSERT_WARNING] Sub-batch upsert failed ({len(sub)} points): {sub_e}", flush=True)
+                    if sub_failed > 0:
+                        failed_count += sub_failed
+                        print(f"[UPSERT_ERROR] Failed to upsert {sub_failed} points after {retries} retries: {e}", flush=True)
                     break
                 else:
                     try:
                         time.sleep(backoff * attempt)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
+
+    if failed_count > 0:
+        print(f"[UPSERT_SUMMARY] Total {failed_count}/{len(points)} points failed to upsert", flush=True)
+
+
+def flush_upserts(client: QdrantClient, collection: str) -> None:
+    """Best-effort sync for pending async upserts.
+    
+    Call this after a batch of async upserts (INDEX_UPSERT_ASYNC=1) to improve
+    likelihood that data is visible for subsequent reads.
+    
+    IMPORTANT: Qdrant's wait=False semantics mean upserts are "confirmed received"
+    but not necessarily "applied". This function performs operations that encourage
+    the server to process pending writes, but cannot guarantee immediate consistency.
+    
+    For strict consistency requirements:
+    - Use wait=True (INDEX_UPSERT_ASYNC=0) during upserts, or
+    - Add application-level retry logic for read-after-write scenarios
+    
+    For remote deployments, network latency may increase the window between
+    upsert confirmation and data visibility.
+    
+    Args:
+        client: Qdrant client instance
+        collection: Collection name
+    """
+    if not collection:
+        return
+    try:
+        # 1. Get collection info (lightweight metadata read)
+        client.get_collection(collection)
+        
+        # 2. Perform a minimal scroll to encourage segment processing
+        # This touches actual data, which helps flush pending writes
+        client.scroll(
+            collection_name=collection,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.debug(f"flush_upserts: {e}")
 
 
 def hash_id(text: str, path: str, start: int, end: int) -> int:

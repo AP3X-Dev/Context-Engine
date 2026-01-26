@@ -20,7 +20,7 @@ Configuration
 - `Run On Startup` auto-triggers force sync + watch after VS Code finishes loading.
 - `Python Path`, `Endpoint`, `Extra Force Args`, `Extra Watch Args`, and `Interval Seconds` can be tuned via standard VS Code settings.
 - `Target Path` is auto-filled from the workspace but can be overridden if you need to upload a different folder.
-- **Python dependencies:** the extension runs the standalone upload client via your configured `pythonPath`. Ensure the interpreter has `requests`, `urllib3`, and `charset_normalizer` installed. Run `python3 -m pip install requests urllib3 charset_normalizer` (or replace `python3` with your configured path) before starting the uploader.
+- **Python dependencies:** the extension runs the standalone upload client via your configured `pythonPath`. Ensure the interpreter has `requests`, `urllib3`, `charset_normalizer`, and `watchdog` installed. Run `python3 -m pip install requests urllib3 charset_normalizer watchdog` (or replace `python3` with your configured path) before starting the uploader.
 - **Path mapping:** `Host Root` + `Container Root` control how local paths are rewritten before reaching the remote service. By default the host root mirrors your `Target Path` and the container root is `/work`, which keeps Windows paths working without extra config.
 - **Prompt+ decoder:** set `Context Engine Uploader: Decoder Url` (default `http://localhost:8081`, auto-appends `/completion`) to point at your local llama.cpp decoder. For Ollama, set it to `http://localhost:11434/api/chat`. Turn on `Use Gpu Decoder` to set `USE_GPU_DECODER=1` so ctx.py prefers the GPU llama.cpp sidecar. Prompt+ automatically runs the bundled `scripts/ctx.py` when an embedded copy is available, falling back to the workspace version if not.
 - **Claude/Windsurf MCP config:**
@@ -61,7 +61,10 @@ MCP bridge (ctx-mcp-bridge) & MCP config lifecycle
   - **Centralized logging & health:** when the bridge process runs once per workspace you get a single stream of logs (`Context Engine Upload` output) and a single port to probe for health checks instead of multiple MCP child processes per IDE.
 - When you run **`Write MCP Config`**, the extension:
   - Writes `.mcp.json` in the workspace for Claude Code.
-  - Optionally writes Windsurf’s `mcp_config.json` (when `mcpWindsurfEnabled=true`).
+  - Optionally writes Windsurf's `mcp_config.json` (when `mcpWindsurfEnabled=true`).
+  - Optionally writes Augment's `settings.json` (when `mcpAugmentEnabled=true`).
+  - Optionally writes Antigravity's `mcp_config.json` (when `mcpAntigravityEnabled=true`).
+  - Optionally writes Cursor's `~/.cursor/mcp.json` (when `mcpCursorEnabled=true`).
   - Optionally scaffolds `ctx_config.json` + `.env` (when `scaffoldCtxConfig=true`).
 - The effective wiring mode is determined by the two MCP settings:
   - `mcpServerMode = bridge`, `mcpTransportMode = sse-remote` → **bridge-stdio**.
@@ -77,6 +80,18 @@ MCP bridge (ctx-mcp-bridge) & MCP config lifecycle
   - The resulting HTTP URL (`http://127.0.0.1:<mcpBridgePort>/mcp`) is written into `.mcp.json` and Windsurf’s `mcp_config.json` as the `context-engine` server URL.
   - In **stdio or direct modes**, the HTTP bridge is **not** auto-started; only the explicit `Start MCP HTTP Bridge` command will launch it.
 - Bridge settings are **workspace-scoped**, so different workspaces can choose different modes and ports (e.g., one workspace using stdio bridge, another using HTTP bridge on a different port).
+
+Cursor Integration
+------------------
+
+Enable `mcpCursorEnabled` in settings to write MCP config to `~/.cursor/mcp.json`.
+
+**Caveats:**
+- Cursor uses a **global** MCP config at `~/.cursor/mcp.json` (not per-project like Claude's `.mcp.json`).
+- After updating the config, you must **restart Cursor** for changes to take effect.
+- Cursor's MCP support requires the `http` transport mode. Set `mcpTransportMode` to `http`.
+- If using bridge mode, ensure the HTTP bridge is running (`autoStartMcpBridge=true`).
+- Custom config path: set `cursorMcpPath` to override the default `~/.cursor/mcp.json` location.
 
 Optional auth with the MCP bridge (PoC)
 --------------------------------------

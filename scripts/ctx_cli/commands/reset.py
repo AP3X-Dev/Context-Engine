@@ -9,6 +9,7 @@ Orchestrates a complete rebuild of the development environment:
 - Starts services in specified mode (dual/mcp/sse)
 """
 
+import logging
 import os
 import sys
 import time
@@ -17,7 +18,27 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from scripts.ctx_cli.utils.env import get_qdrant_url_for_host
+from scripts.ctx_cli.utils.env import (
+    get_qdrant_url_for_host,
+    find_env_file,
+    load_env_file,
+)
+
+logger = logging.getLogger(__name__)
+
+# Load .env file into os.environ (if not already set)
+# This ensures NEO4J_GRAPH, REFRAG_RUNTIME, etc. are available
+def _load_env_to_environ():
+    """Load .env file values into os.environ if not already set."""
+    # Check both project root .env and scripts/.env
+    for env_path in [find_env_file(), Path("scripts/.env")]:
+        if env_path and env_path.exists():
+            env_vars = load_env_file(env_path)
+            for key, value in env_vars.items():
+                if key not in os.environ:
+                    os.environ[key] = value
+
+_load_env_to_environ()
 
 try:
     from rich.console import Console
@@ -87,8 +108,8 @@ def _wait_for_qdrant(url: str = "http://localhost:6333", timeout: int = 60) -> b
                 if getattr(r, "status", 200) < 500:
                     _print("[green]✓[/green] Qdrant is ready")
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         time.sleep(1)
 
     _print(f"[red]Error:[/red] Qdrant not ready after {timeout}s", error=True)
@@ -278,16 +299,16 @@ def reset(
                 try:
                     cache_file.unlink()
                     cache_cleared += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             # Clear all symbols directories
             for symbols_dir in codebase_dir.rglob("symbols"):
                 if symbols_dir.is_dir():
                     try:
                         shutil.rmtree(symbols_dir, ignore_errors=True)
                         cache_cleared += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
         # Also clear dev-workspace caches (if present)
         dev_workspace = Path("dev-workspace")
@@ -296,15 +317,15 @@ def reset(
                 try:
                     cache_file.unlink()
                     cache_cleared += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
                 if symbols_dir.is_dir():
                     try:
                         shutil.rmtree(symbols_dir, ignore_errors=True)
                         cache_cleared += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
 
         _print(f"[dim]Cleared {cache_cleared} host cache entries[/dim]")
 
@@ -323,9 +344,13 @@ def reset(
 
         # Build env vars for indexer
         indexer_env = {}
-        for var in ["INDEX_MICRO_CHUNKS", "MAX_MICRO_CHUNKS_PER_FILE", "TOKENIZER_PATH", "TOKENIZER_URL"]:
+        for var in ["INDEX_MICRO_CHUNKS", "MAX_MICRO_CHUNKS_PER_FILE", "TOKENIZER_PATH", "TOKENIZER_URL", "INDEX_WORKERS"]:
             if var in os.environ:
                 indexer_env[var] = os.environ[var]
+
+        indexer_env["PSEUDO_DEFER_TO_WORKER"] = "1"
+        if "INDEX_WORKERS" not in indexer_env:
+            indexer_env["INDEX_WORKERS"] = "4"
 
         # Run indexer detached (-d) so CLI doesn't block
         # Use --rm to auto-remove container on exit; first remove any stale container with same name
@@ -341,7 +366,7 @@ def reset(
         indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])
 
         _run_cmd(indexer_cmd, "Starting indexer (detached)")
-        _print("[green]✓[/green] Indexer started in background")
+        _print("[green]✓[/green] Indexer started in background (pseudo-tags deferred)")
         _print("[dim]  Monitor with: docker logs -f ctx-reset-indexer[/dim]")
 
         # Step 7: Download model and start services

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import logging
 
 # Canonical vector-name sanitizer used by both ingest and search paths
 # Keeps mapping consistent across the codebase
 
 
+
+logger = logging.getLogger(__name__)
 def sanitize_vector_name(model_name: str) -> str:
     name = (model_name or "").strip().lower()
     # Common fastembed alias mapping for MiniLM
@@ -246,6 +249,7 @@ def highlight_snippet(snippet: str, tokens: list[str]) -> str:
         try:
             pat = _re.compile(_re.escape(t), _re.IGNORECASE)
             snippet = pat.sub(_repl, snippet)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
     return snippet

@@ -1,6 +1,7 @@
 """
 QueryExpander - Learns query expansions (synonyms/related terms) from usage patterns.
 """
+import logging
 import os
 import re
 from typing import Any, Dict, List, Tuple
@@ -10,6 +11,8 @@ import numpy as np
 from scripts.rerank_recursive.utils import _COMMON_TOKENS
 
 
+
+logger = logging.getLogger(__name__)
 class QueryExpander:
     """
     Learns query expansions (synonyms/related terms) from usage patterns.
@@ -34,8 +37,8 @@ class QueryExpander:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     @staticmethod
     def _sanitize_collection(collection: str) -> str:
@@ -51,8 +54,8 @@ class QueryExpander:
         if os.path.exists(self._weights_path):
             try:
                 self._load_weights()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def _load_weights(self):
         import json

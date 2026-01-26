@@ -63,7 +63,9 @@ def _get_embedding_model(model_name: str):
     # Fallback to original implementation
     try:
         from fastembed import TextEmbedding  # type: ignore
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while importing fastembed: {e}")
+        logger.debug(f"Suppressed exception: {e}")
         raise
 
     m = _EMBED_MODEL_CACHE.get(model_name)
@@ -77,8 +79,8 @@ def _get_embedding_model(model_name: str):
                 try:
                     # Warmup with common patterns to optimize internal caches
                     _ = list(m.embed(["function", "class", "import", "def", "const"]))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 _EMBED_MODEL_CACHE[model_name] = m
     return m
 
@@ -113,7 +115,9 @@ def _invalidate_router_scratchpad(workspace_path: str) -> bool:
     try:
         # Clear any in-memory caches that might be stale
         return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception while invalidating router scratchpad: {e}")
+        logger.debug(f"Suppressed exception: {e}")
         return False
 
 
@@ -158,8 +162,8 @@ def _detect_current_repo() -> Optional[str]:
                             name = name[:-4]
                         if name:
                             return name
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
                 # Fallback to directory name
                 return work_path.name
 
@@ -167,8 +171,8 @@ def _detect_current_repo() -> Optional[str]:
             for subdir in work_path.iterdir():
                 if subdir.is_dir() and (subdir / ".git").exists():
                     return subdir.name
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     return None
 
@@ -200,7 +204,9 @@ async def _collection_map_impl(
             return None
         try:
             s = str(val).strip()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception while normalizing string: {e}")
+            logger.debug(f"Suppressed exception: {e}")
             return None
         return s or None
 
@@ -212,7 +218,9 @@ async def _collection_map_impl(
     if limit is not None:
         try:
             max_entries = max(1, int(limit))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception while parsing limit: {e}")
+            logger.debug(f"Suppressed exception: {e}")
             max_entries = None
 
     state_entries: List[Dict[str, Any]] = []

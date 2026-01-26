@@ -64,8 +64,8 @@ class QdrantGraphBackend(GraphBackend):
         if self._client is not None:
             try:
                 self._client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             self._client = None
     
     def ensure_graph_store(self, base_collection: str) -> Optional[str]:

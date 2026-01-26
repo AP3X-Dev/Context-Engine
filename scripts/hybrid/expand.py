@@ -19,6 +19,9 @@ __all__ = [
     "SEMANTIC_EXPANSION_AVAILABLE", "EMBEDDING_EXPANSION_ENABLED",
     "expand_queries_semantically", "expand_queries_with_prf",
     "get_expansion_stats", "clear_expansion_cache",
+    # IAEC exports
+    "ExpansionStrategy", "get_expansion_strategy", "IAEC_ENABLED",
+    "INTENT_EXPANSION_STRATEGIES", "DEFAULT_EXPANSION_STRATEGY",
 ]
 
 import os
@@ -26,10 +29,135 @@ import re
 import ast
 import json
 import logging
-from typing import List, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, TYPE_CHECKING, Optional
 from pathlib import Path
 
 logger = logging.getLogger("hybrid_expand")
+
+# Feature flag for pattern-based expansion
+PATTERN_EXPANSION_ENABLED = os.getenv("PATTERN_EXPANSION", "0") == "1"
+
+# Feature flag for Intent-Aware Expansion Cascade (IAEC)
+IAEC_ENABLED = os.getenv("INTENT_EXPANSION_CASCADE", "0") == "1"
+
+
+@dataclass
+class ExpansionStrategy:
+    """Configuration for intent-specific query expansion.
+    
+    Controls which expansion tiers are enabled and their behavior.
+    Used by IAEC to route different query intents to appropriate strategies.
+    """
+    enable_phrase: bool = True      # Tier 1: Phrase synonyms
+    enable_word: bool = True        # Tier 3: Word substitution
+    enable_semantic: bool = True    # Tier 4: Semantic expansion
+    enable_embedding: bool = True   # Tier 5: Embedding-based expansion
+    enable_pattern: bool = True     # Tier 6: Pattern-based expansion
+    symbol_boost: float = 1.0       # Multiplier for symbol-matching weight
+    inject_terms: List[str] = field(default_factory=list)  # Auto-inject these terms
+
+
+# Intent constants (from mcp_router/intent.py)
+_INTENT_ANSWER = "answer"
+_INTENT_SEARCH = "search"
+_INTENT_SEARCH_TESTS = "search_tests"
+_INTENT_SEARCH_CONFIG = "search_config"
+_INTENT_SEARCH_CALLERS = "search_callers"
+_INTENT_SEARCH_IMPORTERS = "search_importers"
+_INTENT_SYMBOL_GRAPH = "symbol_graph"
+_INTENT_CONTEXT = "context"
+
+# Default strategy - all tiers enabled
+DEFAULT_EXPANSION_STRATEGY = ExpansionStrategy()
+
+# Intent → Expansion Strategy mapping
+INTENT_EXPANSION_STRATEGIES: Dict[str, ExpansionStrategy] = {
+    # Symbol-focused: skip semantic noise, boost exact match
+    _INTENT_SYMBOL_GRAPH: ExpansionStrategy(
+        enable_phrase=False,
+        enable_word=False,
+        enable_semantic=False,
+        enable_embedding=False,
+        enable_pattern=False,
+        symbol_boost=2.0,
+    ),
+    
+    # Caller search: light expansion, symbol-focused
+    _INTENT_SEARCH_CALLERS: ExpansionStrategy(
+        enable_phrase=False,
+        enable_word=True,
+        enable_semantic=False,
+        enable_embedding=True,
+        enable_pattern=False,
+        symbol_boost=1.5,
+    ),
+    
+    # Importer search: similar to callers
+    _INTENT_SEARCH_IMPORTERS: ExpansionStrategy(
+        enable_phrase=False,
+        enable_word=True,
+        enable_semantic=False,
+        enable_embedding=True,
+        enable_pattern=False,
+        symbol_boost=1.5,
+    ),
+    
+    # Test search: inject test-specific patterns
+    _INTENT_SEARCH_TESTS: ExpansionStrategy(
+        enable_phrase=True,
+        enable_word=True,
+        enable_semantic=True,
+        enable_embedding=True,
+        enable_pattern=True,
+        inject_terms=["test_", "pytest", "_spec", "_test", "describe", "it(", "expect("],
+    ),
+    
+    # Config search: inject config patterns
+    _INTENT_SEARCH_CONFIG: ExpansionStrategy(
+        enable_phrase=True,
+        enable_word=True,
+        enable_semantic=True,
+        enable_embedding=True,
+        enable_pattern=False,
+        inject_terms=["config", "settings", "env", ".yaml", ".json", ".toml", ".env"],
+    ),
+    
+    # Answer/explanation: full expansion for comprehensive retrieval
+    _INTENT_ANSWER: ExpansionStrategy(
+        enable_phrase=True,
+        enable_word=False,  # Skip word substitution (can add noise for explanations)
+        enable_semantic=True,
+        enable_embedding=True,
+        enable_pattern=True,
+    ),
+    
+    # Context blend: semantic-heavy
+    _INTENT_CONTEXT: ExpansionStrategy(
+        enable_phrase=True,
+        enable_word=False,
+        enable_semantic=True,
+        enable_embedding=True,
+        enable_pattern=True,
+    ),
+    
+    # General search: balanced (default)
+    _INTENT_SEARCH: DEFAULT_EXPANSION_STRATEGY,
+}
+
+
+def get_expansion_strategy(intent: Optional[str]) -> ExpansionStrategy:
+    """Get expansion strategy for a given intent.
+    
+    Args:
+        intent: Intent string from mcp_router/intent.py or None
+        
+    Returns:
+        ExpansionStrategy for the intent, or default if not found/disabled
+    """
+    if not IAEC_ENABLED or intent is None:
+        return DEFAULT_EXPANSION_STRATEGY
+    return INTENT_EXPANSION_STRATEGIES.get(intent, DEFAULT_EXPANSION_STRATEGY)
 
 # Import QdrantClient type for annotations
 if TYPE_CHECKING:
@@ -369,6 +497,8 @@ def expand_queries_weighted(
     symbol: str | None = None,
     ext: str | None = None,
     repo: str | list[str] | None = None,
+    strategy: ExpansionStrategy | None = None,
+    intent: str | None = None,
 ) -> tuple[List[str], List[float]]:
     """
     Enhanced query expansion returning queries with fusion weights.
@@ -378,22 +508,58 @@ def expand_queries_weighted(
     - Tier 2 (0.85): Original queries
     - Tier 3 (0.6): Word-substituted queries
     - Tier 4 (0.4): Semantic expansion queries
+    - Tier 5 (0.5): Embedding-based expansion
+    - Tier 6 (0.45): Pattern-based expansion
+
+    When IAEC is enabled, the strategy parameter (or intent-derived strategy)
+    controls which tiers are active.
+
+    Args:
+        queries: Original query strings
+        language: Optional language filter
+        max_extra: Max extra terms per tier
+        client: Qdrant client for embedding expansion
+        model: Embedding model
+        collection: Collection name
+        under: Path filter
+        kind: Kind filter
+        symbol: Symbol filter
+        ext: Extension filter
+        repo: Repository filter
+        strategy: Explicit ExpansionStrategy (overrides intent)
+        intent: Intent string to derive strategy from (if strategy not provided)
 
     Returns:
         Tuple of (queries, weights) where weights indicate fusion priority
     """
+    # Resolve strategy: explicit > intent-derived > default
+    if strategy is None:
+        strategy = get_expansion_strategy(intent)
+    
     original_set = set(queries)
     out: List[str] = []
     weights: List[float] = []
     seen: set = set()
 
+    # 0. Inject strategy-specific terms first (highest priority)
+    if strategy.inject_terms:
+        for term in strategy.inject_terms:
+            if term not in seen:
+                seen.add(term)
+                out.append(term)
+                weights.append(0.9)  # High weight for injected terms
+        if os.environ.get("DEBUG_HYBRID_SEARCH"):
+            logger.debug(f"IAEC injected {len(strategy.inject_terms)} terms: {strategy.inject_terms}")
+
     # 1. Get phrase expansions (Tier 1 - weight 1.0)
-    phrase_expanded = _expand_phrases(queries)
-    for q in phrase_expanded:
-        if q not in seen and q not in original_set:
-            seen.add(q)
-            out.append(q)
-            weights.append(1.0)
+    phrase_expanded = []
+    if strategy.enable_phrase:
+        phrase_expanded = _expand_phrases(queries)
+        for q in phrase_expanded:
+            if q not in seen and q not in original_set:
+                seen.add(q)
+                out.append(q)
+                weights.append(1.0)
 
     # 2. Original queries - weight depends on whether phrase expansion found matches
     # If phrase expansion produced results, originals are Tier 2 (0.85)
@@ -406,15 +572,16 @@ def expand_queries_weighted(
             weights.append(original_weight)
 
     # 3. Get word expansions (Tier 3 - weight 0.6)
-    word_expanded = _expand_words(queries, max_extra)
-    for q in word_expanded:
-        if q not in seen:
-            seen.add(q)
-            out.append(q)
-            weights.append(0.6)
+    if strategy.enable_word:
+        word_expanded = _expand_words(queries, max_extra)
+        for q in word_expanded:
+            if q not in seen:
+                seen.add(q)
+                out.append(q)
+                weights.append(0.6)
 
     # 4. Semantic expansion (Tier 4 - weight 0.4)
-    if SEMANTIC_EXPANSION_AVAILABLE and expand_queries_semantically and client and model:
+    if strategy.enable_semantic and SEMANTIC_EXPANSION_AVAILABLE and expand_queries_semantically and client and model:
         try:
             semantic_terms = expand_queries_semantically(
                 queries, language, client, model, collection, max_extra
@@ -437,7 +604,7 @@ def expand_queries_weighted(
                 logger.debug(f"Semantic expansion failed: {e}")
 
     # 5. Embedding-based dynamic expansion (Tier 5 - weight 0.5)
-    if _embedding_expansion_enabled() and client and model and collection:
+    if strategy.enable_embedding and _embedding_expansion_enabled() and client and model and collection:
         try:
             embed_terms = expand_via_embeddings(
                 queries,
@@ -463,9 +630,81 @@ def expand_queries_weighted(
             if os.environ.get("DEBUG_HYBRID_SEARCH"):
                 logger.debug(f"Embedding expansion failed: {e}")
 
+    # 6. Pattern-based expansion (Tier 6) - from discovered code patterns
+    if strategy.enable_pattern and PATTERN_EXPANSION_ENABLED:
+        try:
+            pattern_terms = _get_pattern_expansions(queries, limit=5)
+            for term in pattern_terms:
+                if term not in seen:
+                    seen.add(term)
+                    out.append(term)
+                    weights.append(0.45)
+            if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                logger.debug(f"Pattern expansion added {len(pattern_terms)} terms: {pattern_terms}")
+        except Exception as e:
+            if os.environ.get("DEBUG_HYBRID_SEARCH"):
+                logger.debug(f"Pattern expansion failed: {e}")
+
     # Limit total queries
     max_queries = max(12, len(queries) * 4)
     return out[:max_queries], weights[:max_queries]
+
+
+def _get_pattern_expansions(queries: List[str], limit: int = 5) -> List[str]:
+    """
+    Extract expansion terms from patterns matching the query.
+
+    Uses OnlinePatternLearner to find relevant patterns, then extracts
+    meaningful identifiers from pattern exemplars and descriptions.
+    """
+    try:
+        from scripts.pattern_detection.catalog import get_pattern_learner
+    except ImportError:
+        return []
+
+    learner = get_pattern_learner()
+    if learner is None:
+        return []
+
+    query_text = " ".join(queries)
+    try:
+        patterns = learner.natural_language_query(query_text, top_k=3)
+    except Exception:
+        return []
+
+    if not patterns:
+        return []
+
+    terms = []
+    for pattern in patterns:
+        # Extract from auto_description
+        if hasattr(pattern, "auto_description") and pattern.auto_description:
+            words = pattern.auto_description.lower().split()
+            terms.extend(w for w in words if len(w) > 4 and w.isalpha())
+
+        # Extract identifiers from exemplar paths
+        exemplars = getattr(pattern, "exemplars", []) or []
+        for exemplar in exemplars[:2]:
+            # Parse function/class names from path
+            # e.g., "scripts/hybrid/search.py::hybrid_search" -> "hybrid_search"
+            if "::" in str(exemplar):
+                symbol = str(exemplar).split("::")[-1]
+                if symbol and symbol not in terms:
+                    terms.append(symbol)
+
+    # Dedupe and limit - exclude terms already in query
+    query_lower = query_text.lower()
+    seen_terms: set = set()
+    unique_terms = []
+    for t in terms:
+        t_lower = t.lower()
+        if t_lower not in seen_terms and t_lower not in query_lower:
+            seen_terms.add(t_lower)
+            unique_terms.append(t)
+            if len(unique_terms) >= limit:
+                break
+
+    return unique_terms
 
 
 def expand_via_embeddings(
@@ -732,8 +971,8 @@ def _llm_expand_queries(
                         alts.append(s.strip())
                         if len(alts) >= max_new:
                             return alts
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Try ast.literal_eval for single-quoted lists
         try:
             parsed = ast.literal_eval(out)
@@ -743,8 +982,8 @@ def _llm_expand_queries(
                         alts.append(s.strip())
                         if len(alts) >= max_new:
                             return alts
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
         # Try regex extraction from verbose output - only keep multi-word phrases
         for m in re.finditer(r'"([^"]+)"', out):
             candidate = m.group(1).strip()

@@ -1,3 +1,31 @@
+# YAML Anchors for common configurations
+x-common-config: &common-config
+  env_file:
+    - .env
+  depends_on:
+    - qdrant
+
+x-work-dir: &work-dir
+  working_dir: /work
+
+x-huggingface-cache: &hf-cache
+  HF_HOME: /tmp/huggingface
+  HF_HUB_CACHE: /tmp/huggingface/hub
+  HUGGINGFACE_HUB_CACHE: /tmp/huggingface/hub
+  TRANSFORMERS_CACHE: /tmp/huggingface/transformers
+  FASTEMBED_CACHE_PATH: /tmp/huggingface/fastembed
+  HF_HUB_DISABLE_XET: 1
+
+x-embedding-config: &embedding-config
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+  QWEN3_EMBEDDING_ENABLED: ${QWEN3_EMBEDDING_ENABLED:-0}
+  QWEN3_QUERY_INSTRUCTION: ${QWEN3_QUERY_INSTRUCTION:-1}
+  QWEN3_INSTRUCTION_TEXT: ${QWEN3_INSTRUCTION_TEXT}
+
+x-standard-volumes: &standard-volumes
+  - ${HOST_INDEX_PATH:-.}:/work:ro
+  - ${HOST_INDEX_PATH:-.}/.codebase:/work/.codebase:rw
+
 services:
   qdrant:
     image: qdrant/qdrant:latest
@@ -74,7 +102,6 @@ services:
       - "18001:18001"
     volumes:
       - ${HOST_INDEX_PATH:-.}:/work
-
 
   mcp_http:
     build:
@@ -160,7 +187,7 @@ services:
       - "8080:8080"
     volumes:
       - ./models:/models:ro
-    entrypoint: ["/bin/sh","-lc"]
+    entrypoint: [ "/bin/sh", "-lc" ]
     command:
       - |
         set -e
@@ -186,67 +213,35 @@ services:
         exec /app/llama-server $$ARGS
 
   indexer:
+    <<: [ *common-config, *work-dir ]
     build:
       context: .
       dockerfile: Dockerfile.indexer
-    depends_on:
-      - qdrant
-    env_file:
-      - .env
     environment:
-      - QDRANT_URL=${QDRANT_URL}
-      - COLLECTION_NAME=${COLLECTION_NAME:-codebase}
-      - HF_HOME=/tmp/huggingface
-      - HF_HUB_CACHE=/tmp/huggingface/hub
-      - HUGGINGFACE_HUB_CACHE=/tmp/huggingface/hub
-      - TRANSFORMERS_CACHE=/tmp/huggingface/transformers
-      - FASTEMBED_CACHE_PATH=/tmp/huggingface/fastembed
-      - HF_HUB_DISABLE_XET=1
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - QWEN3_EMBEDDING_ENABLED=${QWEN3_EMBEDDING_ENABLED:-0}
-      - QWEN3_QUERY_INSTRUCTION=${QWEN3_QUERY_INSTRUCTION:-1}
-      - QWEN3_INSTRUCTION_TEXT=${QWEN3_INSTRUCTION_TEXT}
-    working_dir: /work
-    volumes:
-      - ${HOST_INDEX_PATH:-.}:/work:ro
-      - ${HOST_INDEX_PATH:-.}/.codebase:/work/.codebase:rw
-
-    entrypoint: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/ingest_code.py"]
+      <<: [ *hf-cache, *embedding-config ]
+      QDRANT_URL: ${QDRANT_URL}
+      COLLECTION_NAME: ${COLLECTION_NAME:-codebase}
+    volumes: *standard-volumes
+    entrypoint: [ "sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/ingest_code.py" ]
 
   watcher:
+    <<: [ *common-config, *work-dir ]
     build:
       context: .
       dockerfile: Dockerfile.indexer
-    depends_on:
-      - qdrant
-    env_file:
-      - .env
     environment:
-      - QDRANT_URL=${QDRANT_URL}
-      - COLLECTION_NAME=${COLLECTION_NAME:-codebase}
-      - HF_HOME=/tmp/huggingface
-      - HF_HUB_CACHE=/tmp/huggingface/hub
-      - HUGGINGFACE_HUB_CACHE=/tmp/huggingface/hub
-      - TRANSFORMERS_CACHE=/tmp/huggingface/transformers
-      - FASTEMBED_CACHE_PATH=/tmp/huggingface/fastembed
-      - HF_HUB_DISABLE_XET=1
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - QWEN3_EMBEDDING_ENABLED=${QWEN3_EMBEDDING_ENABLED:-0}
-      - QWEN3_QUERY_INSTRUCTION=${QWEN3_QUERY_INSTRUCTION:-1}
-      - QWEN3_INSTRUCTION_TEXT=${QWEN3_INSTRUCTION_TEXT}
-      - WATCH_ROOT=/work
+      <<: [ *hf-cache, *embedding-config ]
+      QDRANT_URL: ${QDRANT_URL}
+      COLLECTION_NAME: ${COLLECTION_NAME:-codebase}
+      WATCH_ROOT: /work
       # Watcher-specific backpressure & timeouts (safer defaults)
-      - QDRANT_TIMEOUT=60
-      - MAX_MICRO_CHUNKS_PER_FILE=${MAX_MICRO_CHUNKS_PER_FILE:-200}
-      - INDEX_UPSERT_BATCH=128
-      - INDEX_UPSERT_RETRIES=5
-      - WATCH_DEBOUNCE_SECS=${WATCH_DEBOUNCE_SECS:-1.5}
-    working_dir: /work
-    volumes:
-      - ${HOST_INDEX_PATH:-.}:/work:ro
-      - ${HOST_INDEX_PATH:-.}/.codebase:/work/.codebase:rw
-    entrypoint: ["sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/watch_index.py"]
-
+      QDRANT_TIMEOUT: 60
+      MAX_MICRO_CHUNKS_PER_FILE: ${MAX_MICRO_CHUNKS_PER_FILE:-200}
+      INDEX_UPSERT_BATCH: 128
+      INDEX_UPSERT_RETRIES: 5
+      WATCH_DEBOUNCE_SECS: ${WATCH_DEBOUNCE_SECS:-1.5}
+    volumes: *standard-volumes
+    entrypoint: [ "sh", "-c", "mkdir -p /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && exec python /app/scripts/watch_index.py" ]
 
   upload_service:
     build:
@@ -277,7 +272,7 @@ services:
       - ${HOST_INDEX_PATH:-.}/.codebase:/work/.codebase:rw
     user: "0:0"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8002/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -300,7 +295,7 @@ services:
       - ${HOST_INDEX_PATH:-.}:/work:ro
       - ${HOST_INDEX_PATH:-.}/.codebase:/work/.codebase:rw
 
-    entrypoint: ["python", "/app/scripts/create_indexes.py"]
+    entrypoint: [ "python", "/app/scripts/create_indexes.py" ]
 
 volumes:
   qdrant_storage:

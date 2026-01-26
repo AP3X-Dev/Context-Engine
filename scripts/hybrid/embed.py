@@ -10,7 +10,10 @@ This module is designed to be self-contained and importable by other modules
 that need embedding capabilities without pulling in the full hybrid_search module.
 """
 from __future__ import annotations
+import logging
 
+
+logger = logging.getLogger(__name__)
 __all__ = [
     "_EMBEDDER_FACTORY", "_get_embedding_model", "_embed_queries_cached",
     "_EMBED_CACHE", "_EMBED_LOCK", "_EMBED_QUERY_CACHE",
@@ -333,8 +336,8 @@ def clear_embedding_cache() -> None:
     if cache is not None:
         try:
             cache.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     with _EMBED_LOCK:
         _EMBED_QUERY_CACHE.clear()
@@ -346,8 +349,8 @@ def get_embedding_cache_stats() -> dict:
     if UNIFIED_CACHE_AVAILABLE and cache is not None:
         try:
             return cache.get_stats()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     with _EMBED_LOCK:
         return {

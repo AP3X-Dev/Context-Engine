@@ -111,7 +111,7 @@ def _init_code_intent_centroids():
             _CODE_INTENT_CACHE["initialized"] = True
         except Exception as e:
             if os.environ.get("DEBUG_CODE_SIGNALS"):
-                print(f"[DEBUG] Failed to init code intent centroids: {e}")
+                logger.debug(f"Failed to init code intent centroids: {e}")
             _CODE_INTENT_CACHE["initialized"] = False
 
 
@@ -152,7 +152,8 @@ def _detect_code_intent_embedding(query: str) -> float:
         score = 1.0 / (1.0 + np.exp(-diff * 5))  # Sigmoid with scaling
 
         return float(score)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Suppressed exception (code_intent_score): {e}")
         return 0.5
 
 
@@ -360,16 +361,16 @@ def _detect_code_signals(query: str) -> dict:
                 detected_patterns.append("embedding_code_intent")
                 blend_weight = 0.4 if signal_score < 0.3 else 0.25
                 signal_score = signal_score * (1 - blend_weight) + embedding_score * blend_weight
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     elif str(os.environ.get("CODE_SIGNAL_EMBEDDING", "")).lower() in {"1", "true", "yes"} and signal_score < 0.1:
         try:
             embedding_score = _detect_code_intent_embedding(query)
             if embedding_score > 0.55:
                 detected_patterns.append("embedding_code_intent")
                 signal_score = embedding_score * 0.6
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
     # Cap at 1.0
     signal_score = min(1.0, signal_score)

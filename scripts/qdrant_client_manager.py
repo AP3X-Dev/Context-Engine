@@ -4,16 +4,46 @@ Qdrant client lifecycle management to prevent socket leaks.
 Provides connection pooling and singleton client management.
 """
 import atexit
+import logging
 import os
 import threading
 import time
 import weakref
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from contextlib import contextmanager
 from qdrant_client import QdrantClient
 
 
 # Connection pool implementation
+
+logger = logging.getLogger(__name__)
+
+
+def _get_qdrant_timeout() -> Optional[float]:
+    """Return the configured Qdrant HTTP timeout (seconds) if set."""
+    raw = os.environ.get("QDRANT_TIMEOUT") or os.environ.get("QDRANT_CLIENT_TIMEOUT")
+    if not raw:
+        return None
+    try:
+        timeout = float(raw)
+        return timeout if timeout > 0 else None
+    except (TypeError, ValueError):
+        logger.debug("Invalid Qdrant timeout value '%s'; ignoring", raw)
+        return None
+
+
+def _client_kwargs(url: str, api_key: Optional[str]) -> Dict[str, Any]:
+    """Build kwargs dict for QdrantClient constructor with optional timeout."""
+    kwargs: Dict[str, Any] = {
+        "url": url,
+        "api_key": api_key if api_key else None,
+    }
+    timeout = _get_qdrant_timeout()
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return kwargs
+
+
 class QdrantConnectionPool:
     """Thread-safe connection pool for QdrantClient instances."""
     
@@ -25,6 +55,8 @@ class QdrantConnectionPool:
         self._created_count = 0
         self._hits = 0
         self._misses = 0
+        # Track temporary clients (created when pool is full) so we can close them
+        self._temp_clients: set = set()
     
     def get_client(self, url: str, api_key: Optional[str] = None) -> QdrantClient:
         """Get a client from pool or create a new one."""
@@ -44,7 +76,7 @@ class QdrantConnectionPool:
             
             # No suitable client found, create a new one
             if self._created_count < self.max_size:
-                client = QdrantClient(url=url, api_key=api_key)
+                client = QdrantClient(**_client_kwargs(url, api_key))
                 pool_entry = {
                     'client': client,
                     'url': url,
@@ -59,47 +91,73 @@ class QdrantConnectionPool:
                 return client
             else:
                 # Pool is full, create a temporary client (not pooled)
+                # Mark it for tracking so return_client can close it
                 self._misses += 1
-                return QdrantClient(url=url, api_key=api_key)
-    
+                temp_client = QdrantClient(**_client_kwargs(url, api_key))
+                # Track temporary clients with weakref so they auto-close
+                self._temp_clients.add(temp_client)
+                return temp_client
+
     def return_client(self, client: QdrantClient):
-        """Return a client to the pool."""
+        """Return a client to the pool or close if temporary."""
         with self._pool_lock:
+            # Check if it's a temporary client (not in pool)
+            if client in self._temp_clients:
+                self._temp_clients.discard(client)
+                try:
+                    client.close()
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+                return
+
+            # Return pooled client
             for conn in self._pool:
                 if conn['client'] is client:
                     conn['in_use'] = False
                     conn['last_used'] = time.time()
                     break
-    
+
     def _cleanup_expired(self):
-        """Remove expired connections from the pool."""
+        """Remove expired connections from the pool.
+
+        NOTE: This must be called while holding _pool_lock.
+        """
         current_time = time.time()
         expired_indices = []
-        
+
         for i, conn in enumerate(self._pool):
-            if (not conn['in_use'] and 
+            if (not conn['in_use'] and
                 current_time - conn['created_at'] > self.max_lifetime):
                 expired_indices.append(i)
-        
+
         # Remove expired connections (in reverse order to maintain indices)
         for i in reversed(expired_indices):
             try:
                 self._pool[i]['client'].close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             del self._pool[i]
             self._created_count -= 1
     
     def close_all(self):
-        """Close all connections in the pool."""
+        """Close all connections in the pool (including temporary clients)."""
         with self._pool_lock:
+            # Close pooled connections
             for conn in self._pool:
                 try:
                     conn['client'].close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
             self._pool.clear()
             self._created_count = 0
+
+            # Close any tracked temporary clients
+            for temp_client in list(self._temp_clients):
+                try:
+                    temp_client.close()
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+            self._temp_clients.clear()
     
     def get_stats(self) -> Dict[str, int]:
         """Get pool statistics."""
@@ -166,13 +224,13 @@ def get_qdrant_client(
     
     # Fallback to singleton pattern for backward compatibility
     if force_new:
-        return QdrantClient(url=url, api_key=api_key if api_key else None)
-    
+        return QdrantClient(**_client_kwargs(url, api_key))
+
     global _client
     
     with _client_lock:
         if _client is None:
-            _client = QdrantClient(url=url, api_key=api_key if api_key else None)
+            _client = QdrantClient(**_client_kwargs(url, api_key))
         return _client
 
 
@@ -230,8 +288,8 @@ def close_qdrant_client():
         if _client is not None:
             try:
                 _client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
             _client = None
     
     # Close connection pool
@@ -270,8 +328,8 @@ def _atexit_cleanup():
     """Cleanup handler called on process exit."""
     try:
         close_qdrant_client()
-    except Exception:
-        pass  # Best effort cleanup on exit
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")  # Best effort cleanup on exit
 
 
 # Register the cleanup handler

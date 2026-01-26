@@ -12,7 +12,9 @@ resources:
 
   # Core services
   - qdrant.yaml
+  - redis.yaml
   - code-models-pvc.yaml
+  - upload-pvc.yaml
 
   # MCP servers
   - mcp-memory.yaml
@@ -38,9 +40,6 @@ labels:
       app.kubernetes.io/name: context-engine
       app.kubernetes.io/component: kubernetes-deployment
       app.kubernetes.io/managed-by: kustomize
-
-# Patches for production customization
-patches: []
 
 # ConfigMap generator (optional - for overrides)
 configMapGenerator:

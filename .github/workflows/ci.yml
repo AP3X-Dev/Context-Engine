@@ -65,14 +65,18 @@ jobs:
         python -c "from fastembed import TextEmbedding; m = TextEmbedding(model_name='BAAI/bge-base-en-v1.5'); list(m.embed(['test']))"
 
     - name: Run tests
-      run: pytest -q
-      
+      run: pytest -q --junitxml=test-results.xml
+
     - name: Upload test results
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: test-results
-        path: |
-          .pytest_cache/
-          test-results.xml
+        path: test-results.xml
         retention-days: 7
+
+    - name: Test Summary
+      uses: test-summary/action@v2
+      if: always()
+      with:
+        paths: test-results.xml

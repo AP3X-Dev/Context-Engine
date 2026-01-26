@@ -1,14 +1,18 @@
+import logging
 import os
 import json
 import re
 import shutil
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
 from scripts.auth_backend import mark_collection_deleted
 
+
+logger = logging.getLogger(__name__)
 try:
     from qdrant_client import QdrantClient
     from qdrant_client import models as qmodels
@@ -25,6 +29,14 @@ try:
     from scripts.workspace_state import get_collection_mappings
 except Exception:
     get_collection_mappings = None
+
+try:
+    from scripts.ingest.graph_edges import get_graph_collection_name
+except Exception:
+    get_graph_collection_name = None
+
+
+logger = logging.getLogger(__name__)
 
 
 _SLUGGED_REPO_RE = re.compile(r"^.+-[0-9a-f]{16}(?:_old)?$")
@@ -61,7 +73,8 @@ def _resolve_codebase_root(work_root: Path) -> Path:
         try:
             if (base / ".codebase" / "repos").exists():
                 return base
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return work_root
@@ -86,8 +99,8 @@ def _read_state_collection(state_path: Path) -> str:
             data = json.load(f)
         if isinstance(data, dict):
             return str(data.get("qdrant_collection") or "").strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Suppressed exception: {e}")
     return ""
 
 
@@ -154,8 +167,8 @@ def _cleanup_state_files_for_mapping(
                 if _delete_path_tree(sd):
                     removed += 1
                 return removed
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
 
         # Single-repo mode stores metadata under <workspace>/.codebase/
         if _delete_path_tree(p):
@@ -164,8 +177,8 @@ def _cleanup_state_files_for_mapping(
         try:
             for sym in state_dir.glob("symbols_*.json"):
                 _delete_path_tree(sym)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
     return removed
 
 
@@ -194,23 +207,45 @@ def delete_collection_everywhere(
         "collection": name,
         "qdrant_deleted": False,
         "registry_marked_deleted": False,
+        "graph_collection_deleted": False,
         "deleted_state_files": 0,
         "deleted_managed_workspaces": 0,
     }
 
     target_is_old = name.endswith("_old")
 
-    # 1) Delete Qdrant collection
+    # 1) Delete Qdrant collection and its associated graph collection
     try:
         if pooled_qdrant_client is not None:
             with pooled_qdrant_client(url=qdrant_url, api_key=os.environ.get("QDRANT_API_KEY")) as cli:
+                # Delete main collection
                 try:
                     cli.delete_collection(collection_name=name)
                     out["qdrant_deleted"] = True
-                except Exception:
+                except Exception as main_err:
                     out["qdrant_deleted"] = False
-    except Exception:
+                    logger.warning("[collection_admin] Failed to delete collection %s: %s", name, main_err)
+                    raise RuntimeError(f"Failed to delete collection {name}") from main_err
+
+                # Delete graph collection if it exists
+                if get_graph_collection_name is not None:
+                    try:
+                        graph_collection = get_graph_collection_name(name)
+                        cli.delete_collection(collection_name=graph_collection)
+                        out["graph_collection_deleted"] = True
+                    except Exception as graph_err:
+                        # Best-effort: graph collection might not exist
+                        out["graph_collection_deleted"] = False
+                        logger.warning(
+                            "[collection_admin] Failed to delete graph collection %s (best-effort): %s",
+                            name if "graph_collection" not in locals() else graph_collection,
+                            graph_err,
+                        )
+    except Exception as delete_exc:
+        logger.error("[collection_admin] Error deleting collections %s: %s", name, delete_exc)
         out["qdrant_deleted"] = False
+        out["graph_collection_deleted"] = False
+        raise
 
     # 2) Mark deleted in registry DB
     try:
@@ -253,8 +288,8 @@ def delete_collection_everywhere(
                 p = Path(container_path)
                 try:
                     p = p.resolve()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 if target_is_old:
                     # For staging clone workspaces, delete the workspace dir directly when it
@@ -263,8 +298,8 @@ def delete_collection_everywhere(
                         if p.parent.resolve() == work_root and (p.name or "").endswith("_old"):
                             if _delete_path_tree(p):
                                 out["deleted_managed_workspaces"] += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Suppressed exception: {e}")
                 else:
                     if _is_managed_upload_workspace_dir(p, work_root=work_root, marker_root=codebase_root):
                         if _delete_path_tree(p):
@@ -277,7 +312,8 @@ def delete_collection_everywhere(
                 work_root=work_root,
                 codebase_root=codebase_root,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Suppressed exception, continuing: {e}")
             continue
 
     return out
@@ -340,8 +376,8 @@ def copy_collection_qdrant(
             if overwrite:
                 try:
                     cli.delete_collection(collection_name=dest)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
             try:
                 src_info = cli.get_collection(collection_name=src)
@@ -433,8 +469,8 @@ def copy_collection_qdrant(
         finally:
             try:
                 cli.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     def _count_points(name: str) -> Optional[int]:
         if QdrantClient is None:
@@ -448,8 +484,8 @@ def copy_collection_qdrant(
         finally:
             try:
                 cli.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
 
     source_count = _count_points(src)
 

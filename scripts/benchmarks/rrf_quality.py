@@ -12,6 +12,7 @@ Validates that RRF provides lift over the best single retrieval method.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 # Add project root to path
+
+logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -28,8 +31,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv(PROJECT_ROOT / ".env")
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 # Fix Qdrant URL for running outside Docker
 qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
@@ -44,8 +47,8 @@ try:
         os.environ["COLLECTION_NAME"] = get_collection_name() or "codebase"
     else:
         os.environ["COLLECTION_NAME"] = resolve_collection_auto(os.environ.get("COLLECTION_NAME"))
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"Suppressed exception: {e}")
 
 print(
     f"[bench] Using QDRANT_URL={os.environ.get('QDRANT_URL', '')} "

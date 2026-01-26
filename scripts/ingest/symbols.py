@@ -4,6 +4,8 @@ ingest/symbols.py - Symbol extraction for code analysis.
 
 This module provides functions for extracting functions, classes, methods,
 and other code symbols from source files using tree-sitter or regex fallbacks.
+
+Also includes concept-aware extraction using language mappings.
 """
 from __future__ import annotations
 
@@ -11,14 +13,31 @@ import os
 import re
 import ast
 import hashlib
+import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from scripts.ingest.tree_sitter import (
     _use_tree_sitter,
     _TS_LANGUAGES,
     _ts_parser,
 )
+
+# Import concept-aware extraction
+try:
+    from scripts.ingest.language_mappings import (
+        ConceptType,
+        ConceptResult,
+        get_mapping,
+        supported_languages,
+    )
+    _CONCEPT_MAPPINGS_AVAILABLE = True
+except ImportError:
+    _CONCEPT_MAPPINGS_AVAILABLE = False
+    ConceptType = None  # type: ignore
+    ConceptResult = None  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -1231,21 +1250,30 @@ def _choose_symbol_for_chunk(start: int, end: int, symbols: List[_Sym]):
 # ---------------------------------------------------------------------------
 # Smart symbol reindexing support
 # ---------------------------------------------------------------------------
-def extract_symbols_with_tree_sitter(file_path: str) -> dict:
+def extract_symbols_with_tree_sitter(
+    file_path: str,
+    content: str | None = None,
+    language: str | None = None,
+) -> dict:
     """Extract functions, classes, methods from file using tree-sitter or fallback.
+
+    Args:
+        file_path: Path to the file (used for language detection if language not provided)
+        content: Optional file content to avoid redundant file reads
+        language: Optional language override (detected from file_path if not provided)
 
     Returns:
         dict: {symbol_id: {name, type, start_line, end_line, content_hash, pseudo, tags}}
     """
     from scripts.ingest.pipeline import detect_language
-    
+
     try:
-        # Read file content
-        text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
-        language = detect_language(Path(file_path))
+        # Use provided content or read from file
+        text = content if content is not None else Path(file_path).read_text(encoding="utf-8", errors="ignore")
+        lang = language if language is not None else detect_language(Path(file_path))
 
         # Use existing symbol extraction infrastructure
-        symbols_list = _extract_symbols(language, text)
+        symbols_list = _extract_symbols(lang, text)
 
         # Convert to our expected dict format
         symbols = {}
@@ -1274,3 +1302,212 @@ def extract_symbols_with_tree_sitter(file_path: str) -> dict:
     except Exception as e:
         print(f"[SYMBOL_EXTRACTION] Failed to extract symbols from {file_path}: {e}")
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Concept-aware extraction
+# ---------------------------------------------------------------------------
+def extract_concepts(
+    text: str,
+    language: str,
+    concepts: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Extract semantic concepts from source code using language mappings.
+
+    This function uses tree-sitter queries to extract semantic concepts
+    (DEFINITION, BLOCK, COMMENT, IMPORT, STRUCTURE) from code. This enables
+    concept-aware chunking where DEFINITIONs stay intact and BLOCKs can be
+    aggressively merged.
+
+    Args:
+        text: Source code text
+        language: Programming language (e.g., "python", "rust")
+        concepts: Optional list of concept types to extract. If None, extracts all.
+                  Valid values: "definition", "block", "comment", "import", "structure"
+
+    Returns:
+        List of concept dicts with keys:
+            - concept: str (concept type)
+            - name: str (extracted name)
+            - content: str (extracted content)
+            - start_line: int
+            - end_line: int
+            - start_byte: int
+            - end_byte: int
+            - kind: str (sub-type like "function", "class", etc.)
+            - metadata: dict (language-specific metadata)
+    """
+    if not _CONCEPT_MAPPINGS_AVAILABLE:
+        logger.debug("Concept mappings not available, returning empty list")
+        return []
+
+    if not _use_tree_sitter():
+        logger.debug("Tree-sitter not enabled, concept extraction requires it")
+        return []
+
+    mapping = get_mapping(language)
+    if mapping is None:
+        logger.debug(f"No concept mapping for language: {language}")
+        return []
+
+    parser = _ts_parser(language)
+    if not parser:
+        logger.debug(f"No tree-sitter parser for language: {language}")
+        return []
+
+    try:
+        tree = parser.parse(text.encode("utf-8"))
+        if tree is None:
+            return []
+        root = tree.root_node
+    except Exception as e:
+        logger.warning(f"Tree-sitter parse failed for {language}: {e}")
+        return []
+
+    # Determine which concepts to extract
+    if concepts is None:
+        concept_types = list(ConceptType)
+    else:
+        concept_types = []
+        for c in concepts:
+            try:
+                concept_types.append(ConceptType(c.lower()))
+            except ValueError:
+                logger.warning(f"Unknown concept type: {c}")
+
+    results: List[Dict[str, Any]] = []
+    content_bytes = text.encode("utf-8")
+
+    # Get tree-sitter language for queries
+    ts_lang = _TS_LANGUAGES.get(language)
+    if ts_lang is None:
+        return []
+
+    for concept_type in concept_types:
+        query_str = mapping.get_query_for_concept(concept_type)
+        if not query_str:
+            continue
+
+        try:
+            # Create and execute query
+            query = ts_lang.query(query_str)
+            captures = query.captures(root)
+
+            # Group captures by definition node
+            current_captures: Dict[str, Any] = {}
+            current_def_node = None
+
+            for node, capture_name in captures:
+                if capture_name in ("definition", "block"):
+                    # Flush previous
+                    if current_def_node is not None and current_captures:
+                        result = _build_concept_result(
+                            concept_type, mapping, current_captures, content_bytes, current_def_node
+                        )
+                        if result:
+                            results.append(result)
+                    current_captures = {capture_name: node}
+                    current_def_node = node
+                else:
+                    current_captures[capture_name] = node
+
+            # Flush last
+            if current_def_node is not None and current_captures:
+                result = _build_concept_result(
+                    concept_type, mapping, current_captures, content_bytes, current_def_node
+                )
+                if result:
+                    results.append(result)
+
+        except Exception as e:
+            logger.debug(f"Query failed for {concept_type.value} in {language}: {e}")
+            continue
+
+    # Sort by start line
+    results.sort(key=lambda r: r.get("start_line", 0))
+    return results
+
+
+def _build_concept_result(
+    concept_type: Any,  # ConceptType
+    mapping: Any,
+    captures: Dict[str, Any],
+    content_bytes: bytes,
+    def_node: Any,
+) -> Optional[Dict[str, Any]]:
+    """Build a concept result dict from captures."""
+    try:
+        name = mapping.extract_name(concept_type, captures, content_bytes)
+        content = mapping.extract_content(concept_type, captures, content_bytes)
+        metadata = {}
+        if hasattr(mapping, "extract_metadata"):
+            metadata = mapping.extract_metadata(concept_type, captures, content_bytes)
+
+        kind = metadata.get("kind", concept_type.value)
+
+        return {
+            "concept": concept_type.value,
+            "name": name,
+            "content": content,
+            "start_line": def_node.start_point[0] + 1,
+            "end_line": def_node.end_point[0] + 1,
+            "start_byte": def_node.start_byte,
+            "end_byte": def_node.end_byte,
+            "kind": kind,
+            **metadata,
+        }
+    except Exception as e:
+        logger.debug(f"Failed to build concept result: {e}")
+        return None
+
+
+def extract_concepts_for_chunking(
+    text: str,
+    language: str,
+) -> List[_Sym]:
+    """Extract concepts and convert to _Sym format for chunking compatibility.
+
+    This bridges the concept-aware extraction with the existing chunking system.
+    It extracts DEFINITIONs (functions, classes, constants) and converts them
+    to _Sym dicts that the chunking system can use.
+
+    Args:
+        text: Source code text
+        language: Programming language
+
+    Returns:
+        List of _Sym dicts compatible with existing chunking
+    """
+    concepts = extract_concepts(text, language, concepts=["definition"])
+
+    syms: List[_Sym] = []
+    for c in concepts:
+        kind = c.get("kind", "unknown")
+        # Map concept kinds to existing symbol kinds
+        kind_map = {
+            "function": "function",
+            "async_function": "function",
+            "class": "class",
+            "method": "method",
+            "struct": "struct",
+            "enum": "enum",
+            "trait": "trait",
+            "impl": "impl",
+            "constant": "constant",
+            "const": "constant",
+            "static": "constant",
+            "type_alias": "type",
+            "macro": "macro",
+        }
+        mapped_kind = kind_map.get(kind, kind)
+
+        syms.append(_Sym(
+            kind=mapped_kind,
+            name=c.get("name", ""),
+            start=c.get("start_line", 0),
+            end=c.get("end_line", 0),
+            concept=c.get("concept", ""),
+            metadata=c,
+        ))
+
+    return syms

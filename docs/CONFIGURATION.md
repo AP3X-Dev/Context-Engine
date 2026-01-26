@@ -10,6 +10,7 @@ Complete environment variable reference for Context Engine.
 - [Core Settings](#core-settings)
 - [Embedding Models](#embedding-models)
 - [Indexing & Micro-Chunks](#indexing--micro-chunks)
+  - [Chunking Strategies](#chunking-strategies)
 - [Query Optimization](#query-optimization)
 - [Watcher Settings](#watcher-settings)
 - [Reranker](#reranker)
@@ -105,12 +106,44 @@ make reset-dev-dual  # Recreates collection and reindexes
 | USE_TREE_SITTER | Enable tree-sitter parsing (py/js/ts) | 1 (on) |
 | INDEX_USE_ENHANCED_AST | Enable advanced AST-based semantic chunking | 1 (on) |
 | INDEX_SEMANTIC_CHUNKS | Enable semantic chunking (preserve function/class boundaries) | 1 (on) |
+| INDEX_SOSC_CHUNKS | Enable SOSC chunking (concept-aware, search-optimized) | 0 (off) |
+| INDEX_CAST_CHUNKS | Enable CAST+ chunking (hybrid merging with density scoring) | 0 (off) |
+| INDEX_SDC_CHUNKS | Enable SDC chunking (semantic density chunking) | 0 (off) |
 | INDEX_CHUNK_LINES | Lines per chunk (non-micro mode) | 120 |
 | INDEX_CHUNK_OVERLAP | Overlap lines between chunks | 20 |
 | INDEX_BATCH_SIZE | Upsert batch size | 64 |
 | INDEX_PROGRESS_EVERY | Log progress every N files | 200 |
 | SMART_SYMBOL_REINDEXING | Reuse embeddings when only symbols change | 1 (enabled) |
 | MAX_CHANGED_SYMBOLS_RATIO | Threshold for full reindex vs smart update | 0.6 |
+
+### Chunking Strategies
+
+Context Engine supports multiple chunking strategies. Only one can be active at a time. Priority order (first enabled wins):
+
+1. **MICRO** (`INDEX_MICRO_CHUNKS=1`) - Token-based micro-chunking for ReFRAG. 16-token windows with 8-token stride.
+
+2. **SOSC** (`INDEX_SOSC_CHUNKS=1`) - Search-Optimized Semantic Chunking. Uses tree-sitter + language mappings to extract concept-aware chunks (DEFINITION, BLOCK, COMMENT, IMPORT, STRUCTURE). Best for search quality - clean boundaries, respects symbol structure.
+
+3. **CAST+** (`INDEX_CAST_CHUNKS=1`) - Hybrid chunking combining concept-aware grouping with density scoring. Merges compatible concepts aggressively (e.g., docstring + function). Best for token efficiency.
+
+4. **SDC** (`INDEX_SDC_CHUNKS=1`) - Semantic Density Chunking. Token-aware chunking with density scoring.
+
+5. **SEMANTIC** (`INDEX_SEMANTIC_CHUNKS=1`, default) - AST-aware chunking that preserves function/class boundaries.
+
+6. **LINE-BASED** (fallback) - Simple line-based chunking with overlap.
+
+**Recommended for search quality:** `INDEX_SOSC_CHUNKS=1`
+**Recommended for token efficiency:** `INDEX_CAST_CHUNKS=1`
+
+| SOSC Config | Description | Default |
+|-------------|-------------|---------|
+| SOSC_MAX_CHARS | Max non-whitespace chars per chunk | 1200 |
+| SOSC_MIN_CHARS | Min chars to avoid tiny fragments | 50 |
+
+| CAST+ Config | Description | Default |
+|--------------|-------------|---------|
+| CAST_MAX_SIZE | Max non-whitespace chars per chunk | 1200 |
+| CAST_MIN_SIZE | Min chars to avoid tiny fragments | 50 |
 
 ## Query Optimization
 
@@ -248,6 +281,23 @@ RERANK_EVENTS_ENABLED=0
 | RERANK_LLM_SAMPLE_RATE | Fraction of queries to evaluate with LLM teacher | 1.0 |
 | RERANK_VICREG_WEIGHT | Weight for VICReg consistency loss | 0.1 |
 
+### Calibrated Confidence (Early Stopping)
+
+Enhanced early stopping that considers score separation between top candidates, preventing premature stopping when results are in close competition.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| CALIBRATED_CONFIDENCE | Enable score-separation-aware early stopping | 0 (disabled) |
+| CONFIDENCE_MIN_SEPARATION | Minimum relative score gap between #1 and #2 to stop | 0.15 |
+
+**How it works:**
+- Standard early stopping checks rank stability and improvement threshold
+- Calibrated confidence adds a third check: is the top result clearly ahead?
+- If `(top1 - top2) / top1 < min_separation`, continue refining
+- Prevents stopping when top-2 candidates are neck-and-neck (e.g., 0.51 vs 0.49)
+
+**When to enable:** Useful for queries where ranking precision matters and you want the reranker to "work harder" on close calls.
+
 ## Decoder (llama.cpp / OpenAI / GLM / MiniMax)
 
 | Name | Description | Default |
@@ -327,12 +377,26 @@ REFRAG_RUNTIME=glm  # or openai, minimax, llamacpp
 
 ### Pseudo Backfill Worker
 
-Deferred pseudo/tag generation runs asynchronously after initial indexing.
+Deferred pseudo/tag generation runs asynchronously after initial indexing. This significantly speeds up initial indexing by skipping LLM-based pseudo-tag generation during the indexer run, deferring it to a background worker thread in the watcher service.
 
 | Name | Description | Default |
 |------|-------------|---------|
 | PSEUDO_BACKFILL_ENABLED | Enable async pseudo/tag backfill worker | 0 (disabled) |
-| PSEUDO_DEFER_TO_WORKER | Skip inline pseudo, defer to backfill worker | 0 (disabled) |
+| PSEUDO_DEFER_TO_WORKER | Skip inline pseudo, defer to backfill worker | 1 (enabled) |
+| GRAPH_BACKFILL_ENABLED | Enable graph edge backfill in watcher worker | 1 (enabled) |
+
+**How it works:**
+1. When `PSEUDO_DEFER_TO_WORKER=1`, the indexer generates only base chunks (no pseudo-tags)
+2. The watcher service starts a `_start_pseudo_backfill_worker` daemon thread
+3. This thread periodically calls `pseudo_backfill_tick()` to enrich chunks with LLM-generated tags
+4. If `GRAPH_BACKFILL_ENABLED=1`, it also calls `graph_backfill_tick()` to populate symbol graph edges
+
+**Benefits:**
+- Initial indexing is 2-5x faster (no LLM calls blocking indexer)
+- Background enrichment happens continuously without blocking searches
+- Failed LLM calls don't break indexing; worker retries automatically
+
+**Recommended for production:** Enable both for fastest initial indexing with eventual enrichment.
 
 ### Adaptive Span Sizing
 
@@ -458,6 +522,23 @@ To use legacy settings (pre-v2): `LEX_VECTOR_DIM=4096 LEX_MULTI_HASH=1 LEX_BIGRA
 | HYBRID_RESULTS_CACHE | Max cached search results | 128 |
 | HYBRID_RESULTS_CACHE_ENABLED | Enable search result caching | 1 (enabled) |
 
+### Codebase State Backend
+
+Controls where `.codebase/state.json`, `.codebase/cache.json`, and symbol cache data are stored.
+Useful for Kubernetes deployments where a shared filesystem is not reliable.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| CODEBASE_STATE_BACKEND | State backend (`file` or `redis`) | file |
+| CODEBASE_STATE_REDIS_ENABLED | Enable Redis backend when CODEBASE_STATE_BACKEND is unset | 0 (disabled) |
+| CODEBASE_STATE_REDIS_URL | Redis connection URL | redis://redis:6379/0 |
+| CODEBASE_STATE_REDIS_PREFIX | Redis key prefix | context-engine:codebase |
+| CODEBASE_STATE_REDIS_LOCK_TTL_MS | Redis lock TTL in ms | 5000 |
+| CODEBASE_STATE_REDIS_LOCK_WAIT_MS | Redis lock wait in ms | 2000 |
+| CODEBASE_STATE_REDIS_SOCKET_TIMEOUT | Redis socket timeout in seconds | 2 |
+| CODEBASE_STATE_REDIS_CONNECT_TIMEOUT | Redis connect timeout in seconds | 2 |
+| CODEBASE_STATE_REDIS_MAX_CONNECTIONS | Redis connection pool size limit | 10 |
+
 ### Semantic Expansion
 
 Synonym/related term expansion for improved recall on natural language queries.
@@ -481,6 +562,45 @@ Query expansion uses the decoder infrastructure (set via `REFRAG_RUNTIME`):
 
 Set `LLM_EXPAND_MAX=4` to enable LLM-assisted query expansion (generates up to 4 alternate phrasings).
 `EXPAND_MAX_TOKENS` controls the response length budget for the LLM call.
+
+### Pattern-based Expansion
+
+Uses discovered code patterns from the `OnlinePatternLearner` for query expansion. When enabled, searches for patterns matching the query and extracts expansion terms from pattern exemplars and descriptions.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| PATTERN_EXPANSION | Enable pattern-based query expansion (Tier 6) | 0 (disabled) |
+
+**How it works:**
+1. Query is matched against discovered patterns via `natural_language_query()`
+2. Terms are extracted from pattern descriptions and exemplar symbol names
+3. Added as Tier 6 expansions with weight 0.45
+
+**Requirements:** Pattern learner must have discovered patterns (runs during indexing when pattern detection is enabled).
+
+### Intent-Aware Expansion Cascade (IAEC)
+
+Routes query intent to specific expansion strategies instead of running all expansion tiers uniformly. Uses the MCP router's intent classification to select which expansion tiers are appropriate for each query type.
+
+| Name | Description | Default |
+|------|-------------|---------|
+| INTENT_EXPANSION_CASCADE | Enable intent-aware expansion routing | 0 (disabled) |
+
+**Intent → Strategy mapping:**
+
+| Intent | Expansion Behavior |
+|--------|-------------------|
+| `symbol_graph` | Skip all expansion (exact symbol match only), 2x symbol boost |
+| `search_callers` / `search_importers` | Light expansion, 1.5x symbol boost |
+| `search_tests` | Full expansion + inject test patterns (`test_`, `pytest`, `_spec`) |
+| `search_config` | Full expansion + inject config patterns (`config`, `.yaml`, `.json`) |
+| `answer` | Full expansion except word substitution (reduces noise for explanations) |
+| `search` | Default balanced strategy (all tiers enabled) |
+
+**Why use IAEC:**
+- Symbol-focused queries (callers, graph) skip semantic expansion noise
+- Domain-specific queries (tests, config) get relevant term injection
+- Reduces token waste and improves precision for specialized queries
 
 ### Filename Boost
 
@@ -587,4 +707,3 @@ docker compose run --rm indexer --root /work --no-default-excludes --exclude '/v
 | Large (1k+ files) | 120 (default) | 20 | 128+ |
 
 For large monorepos, set `INDEX_PROGRESS_EVERY=200` for visibility.
-

@@ -3,6 +3,7 @@
 #
 # This adds Neo4j as an alternative graph backend for symbol relationships.
 # Provides advanced graph traversals, path finding, and relationship analytics.
+# Includes Graph Data Science (GDS) library for PageRank, community detection, etc.
 #
 # Enable via: NEO4J_GRAPH=1 in your .env file
 #
@@ -10,9 +11,9 @@
 # Bolt: bolt://localhost:7687
 
 services:
-  # Neo4j Graph Database
+  # Neo4j Graph Database with Graph Data Science
   neo4j:
-    image: neo4j:5.15-community
+    image: neo4j:5.26.0-community
     container_name: neo4j-graph
     ports:
       - "7474:7474"   # HTTP browser interface
@@ -20,14 +21,16 @@ services:
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-contextengine}
-      - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
       # Neo4j 5.x uses server.memory.* instead of dbms.memory.*
-      - NEO4J_server_memory_pagecache_size=512M
-      - NEO4J_server_memory_heap_initial__size=1G
-      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=1G
+      - NEO4J_server_memory_heap_initial__size=2G
+      - NEO4J_server_memory_heap_max__size=2G
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -87,5 +90,7 @@ volumes:
   neo4j_data:
     driver: local
   neo4j_logs:
+    driver: local
+  neo4j_plugins:
     driver: local
 

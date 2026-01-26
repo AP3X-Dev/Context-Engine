@@ -16,11 +16,14 @@ Environment Variables:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Any, List, Optional, Tuple
 
 # Default FastEmbed reranker model (None = disabled, use ONNX paths)
+
+logger = logging.getLogger(__name__)
 DEFAULT_RERANKER_MODEL: Optional[str] = None
 
 
@@ -134,8 +137,8 @@ def get_reranker_model(model_name: Optional[str] = None) -> Optional[Any]:
                 max_tokens = _get_rerank_max_tokens()
                 try:
                     tok.enable_truncation(max_length=max_tokens)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
 
                 # Default to CPU for production (Kubernetes).
                 # Set ONNX_PROVIDERS env var for local GPU acceleration.
@@ -181,12 +184,27 @@ def rerank_pairs(
     if hasattr(model, "rerank"):
         try:
             # TextCrossEncoder.rerank expects query and documents separately
+            # NOTE: This assumes all pairs have the same query. If queries differ,
+            # results may be incorrect. Check for mixed queries and warn.
             query = pairs[0][0]
             documents = [doc for _, doc in pairs]
+
+            # Warn if queries differ (indicates potential misuse)
+            unique_queries = set(q for q, _ in pairs)
+            if len(unique_queries) > 1:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"rerank_pairs called with {len(unique_queries)} different queries; "
+                    "only the first query will be used for scoring. "
+                    "Consider grouping by query for accurate results."
+                )
+
             results = list(model.rerank(query, documents, top_k=len(documents)))
             # Results are floats (scores in document order)
             return [float(s) for s in results]
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug(f"FastEmbed rerank failed: {e}")
             return [0.0] * len(pairs)
 
     # ONNX session tuple (session, tokenizer)

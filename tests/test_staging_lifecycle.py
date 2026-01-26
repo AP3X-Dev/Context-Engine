@@ -116,6 +116,9 @@ def test_staging_start_promote_activate_and_abort_are_consistent(
         "normalize_schema": 0,
     }
 
+    def fake_get_graph_collection_name(base_collection: str) -> str:
+        return f"{base_collection}_graph"
+
     def fake_mapping_index(*, work_dir: str):
         return {
             collection: [
@@ -148,6 +151,7 @@ def test_staging_start_promote_activate_and_abort_are_consistent(
     def fake_normalize_cloned_collection_schema(**kwargs):
         calls["normalize_schema"] += 1
 
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
     monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", fake_copy_collection_qdrant)
     monkeypatch.setattr(indexing_admin, "recreate_collection_qdrant", fake_recreate_collection_qdrant)
     monkeypatch.setattr(indexing_admin, "spawn_ingest_code", fake_spawn_ingest_code)
@@ -165,6 +169,12 @@ def test_staging_start_promote_activate_and_abort_are_consistent(
     assert calls["copy"], "Expected copy_collection_qdrant to be called"
     assert calls["copy"][0]["source"] == collection
     assert calls["copy"][0]["target"] == old_collection
+
+    # Contract: copy_collection_qdrant called for graph -> _old_graph (best-effort).
+    assert len(calls["copy"]) >= 2, "Expected copy_collection_qdrant to be called for graph collection"
+    graph_copy = next((c for c in calls["copy"] if c.get("source") == f"{collection}_graph"), None)
+    assert graph_copy is not None, "Expected graph collection to be copied"
+    assert graph_copy["target"] == f"{old_collection}_graph"
 
     # Contract: workspace clone dir exists.
     assert (root / f"{repo_name}_old").exists()
@@ -221,6 +231,9 @@ def test_staging_start_promote_activate_and_abort_are_consistent(
 
     # Contract: _old collection delete invoked.
     assert any(d.get("collection") == old_collection for d in calls["delete"])
+
+    # Contract: _old_graph collection delete invoked (best-effort).
+    assert any(d.get("collection") == f"{old_collection}_graph" for d in calls["delete"])
 
     # Idempotent activate
     indexing_admin.activate_staging_rebuild(collection=collection, work_dir=str(root))
@@ -802,3 +815,157 @@ def test_watcher_collection_reuse_logical_repo(monkeypatch: pytest.MonkeyPatch, 
     coll = watch_utils._get_collection_for_repo(repo_path)
     assert coll == "reuse-coll"
     assert updates and updates[0]["updates"]["qdrant_collection"] == "reuse-coll"
+
+
+def test_staging_start_copies_graph_collection(staging_workspace: dict, monkeypatch: pytest.MonkeyPatch):
+    """Test that graph collection is copied during staging start."""
+    from scripts import indexing_admin
+    from scripts import workspace_state
+
+    root: Path = staging_workspace["root"]
+    repo_name: str = staging_workspace["repo_name"]
+    collection: str = staging_workspace["collection"]
+    repo_ws: Path = staging_workspace["repo_ws"]
+
+    _seed_repo_state(
+        workspace_state_module=workspace_state,
+        repo_ws=repo_ws,
+        repo_name=repo_name,
+        collection=collection,
+    )
+
+    calls = []
+
+    def fake_get_graph_collection_name(base_collection: str) -> str:
+        return f"{base_collection}_graph"
+
+    def fake_copy_collection_qdrant(**kwargs):
+        calls.append(("copy", kwargs.get("source"), kwargs.get("target")))
+        return kwargs.get("target")
+
+    monkeypatch.setattr(
+        indexing_admin,
+        "collection_mapping_index",
+        lambda *, work_dir: {collection: [{"repo_name": repo_name, "container_path": str(repo_ws)}]},
+    )
+    monkeypatch.setattr(indexing_admin, "_get_collection_point_count", lambda **_: 0)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", fake_copy_collection_qdrant)
+    monkeypatch.setattr(indexing_admin, "_wait_for_clone_points", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "_normalize_cloned_collection_schema", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "recreate_collection_qdrant", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "spawn_ingest_code", lambda **_: None)
+
+    indexing_admin.start_staging_rebuild(collection=collection, work_dir=str(root))
+
+    # Verify copy_collection_qdrant called for both main and graph collections
+    copy_calls = [c for c in calls if c[0] == "copy"]
+    assert len(copy_calls) >= 2, "Expected copy calls for both main and graph collections"
+
+    main_copy = next((c for c in copy_calls if c[1] == collection), None)
+    assert main_copy is not None, "Expected main collection to be copied"
+    assert main_copy[2] == f"{collection}_old"
+
+    graph_copy = next((c for c in copy_calls if c[1] == f"{collection}_graph"), None)
+    assert graph_copy is not None, "Expected graph collection to be copied"
+    assert graph_copy[2] == f"{collection}_old_graph"
+
+
+def test_staging_abort_deletes_graph_collection(staging_workspace: dict, monkeypatch: pytest.MonkeyPatch):
+    """Test that graph collection is deleted during abort."""
+    from scripts import indexing_admin
+    from scripts import workspace_state
+
+    root: Path = staging_workspace["root"]
+    repo_name: str = staging_workspace["repo_name"]
+    collection: str = staging_workspace["collection"]
+    repo_ws: Path = staging_workspace["repo_ws"]
+
+    _seed_repo_state(
+        workspace_state_module=workspace_state,
+        repo_ws=repo_ws,
+        repo_name=repo_name,
+        collection=collection,
+    )
+
+    delete_calls = []
+
+    def fake_get_graph_collection_name(base_collection: str) -> str:
+        return f"{base_collection}_graph"
+
+    def fake_delete_collection_qdrant(**kwargs):
+        delete_calls.append(kwargs.get("collection"))
+
+    monkeypatch.setattr(
+        indexing_admin,
+        "collection_mapping_index",
+        lambda *, work_dir: {collection: [{"repo_name": repo_name, "container_path": str(repo_ws)}]},
+    )
+    monkeypatch.setattr(indexing_admin, "_get_collection_point_count", lambda **_: 0)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "_wait_for_clone_points", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "_normalize_cloned_collection_schema", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "recreate_collection_qdrant", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "spawn_ingest_code", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "delete_collection_qdrant", fake_delete_collection_qdrant)
+
+    # Start staging to create _old artifacts
+    indexing_admin.start_staging_rebuild(collection=collection, work_dir=str(root))
+
+    # Abort staging
+    indexing_admin.abort_staging_rebuild(collection=collection, work_dir=str(root), delete_collection=True)
+
+    # Verify delete_collection_qdrant called for both main and graph collections
+    assert f"{collection}_old" in delete_calls, "Expected main _old collection to be deleted"
+    assert f"{collection}_old_graph" in delete_calls, "Expected graph _old collection to be deleted"
+
+
+def test_staging_activate_deletes_graph_collection(staging_workspace: dict, monkeypatch: pytest.MonkeyPatch):
+    """Test that graph collection is deleted during activate."""
+    from scripts import indexing_admin
+    from scripts import workspace_state
+
+    root: Path = staging_workspace["root"]
+    repo_name: str = staging_workspace["repo_name"]
+    collection: str = staging_workspace["collection"]
+    repo_ws: Path = staging_workspace["repo_ws"]
+
+    _seed_repo_state(
+        workspace_state_module=workspace_state,
+        repo_ws=repo_ws,
+        repo_name=repo_name,
+        collection=collection,
+    )
+
+    delete_calls = []
+
+    def fake_get_graph_collection_name(base_collection: str) -> str:
+        return f"{base_collection}_graph"
+
+    def fake_delete_collection_qdrant(**kwargs):
+        delete_calls.append(kwargs.get("collection"))
+
+    monkeypatch.setattr(
+        indexing_admin,
+        "collection_mapping_index",
+        lambda *, work_dir: {collection: [{"repo_name": repo_name, "container_path": str(repo_ws)}]},
+    )
+    monkeypatch.setattr(indexing_admin, "_get_collection_point_count", lambda **_: 0)
+    monkeypatch.setattr(indexing_admin, "get_graph_collection_name_t", fake_get_graph_collection_name)
+    monkeypatch.setattr(indexing_admin, "copy_collection_qdrant", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "_wait_for_clone_points", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "_normalize_cloned_collection_schema", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "recreate_collection_qdrant", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "spawn_ingest_code", lambda **_: None)
+    monkeypatch.setattr(indexing_admin, "delete_collection_qdrant", fake_delete_collection_qdrant)
+
+    # Start staging to create _old artifacts
+    indexing_admin.start_staging_rebuild(collection=collection, work_dir=str(root))
+
+    # Activate staging
+    indexing_admin.activate_staging_rebuild(collection=collection, work_dir=str(root))
+
+    # Verify delete_collection_qdrant called for both main and graph collections
+    assert f"{collection}_old" in delete_calls, "Expected main _old collection to be deleted"
+    assert f"{collection}_old_graph" in delete_calls, "Expected graph _old collection to be deleted"
