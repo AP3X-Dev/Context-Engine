@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Config
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-MAX_CONCURRENT = int(os.environ.get("EMBED_MAX_CONCURRENT", "2") or 2)
+MAX_CONCURRENT = max(1, int(os.environ.get("EMBED_MAX_CONCURRENT", "2") or 2))
 MAX_BATCH_SIZE = int(os.environ.get("EMBED_MAX_BATCH", "256") or 256)
 
 # Global model and semaphore

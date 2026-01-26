@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # ONNX concurrency control - prevents memory explosion with parallel workers
 # ---------------------------------------------------------------------------
-_EMBED_MAX_CONCURRENT = int(os.environ.get("EMBED_MAX_CONCURRENT", "2") or 2)
+_EMBED_MAX_CONCURRENT = max(1, int(os.environ.get("EMBED_MAX_CONCURRENT", "2") or 2))
 _EMBED_SEMAPHORE = threading.Semaphore(_EMBED_MAX_CONCURRENT)
 
 # Remote embedding service configuration

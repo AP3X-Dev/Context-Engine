@@ -10,6 +10,7 @@ orjson
 redis>=5.0.0
 xxhash>=3.0.0
 lz4>=4.0.0
+requests>=2.28.0
 # Tree-sitter 0.25+ with individual language packages
 tree_sitter>=0.25.0
 tree_sitter_python>=0.23.0
