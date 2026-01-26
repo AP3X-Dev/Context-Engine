@@ -280,6 +280,7 @@ def _ensure_collection_with_mode(
             sparse_vectors_config=sparse_cfg,
             hnsw_config=models.HnswConfigDiff(m=16, ef_construct=256),
             quantization_config=quant_cfg,
+            on_disk_payload=True,  # Enable zstd compression for 50-70% storage savings
         )
         sparse_info = f", sparse: [{LEX_SPARSE_NAME}]" if sparse_cfg else ""
         quant_info = f", quantization: {os.environ.get('QDRANT_QUANTIZATION', 'none')}" if quant_cfg else ""
