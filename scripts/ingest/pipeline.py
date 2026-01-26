@@ -15,10 +15,23 @@ import time
 import xxhash
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
+
+# Import lock contention handling for skip-and-retry logic during parallel indexing
+try:
+    from scripts.workspace_state import LockContendedException, enable_lock_skip_on_contention
+except ImportError:
+    # Fallback if not available
+    class LockContendedException(Exception):
+        pass
+
+    @contextmanager
+    def enable_lock_skip_on_contention():
+        yield
 
 from qdrant_client import QdrantClient, models
 
@@ -1479,8 +1492,12 @@ def index_repo(
     # Cap at reasonable max to avoid overwhelming Qdrant
     max_workers = min(index_workers, 16) if index_workers > 1 else 1
 
-    def _index_file_task(file_path: Path) -> tuple[Path, Optional[Exception]]:
-        """Task for parallel file indexing. Returns (path, error_or_none)."""
+    def _index_file_task(file_path: Path) -> tuple[Path, Optional[Exception], bool]:
+        """Task for parallel file indexing.
+
+        Returns:
+            (path, error_or_none, was_skipped_due_to_lock)
+        """
         per_file_repo = (
             root_repo_for_cache
             if root_repo_for_cache is not None
@@ -1499,32 +1516,58 @@ def index_repo(
                 allowed_vectors=allowed_vectors,
                 allowed_sparse=allowed_sparse,
             )
-            return (file_path, None)
+            return (file_path, None, False)
+        except LockContendedException:
+            # Lock contention - mark for retry
+            return (file_path, None, True)
         except Exception as e:
-            return (file_path, e)
+            return (file_path, e, False)
 
     files_processed = 0
     errors = []
+    retry_queue: list[Path] = []
 
     if max_workers > 1:
-        # Parallel processing with ThreadPoolExecutor
+        # Parallel processing with ThreadPoolExecutor and skip-and-retry for lock contention
         if log_progress:
             print(f"[index] Using {max_workers} parallel workers")
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_index_file_task, fp): fp for fp in files}
-            for future in as_completed(futures):
-                files_processed += 1
-                file_path, error = future.result()
+
+        # Enable skip-on-contention mode for parallel phase
+        # This makes Redis locks fail fast instead of blocking, allowing other files to proceed
+        with enable_lock_skip_on_contention():
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_index_file_task, fp): fp for fp in files}
+                for future in as_completed(futures):
+                    files_processed += 1
+                    file_path, error, was_skipped = future.result()
+                    if was_skipped:
+                        # Lock contention - queue for retry
+                        retry_queue.append(file_path)
+                    elif error:
+                        errors.append((file_path, error))
+                        print(f"Error indexing {file_path}: {error}")
+                    if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
+                        print(f"[index] {files_processed}/{total_files} files processed")
+
+        # Retry phase: process skipped files sequentially (no lock contention mode)
+        # This runs OUTSIDE the enable_lock_skip_on_contention context, so locks wait normally
+        if retry_queue:
+            if log_progress:
+                print(f"[index] Retrying {len(retry_queue)} files skipped due to lock contention")
+            for file_path in retry_queue:
+                _, error, was_skipped = _index_file_task(file_path)
                 if error:
                     errors.append((file_path, error))
                     print(f"Error indexing {file_path}: {error}")
-                if log_progress and (files_processed % 25 == 0 or files_processed == total_files):
-                    print(f"[index] {files_processed}/{total_files} files processed")
+                # If still skipped on retry, that's a real issue - count as error
+                if was_skipped:
+                    errors.append((file_path, LockContendedException("Lock still contended after retry")))
+                    logger.warning(f"Lock still contended after retry for {file_path}")
     else:
-        # Sequential processing (original behavior)
+        # Sequential processing (original behavior) - no retry needed
         for file_path in iterator:
             files_processed += 1
-            file_path, error = _index_file_task(file_path)
+            file_path, error, _ = _index_file_task(file_path)
             if error:
                 errors.append((file_path, error))
                 print(f"Error indexing {file_path}: {error}")

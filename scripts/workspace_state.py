@@ -42,6 +42,12 @@ _cache_memo_last_check: Dict[str, float] = {}
 _REDIS_CLIENT = None
 _REDIS_CLIENT_LOCK = threading.Lock()
 
+# Global flag to enable skip-if-contended behavior for Redis locks.
+# When set, locks that are contended will raise LockContendedException
+# instead of waiting, allowing the caller to retry later.
+# Uses threading.Event for thread-safe cross-thread visibility in ThreadPoolExecutor.
+_lock_skip_contended_event = threading.Event()
+
 
 def _redis_state_enabled() -> bool:
     backend = str(os.environ.get("CODEBASE_STATE_BACKEND", "") or "").strip().lower()
@@ -238,8 +244,62 @@ def _redis_delete(kind: str, path: Path) -> bool:
         return False
 
 
+class LockContendedException(Exception):
+    """Raised when a Redis lock cannot be acquired and skip_if_contended=True."""
+    pass
+
+
 @contextmanager
-def _redis_lock(kind: str, path: Path):
+def enable_lock_skip_on_contention():
+    """Context manager to enable skip-if-contended behavior for Redis locks.
+
+    When active, any Redis lock contention will raise LockContendedException
+    instead of waiting, allowing the caller to retry the operation later.
+    This is useful for parallel processing where one file's lock shouldn't
+    block processing of other files.
+
+    This uses a threading.Event for cross-thread visibility, so worker threads
+    in a ThreadPoolExecutor will see the flag.
+
+    Example:
+        with enable_lock_skip_on_contention():
+            with ThreadPoolExecutor() as executor:
+                # Worker threads will see the skip flag
+                futures = [executor.submit(index_file, f) for f in files]
+    """
+    _lock_skip_contended_event.set()
+    try:
+        yield
+    finally:
+        _lock_skip_contended_event.clear()
+
+
+def _should_skip_if_contended() -> bool:
+    """Check if skip-if-contended mode is enabled (thread-safe, cross-thread visible)."""
+    return _lock_skip_contended_event.is_set()
+
+
+@contextmanager
+def _redis_lock(kind: str, path: Path, *, skip_if_contended: bool = False):
+    """Acquire a Redis distributed lock for the given resource.
+
+    Args:
+        kind: Type of resource ("state", "cache", "symbols")
+        path: Path to the resource being locked
+        skip_if_contended: If True, raise LockContendedException after a few quick
+            attempts instead of waiting the full timeout. Useful for parallel processing
+            where the caller can retry later. Also enabled if the thread-local
+            enable_lock_skip_on_contention() context manager is active.
+
+    Yields:
+        None when lock is acquired (or Redis not available)
+
+    Raises:
+        LockContendedException: When skip_if_contended=True and lock is contended
+    """
+    # Check thread-local flag as well as explicit parameter
+    skip_mode = skip_if_contended or _should_skip_if_contended()
+
     client = _get_redis_client()
     if client is None:
         yield
@@ -250,14 +310,23 @@ def _redis_lock(kind: str, path: Path):
         ttl_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_TTL_MS", "5000") or 5000)
     except Exception:
         ttl_ms = 5000
-    try:
-        wait_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_WAIT_MS", "2000") or 2000)
-    except Exception:
-        wait_ms = 2000
-    deadline = time.time() + (wait_ms / 1000.0)
+
+    # For skip_if_contended mode, try just a few times quickly (100-200ms max)
+    # For normal mode, wait up to REDIS_LOCK_WAIT_MS (default 2000ms)
+    if skip_mode:
+        max_attempts = 4
+        sleep_interval = 0.05  # 50ms between attempts = 200ms max
+    else:
+        try:
+            wait_ms = int(os.environ.get("CODEBASE_STATE_REDIS_LOCK_WAIT_MS", "2000") or 2000)
+        except Exception:
+            wait_ms = 2000
+        max_attempts = int(wait_ms / 50) + 1  # 50ms per attempt
+        sleep_interval = 0.05
+
     acquired = False
     attempts = 0
-    while time.time() < deadline:
+    for _ in range(max_attempts):
         attempts += 1
         try:
             if client.set(lock_key, token, nx=True, px=ttl_ms):
@@ -266,11 +335,17 @@ def _redis_lock(kind: str, path: Path):
         except Exception as e:
             logger.warning(f"Redis lock set failed for {lock_key}: {e}")
             break
-        time.sleep(0.05)
+        time.sleep(sleep_interval)
+
     if not acquired:
-        logger.info(f"Redis lock not acquired for {lock_key} after {attempts} attempts, proceeding without lock")
-        yield
-        return
+        if skip_mode:
+            logger.debug(f"Redis lock contended for {lock_key}, skipping (attempts={attempts})")
+            raise LockContendedException(f"Lock contended: {lock_key}")
+        else:
+            logger.info(f"Redis lock not acquired for {lock_key} after {attempts} attempts, proceeding without lock")
+            yield
+            return
+
     logger.debug(f"Redis lock acquired for {lock_key} (attempts={attempts}, ttl={ttl_ms}ms)")
     try:
         yield
