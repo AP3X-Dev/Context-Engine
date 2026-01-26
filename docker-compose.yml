@@ -66,11 +66,11 @@ services:
     container_name: redis-cache
     ports:
       - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    command: [ "redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru" ]
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -436,7 +436,7 @@ services:
 
   # Llama.cpp decoder service - same as base compose
   llamacpp:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
     container_name: llama-decoder-dev-remote
     environment:
       - LLAMA_ARG_MODEL=/models/model.gguf
@@ -518,8 +518,8 @@ services:
     volumes:
       - workspace_pvc:/work:rw
       - codebase_pvc:/work/.codebase:rw
-    entrypoint: ["sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work"]
-    restart: "no"  # Run once on startup, do not restart after completion
+    entrypoint: [ "sh", "-c", "mkdir -p /tmp/logs /tmp/huggingface/hub /tmp/huggingface/transformers /tmp/huggingface/fastembed && /app/scripts/wait-for-qdrant.sh && cd /app && python /app/scripts/ingest_code.py --root /work" ]
+    restart: "no" # Run once on startup, do not restart after completion
     cpus: 4.0
     networks:
       - dev-remote-network
