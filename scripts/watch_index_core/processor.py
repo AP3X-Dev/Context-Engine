@@ -9,7 +9,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-
 import xxhash
 
 import scripts.ingest_code as idx
@@ -129,7 +128,7 @@ def _maybe_handle_staging_file(
     if not (is_staging_enabled() and state_env and collection):
         return False
 
-    _text, file_hash = _read_text_and_sha1(path)
+    _text, file_hash = _read_text_and_hash(path)
     if file_hash:
         try:
             cached_hash = get_cached_file_hash(str(path), repo_name) if repo_name else None
@@ -349,8 +348,8 @@ def _process_paths(
             logger.debug(f"Suppressed exception: {e}")
 
 
-def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
-    """Read file text and compute hash. Uses xxhash for consistency with pipeline."""
+def _read_text_and_hash(path: Path) -> tuple[Optional[str], str]:
+    """Read file text and compute xxhash64 for consistency with pipeline."""
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -377,7 +376,7 @@ def _run_indexing_strategy(
     except Exception as e:
         logger.debug(f"Suppressed exception: {e}")
 
-    text, file_hash = _read_text_and_sha1(path)
+    text, file_hash = _read_text_and_hash(path)
     ok = False
     if text is not None:
         try:

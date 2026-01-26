@@ -38,10 +38,10 @@ def test_processor_handles_cache_read_errors(monkeypatch, tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("test content", encoding="utf-8")
     
-    # Exercise _read_text_and_sha1 - should handle errors gracefully and return content + hash
-    text, sha1 = proc_mod._read_text_and_sha1(test_file)
+    # Exercise _read_text_and_hash - should handle errors gracefully and return content + hash
+    text, file_hash = proc_mod._read_text_and_hash(test_file)
     assert text == "test content"
-    assert sha1 is not None and len(sha1) == 40  # SHA1 hex length
+    assert file_hash is not None and len(file_hash) == 16  # xxhash64 hex length
 
 
 def test_handler_move_event_handles_cache_errors(monkeypatch, tmp_path):
