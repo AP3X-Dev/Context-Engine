@@ -19,8 +19,8 @@ data:
   FASTMCP_HTTP_PORT: {{ .Values.config.fastmcp.httpPort | quote }}
   FASTMCP_INDEXER_HTTP_PORT: {{ .Values.config.fastmcp.indexerHttpPort | quote }}
   FASTMCP_HTTP_TRANSPORT: {{ .Values.config.fastmcp.httpTransport | quote }}
-  FASTMCP_HTTP_HEALTH_PORT: "18002"
-  FASTMCP_INDEXER_HTTP_HEALTH_PORT: "18003"
+  FASTMCP_HTTP_HEALTH_PORT: {{ .Values.config.fastmcp.httpHealthPort | quote }}
+  FASTMCP_INDEXER_HTTP_HEALTH_PORT: {{ .Values.config.fastmcp.indexerHttpHealthPort | quote }}
   
   INDEX_MICRO_CHUNKS: {{ .Values.config.indexing.microChunks | quote }}
   MAX_MICRO_CHUNKS_PER_FILE: {{ .Values.config.indexing.maxMicroChunksPerFile | quote }}

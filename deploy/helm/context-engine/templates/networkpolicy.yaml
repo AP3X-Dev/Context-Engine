@@ -25,8 +25,8 @@ spec:
         - protocol: TCP
           port: {{ .Values.qdrant.service.grpcPort }}
     {{- if .Values.networkPolicy.qdrant.allowExternal }}
-    - from: []
-      ports:
+    # Allow external access to Qdrant (any source)
+    - ports:
         - protocol: TCP
           port: {{ .Values.qdrant.service.httpPort }}
         - protocol: TCP
@@ -74,13 +74,16 @@ spec:
           port: {{ .Values.qdrant.service.httpPort }}
         - protocol: TCP
           port: {{ .Values.qdrant.service.grpcPort }}
+    # Allow DNS resolution (kube-dns)
     - to:
         - namespaceSelector: {}
       ports:
         - protocol: TCP
-          port: 443
-        - protocol: TCP
           port: 53
         - protocol: UDP
           port: 53
+    # Allow external HTTPS egress (for model downloads, external APIs)
+    - ports:
+        - protocol: TCP
+          port: 443
 {{- end }}
