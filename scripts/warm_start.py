@@ -101,9 +101,19 @@ async def warmup_reranker() -> float:
 async def warmup_embedding_model(model_name: str) -> float:
     """Warm up embedding model by loading and running dummy inference.
 
+    When EMBEDDING_PROVIDER=remote, checks the embedding service health instead
+    of loading a local ONNX model.
+
     Returns:
         Latency in milliseconds
     """
+    embedding_provider = os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
+
+    # Remote mode: check embedding service health instead of local model
+    if embedding_provider == "remote":
+        return await _warmup_remote_embedding()
+
+    # Local mode: load and warm up local ONNX model
     try:
         start = time.perf_counter()
         model = await asyncio.to_thread(get_embedding_model, model_name)
@@ -118,6 +128,51 @@ async def warmup_embedding_model(model_name: str) -> float:
 
     except Exception as e:
         logger.warning(f"Embedding warmup failed: {e}")
+        raise
+
+
+async def _warmup_remote_embedding() -> float:
+    """Check remote embedding service health and warm it up with a test request.
+
+    Returns:
+        Latency in milliseconds
+    """
+    import urllib.request
+    import json
+
+    service_url = os.environ.get("EMBEDDING_SERVICE_URL", "http://embedding:8100")
+    timeout = int(os.environ.get("EMBEDDING_SERVICE_TIMEOUT", "30"))
+
+    try:
+        start = time.perf_counter()
+
+        # First check health
+        health_url = f"{service_url.rstrip('/')}/health"
+        with urllib.request.urlopen(health_url, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Embedding service unhealthy: {resp.status}")
+            health_data = json.loads(resp.read().decode())
+            logger.info(f"Remote embedding service healthy: {health_data.get('model', 'unknown')}")
+
+        # Warm up with a test embedding request
+        embed_url = f"{service_url.rstrip('/')}/embed"
+        test_payload = json.dumps({"texts": ["warmup probe text"]}).encode()
+        req = urllib.request.Request(
+            embed_url,
+            data=test_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Embedding service embed failed: {resp.status}")
+
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"Remote embedding warmup: {elapsed:.1f}ms")
+        return elapsed
+
+    except Exception as e:
+        logger.warning(f"Remote embedding warmup failed: {e}")
         raise
 
 

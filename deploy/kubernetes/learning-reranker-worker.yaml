@@ -56,6 +56,10 @@ spec:
         - name: metadata-volume
           mountPath: /tmp/rerank_events
           subPath: rerank_events
+        env:
+        # Learning worker needs local embeddings for reranker training
+        - name: EMBEDDING_PROVIDER
+          value: "local"
         envFrom:
         - configMapRef:
             name: context-engine-config

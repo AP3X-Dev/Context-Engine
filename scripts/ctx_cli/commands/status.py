@@ -385,42 +385,67 @@ def get_graph_status(collection_name: str) -> Tuple[bool, Optional[Dict[str, Any
             logger.debug(f"Suppressed exception, continuing: {e}")
             continue  # Try next URL
 
-    # Check Neo4j - always try to connect for status
-    # Use localhost (Docker exposes port) with common default password
+    # Check Neo4j via HTTP API (works without neo4j Python package)
+    # Neo4j exposes HTTP API on port 7474
     try:
-        from neo4j import GraphDatabase
-
-        uri = "bolt://localhost:7687"
+        import base64
         user = os.environ.get("NEO4J_USER", "neo4j")
         password = os.environ.get("NEO4J_PASSWORD", "contextengine")
+        auth_str = base64.b64encode(f"{user}:{password}".encode()).decode()
 
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        driver.verify_connectivity()
-
-        with driver.session() as session:
-            node_result = session.run("MATCH (n:Symbol) RETURN count(n) as count")
-            node_count = node_result.single()["count"]
-
-            edge_result = session.run("MATCH ()-[r]->() RETURN count(r) as count")
-            edge_count = edge_result.single()["count"]
-
-            graph_info["neo4j"] = {
-                "connected": True,
-                "node_count": node_count,
-                "edge_count": edge_count,
+        # Query node count
+        node_query = {"statements": [{"statement": "MATCH (n:Symbol) RETURN count(n) as count"}]}
+        req = Request(
+            "http://localhost:7474/db/neo4j/tx/commit",
+            data=json.dumps(node_query).encode('utf-8'),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Basic {auth_str}"
             }
+        )
+        with urlopen(req, timeout=3) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode('utf-8'))
+                results = data.get("results", [])
+                if results and results[0].get("data"):
+                    node_count = results[0]["data"][0]["row"][0]
+                else:
+                    node_count = 0
 
-            if graph_info["backend"] == "qdrant":
-                graph_info["backend"] = "both"
-            else:
-                graph_info["backend"] = "neo4j"
-            success = True
+                # Query edge count
+                edge_query = {"statements": [{"statement": "MATCH ()-[r]->() RETURN count(r) as count"}]}
+                req = Request(
+                    "http://localhost:7474/db/neo4j/tx/commit",
+                    data=json.dumps(edge_query).encode('utf-8'),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "Authorization": f"Basic {auth_str}"
+                    }
+                )
+                with urlopen(req, timeout=3) as response2:
+                    if response2.status == 200:
+                        data2 = json.loads(response2.read().decode('utf-8'))
+                        results2 = data2.get("results", [])
+                        if results2 and results2[0].get("data"):
+                            edge_count = results2[0]["data"][0]["row"][0]
+                        else:
+                            edge_count = 0
 
-        driver.close()
-    except ImportError:
-        pass  # neo4j package not installed
+                        graph_info["neo4j"] = {
+                            "connected": True,
+                            "node_count": node_count,
+                            "edge_count": edge_count,
+                        }
+
+                        if graph_info["backend"] == "qdrant":
+                            graph_info["backend"] = "both"
+                        else:
+                            graph_info["backend"] = "neo4j"
+                        success = True
     except Exception as e:
-        logger.debug(f"Suppressed exception: {e}")  # Neo4j not available
+        logger.debug(f"Neo4j HTTP check failed: {e}")  # Neo4j not available
 
     return success, graph_info if success else None
 

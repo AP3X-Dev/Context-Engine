@@ -13,6 +13,7 @@ resources:
   # Core services
   - qdrant.yaml
   - redis.yaml
+  - embedding-service.yaml
   - code-models-pvc.yaml
   - upload-pvc.yaml
 
@@ -57,6 +58,9 @@ images:
     newTag: latest
     # newTag: v1.0.0
     # newName: your-registry/context-engine
+  - name: context-engine-embedding
+    newTag: latest
+    # newName: your-registry/context-engine-embedding
 
 # Namespace override
 namespace: context-engine
@@ -68,6 +72,8 @@ replicas:
     count: 1  # Set to 2+ for production
   - name: mcp-indexer
     count: 1  # Set to 2+ for production
+  - name: embedding-service
+    count: 2  # Shared embedding service replicas
 
 # Resource patches
 patches:

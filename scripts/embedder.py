@@ -76,6 +76,29 @@ _QWEN3_REGISTER_LOCK = threading.Lock()
 _ARCTIC_V2_REGISTERED = False
 _ARCTIC_V2_REGISTER_LOCK = threading.Lock()
 
+def _get_embedding_provider() -> str:
+    """Get embedding provider at call time (not import time) for test flexibility."""
+    return os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
+
+
+class RemoteEmbeddingStub:
+    """Lightweight stub for remote embedding mode - no ONNX loaded.
+
+    When EMBEDDING_PROVIDER=remote, we don't need to load the actual ONNX model
+    since all embedding calls go to the remote service. This stub provides the
+    model_name attribute needed by embed_batch() for routing.
+    """
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+
+    def embed(self, texts: List[str]):
+        """Stub - should not be called in remote mode."""
+        raise RuntimeError(
+            "RemoteEmbeddingStub.embed() called but EMBEDDING_PROVIDER=remote. "
+            "Use embed_batch() from scripts.ingest.qdrant which routes to remote service."
+        )
+
 
 def _register_qwen3_model() -> None:
     """Register Qwen3 ONNX model with FastEmbed (one-time, thread-safe)."""
@@ -149,12 +172,24 @@ def get_embedding_model(model_name: Optional[str] = None) -> Any:
         model_name: Model name override. If None, uses EMBEDDING_MODEL env var.
 
     Returns:
-        TextEmbedding instance (cached per model name).
+        TextEmbedding instance (cached per model name), or RemoteEmbeddingStub
+        when EMBEDDING_PROVIDER=remote (no ONNX loaded, saves ~3-4 GB RAM).
     """
-    from fastembed import TextEmbedding
-
     if model_name is None:
         model_name = os.environ.get("EMBEDDING_MODEL", DEFAULT_MODEL)
+
+    # Remote mode: return lightweight stub (no ONNX loaded)
+    # This saves ~3-4 GB RAM per indexer since embed_batch() routes to remote service
+    if _get_embedding_provider() == "remote":
+        cached = _EMBED_MODEL_CACHE.get(f"remote:{model_name}")
+        if cached is not None:
+            return cached
+        stub = RemoteEmbeddingStub(model_name)
+        _EMBED_MODEL_CACHE[f"remote:{model_name}"] = stub
+        logger.info(f"[embedder] Using remote embedding service for {model_name} (no local ONNX)")
+        return stub
+
+    from fastembed import TextEmbedding
 
     # Register Qwen3 if enabled and requested
     if QWEN3_ENABLED and "qwen3" in model_name.lower():

@@ -78,6 +78,51 @@ services:
     networks:
       - dev-remote-network
 
+  # Shared Embedding Service - ONNX models serve all indexers
+  # Memory: 6GB × 2 replicas = 12GB total (load balanced)
+  # Enable with EMBEDDING_PROVIDER=remote in .env
+  embedding:
+    build:
+      context: ./embedding_service
+      dockerfile: Dockerfile
+    # No container_name - allows replicas
+    ports:
+      - "8100-8101:8100"
+    environment:
+      # Model: use nomic for faster + better quality, or override via EMBEDDING_MODEL
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-ai/nomic-embed-text-v1.5}
+      - EMBED_MAX_CONCURRENT=${EMBED_MAX_CONCURRENT:-2}
+      - EMBED_MAX_BATCH=${EMBED_MAX_BATCH:-256}
+      # ONNX CPU optimizations
+      # ONNX_THREADS: limit threads per replica (0=all cores, 4-6 recommended for multi-replica)
+      - ONNX_THREADS=${ONNX_THREADS:-4}
+      # Disable thread spinning to reduce CPU burn when idle
+      - ONNX_DISABLE_SPINNING=${ONNX_DISABLE_SPINNING:-1}
+      - EMBED_OPTIMAL_BATCH=${EMBED_OPTIMAL_BATCH:-32}
+      # Limit OMP/MKL threads to match ONNX_THREADS
+      - OMP_NUM_THREADS=${ONNX_THREADS:-4}
+      - MKL_NUM_THREADS=${ONNX_THREADS:-4}
+      # Cache paths - aligned with Dockerfile and volume mount
+      - HF_HOME=/app/models
+      - FASTEMBED_CACHE_PATH=/app/models
+    volumes:
+      - embedding_cache:/app/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 6G
+          cpus: "4"
+    restart: unless-stopped
+    networks:
+      - dev-remote-network
+
   # Qdrant vector database - same as base compose
   qdrant:
     image: qdrant/qdrant:latest
@@ -244,7 +289,9 @@ services:
       - TRANSFORMERS_CACHE=/tmp/huggingface/transformers
       - FASTEMBED_CACHE_PATH=/tmp/huggingface/fastembed
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      # Override: learning worker calls embedder.embed() directly via RecursiveReranker._encode_raw()
+      # which doesn't route through embed_batch(). Needs local ONNX, not RemoteEmbeddingStub.
+      - EMBEDDING_PROVIDER=local
       # Cross-encoder reranker (used as teacher for learning)
       - RERANKER_MODEL=${RERANKER_MODEL:-}
       - RERANKER_ONNX_PATH=${RERANKER_ONNX_PATH:-}
@@ -756,6 +803,10 @@ volumes:
 
   # Redis data persistence
   redis_data:
+    driver: local
+
+  # Embedding service model cache
+  embedding_cache:
     driver: local
 
 # Custom network for service discovery

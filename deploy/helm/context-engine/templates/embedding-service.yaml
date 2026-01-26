@@ -1,0 +1,91 @@
+{{- if eq .Values.config.embeddingProvider "remote" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "context-engine.fullname" . }}-embedding
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding
+spec:
+  replicas: {{ .Values.embedding.replicas | default 2 }}
+  selector:
+    matchLabels:
+      {{- include "context-engine.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: embedding
+  template:
+    metadata:
+      labels:
+        {{- include "context-engine.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: embedding
+    spec:
+      containers:
+        - name: embedding
+          image: "{{ .Values.embedding.image.repository | default "context-engine-embedding" }}:{{ .Values.embedding.image.tag | default "latest" }}"
+          ports:
+            - containerPort: 8100
+          env:
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.config.embeddingModel | quote }}
+            - name: EMBED_MAX_CONCURRENT
+              value: {{ .Values.embedding.maxConcurrent | default "2" | quote }}
+            - name: EMBED_OPTIMAL_BATCH
+              value: {{ .Values.embedding.optimalBatch | default "32" | quote }}
+            - name: ONNX_THREADS
+              value: {{ .Values.embedding.onnxThreads | default "4" | quote }}
+            - name: ONNX_DISABLE_SPINNING
+              value: "1"
+            - name: OMP_NUM_THREADS
+              value: {{ .Values.embedding.onnxThreads | default "4" | quote }}
+            - name: MKL_NUM_THREADS
+              value: {{ .Values.embedding.onnxThreads | default "4" | quote }}
+          resources:
+            {{- toYaml .Values.embedding.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding
+  labels:
+    {{- include "context-engine.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "context-engine.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding
+  ports:
+    - port: 8100
+      targetPort: 8100
+---
+{{- if .Values.embedding.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "context-engine.fullname" . }}-embedding
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "context-engine.fullname" . }}-embedding
+  minReplicas: {{ .Values.embedding.autoscaling.minReplicas | default 2 }}
+  maxReplicas: {{ .Values.embedding.autoscaling.maxReplicas | default 10 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.embedding.autoscaling.targetCPU | default 70 }}
+{{- end }}
+{{- end }}
+

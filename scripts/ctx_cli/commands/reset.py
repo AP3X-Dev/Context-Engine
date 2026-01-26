@@ -53,7 +53,12 @@ console = Console() if RICH_AVAILABLE else None
 # Default model/tokenizer URLs (same as Makefile)
 DEFAULT_MODEL_URL = "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/main/granite-4.0-micro-Q4_K_M.gguf"
 DEFAULT_MODEL_PATH = "models/model.gguf"
-DEFAULT_TOKENIZER_URL = "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json"
+# Tokenizer for micro-chunking (token counting). BGE tokenizer works for any model.
+# Override via TOKENIZER_URL env var if needed.
+DEFAULT_TOKENIZER_URL = os.environ.get(
+    "TOKENIZER_URL",
+    "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json"
+)
 DEFAULT_TOKENIZER_PATH = "models/tokenizer.json"
 
 
@@ -113,6 +118,26 @@ def _wait_for_qdrant(url: str = "http://localhost:6333", timeout: int = 60) -> b
         time.sleep(1)
 
     _print(f"[red]Error:[/red] Qdrant not ready after {timeout}s", error=True)
+    return False
+
+
+def _wait_for_embedding(url: str = "http://localhost:8100", timeout: int = 90) -> bool:
+    """Wait for embedding service to be ready."""
+    _print(f"[dim]Waiting for embedding service at {url}...[/dim]")
+    start = time.time()
+
+    while time.time() - start < timeout:
+        try:
+            health_url = f"{url.rstrip('/')}/health"
+            with urllib.request.urlopen(health_url, timeout=5) as r:
+                if getattr(r, "status", 200) < 500:
+                    _print("[green]✓[/green] Embedding service is ready")
+                    return True
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+        time.sleep(2)
+
+    _print(f"[red]Error:[/red] Embedding service not ready after {timeout}s", error=True)
     return False
 
 
@@ -202,20 +227,21 @@ def reset(
 
     # Determine which containers to build/start based on mode
     # Default is HTTP-only; SSE only starts when explicitly requested with --sse
+    # Embedding service is always included (shared ONNX model for all indexers)
     if mode == "sse":
         # SSE MCPs only (legacy, must be explicitly requested)
-        build_containers = ["indexer", "mcp", "mcp_indexer", "watcher"]
-        start_containers = ["mcp", "mcp_indexer", "watcher"]
+        build_containers = ["embedding", "indexer", "mcp", "mcp_indexer", "watcher"]
+        start_containers = ["embedding", "mcp", "mcp_indexer", "watcher"]
         mode_desc = "SSE MCPs only (legacy)"
     elif mode == "dual":
         # Dual mode (both SSE and HTTP)
-        build_containers = ["indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
-        start_containers = ["mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        build_containers = ["embedding", "indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["embedding", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "Dual mode (SSE + HTTP)"
     else:
         # HTTP MCPs only (default, Codex compatible) + upload_service for remote sync
-        build_containers = ["indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
-        start_containers = ["mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        build_containers = ["embedding", "indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["embedding", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "HTTP MCPs (streamable)"
 
     # Add learning_worker if rerank learning is enabled
@@ -259,7 +285,7 @@ def reset(
         step += 1
         _print(f"\n[bold][{step}/{steps_total}] Stopping services...[/bold]")
         if db_reset:
-            # Full reset including database volumes (qdrant, redis, neo4j)
+            # Full reset including database volumes (qdrant, redis, neo4j, embedding cache)
             _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans"], "Stopping all containers and removing volumes", check=False)
             _print("[green]✓[/green] Services stopped and database volumes removed")
         else:
@@ -277,20 +303,27 @@ def reset(
         else:
             _print(f"\n[bold][{step}/{steps_total}] Skipping container build[/bold]")
 
-        # Step 3: Start Qdrant, Redis (if enabled), and Neo4j (if enabled) and wait
+        # Step 3: Start Qdrant, Redis (if enabled), Neo4j (if enabled), and Embedding service
         step += 1
         db_services = ["qdrant"]
         if redis_enabled:
             db_services.append("redis")
         if neo4j_enabled:
             db_services.append("neo4j")
+        # Start embedding service early (indexer needs it)
+        db_services.append("embedding")
         _print(f"\n[bold][{step}/{steps_total}] Starting {', '.join(db_services)}...[/bold]")
-        _run_cmd(compose_cmd + ["up", "-d"] + db_services, f"Starting {', '.join(db_services)}")
+        # Use --scale for embedding to get 2 replicas (deploy.replicas is Swarm-only)
+        _run_cmd(compose_cmd + ["up", "-d", "--scale", "embedding=2"] + db_services, f"Starting {', '.join(db_services)} (embedding×2)")
 
         # Use helper that normalizes Docker hostname to localhost for host CLI
         qdrant_url = get_qdrant_url_for_host()
         if not _wait_for_qdrant(qdrant_url):
             return 1
+
+        # Wait for embedding service to be ready (indexer needs it)
+        if not _wait_for_embedding("http://localhost:8100"):
+            _print("[yellow]Warning:[/yellow] Embedding service not ready, indexer may have errors")
 
         # Step 4: Initialize payload indexes
         step += 1
@@ -406,8 +439,9 @@ def reset(
             _print(f"\n[bold][{step}/{steps_total}] Starting services...[/bold]")
 
         # Start services
-        cmd = compose_cmd + ["up", "-d"] + start_containers
-        _run_cmd(cmd, f"Starting: {', '.join(start_containers)}")
+        # Use --scale for embedding service to get multiple replicas (deploy.replicas is Swarm-only)
+        cmd = compose_cmd + ["up", "-d", "--scale", "embedding=2"] + start_containers
+        _run_cmd(cmd, f"Starting: {', '.join(start_containers)} (embedding×2)")
         _print("[green]✓[/green] Services started")
 
         _print_panel(
@@ -448,7 +482,7 @@ Examples:
   ctx reset                # Full reset with HTTP MCPs (default)
   ctx reset --dual         # Both SSE and HTTP MCPs
   ctx reset --sse          # SSE MCPs only (legacy)
-  ctx reset --db-reset     # Reset database volumes (Qdrant, Redis, Neo4j)
+  ctx reset --db-reset     # Reset database volumes (Qdrant, Redis, Neo4j, Embedding cache)
   ctx reset --skip-model   # Skip llama model download
   ctx reset --skip-build   # Skip container rebuild (faster)
 """
@@ -476,7 +510,7 @@ Examples:
     parser.add_argument(
         "--db-reset",
         action="store_true",
-        help="Reset database volumes (Qdrant, Redis, Neo4j)"
+        help="Reset database volumes (Qdrant, Redis, Neo4j, Embedding cache)"
     )
 
     # Skip options

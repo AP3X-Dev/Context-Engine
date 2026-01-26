@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding-service
+  namespace: context-engine
+  labels:
+    app: embedding-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: embedding-service
+  template:
+    metadata:
+      labels:
+        app: embedding-service
+    spec:
+      containers:
+        - name: embedding
+          image: context-engine-embedding:latest
+          ports:
+            - containerPort: 8100
+          env:
+            - name: EMBEDDING_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: context-engine-config
+                  key: EMBEDDING_MODEL
+            - name: EMBED_MAX_CONCURRENT
+              value: "2"
+            - name: EMBED_MAX_BATCH
+              value: "256"
+            - name: EMBED_OPTIMAL_BATCH
+              value: "32"
+            - name: ONNX_THREADS
+              value: "4"
+            - name: ONNX_DISABLE_SPINNING
+              value: "1"
+            - name: OMP_NUM_THREADS
+              value: "4"
+            - name: MKL_NUM_THREADS
+              value: "4"
+            - name: HF_HOME
+              value: /tmp/huggingface
+            - name: FASTEMBED_CACHE_PATH
+              value: /tmp/fastembed
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2"
+            limits:
+              memory: "6Gi"
+              cpu: "4"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - name: embedding-cache
+              mountPath: /tmp/huggingface
+      volumes:
+        - name: embedding-cache
+          emptyDir:
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding
+  namespace: context-engine
+spec:
+  selector:
+    app: embedding-service
+  ports:
+    - port: 8100
+      targetPort: 8100
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: embedding-service-hpa
+  namespace: context-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: embedding-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+

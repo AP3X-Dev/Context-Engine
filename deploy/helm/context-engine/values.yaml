@@ -111,6 +111,37 @@ qdrant:
     periodSeconds: 5
 
 # -----------------------------------------------------------------------------
+# Embedding Service Configuration (shared ONNX model)
+# -----------------------------------------------------------------------------
+embedding:
+  # -- Number of replicas
+  replicas: 2
+  # -- Image configuration
+  image:
+    repository: context-engine-embedding
+    tag: latest
+  # -- Max concurrent embeddings per replica
+  maxConcurrent: 2
+  # -- Optimal batch size for CPU cache
+  optimalBatch: 32
+  # -- ONNX threads per replica
+  onnxThreads: 4
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 6Gi
+  # -- Autoscaling configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPU: 70
+
+# -----------------------------------------------------------------------------
 # MCP Indexer HTTP Configuration
 # -----------------------------------------------------------------------------
 mcpIndexerHttp:
@@ -463,10 +494,14 @@ config:
   # -- Qdrant URL (auto-generated if not set)
   qdrantUrl: ""
   # -- Embedding model
-  embeddingModel: BAAI/bge-base-en-v1.5
-  # -- Embedding provider
-  embeddingProvider: fastembed
-  
+  embeddingModel: nomic-ai/nomic-embed-text-v1.5
+  # -- Embedding provider (remote = shared service, fastembed = local)
+  embeddingProvider: remote
+  # -- Embedding service URL (when provider=remote)
+  embeddingServiceUrl: http://embedding:8100
+  # -- Index workers (parallel file processing)
+  indexWorkers: 4
+
   # -- FastMCP settings
   fastmcp:
     host: "0.0.0.0"
