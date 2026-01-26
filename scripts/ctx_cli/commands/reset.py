@@ -278,20 +278,27 @@ def reset(
         else:
             _print(f"\n[bold][{step}/{steps_total}] Skipping container build[/bold]")
 
-        # Step 3: Start Qdrant, Redis (if enabled), and Neo4j (if enabled) and wait
+        # Step 3: Start Qdrant, Redis (if enabled), Neo4j (if enabled), and Embedding service
         step += 1
         db_services = ["qdrant"]
         if redis_enabled:
             db_services.append("redis")
         if neo4j_enabled:
             db_services.append("neo4j")
+        # Start embedding service early (indexer needs it)
+        db_services.append("embedding")
         _print(f"\n[bold][{step}/{steps_total}] Starting {', '.join(db_services)}...[/bold]")
-        _run_cmd(compose_cmd + ["up", "-d"] + db_services, f"Starting {', '.join(db_services)}")
+        # Use --scale for embedding to get 2 replicas (deploy.replicas is Swarm-only)
+        _run_cmd(compose_cmd + ["up", "-d", "--scale", "embedding=2"] + db_services, f"Starting {', '.join(db_services)} (embedding×2)")
 
         # Use helper that normalizes Docker hostname to localhost for host CLI
         qdrant_url = get_qdrant_url_for_host()
         if not _wait_for_qdrant(qdrant_url):
             return 1
+
+        # Wait for embedding service to be ready (indexer needs it)
+        if not _wait_for_embedding("http://localhost:8100"):
+            _print("[yellow]Warning:[/yellow] Embedding service not ready, indexer may have errors")
 
         # Step 4: Initialize payload indexes
         step += 1
@@ -407,8 +414,9 @@ def reset(
             _print(f"\n[bold][{step}/{steps_total}] Starting services...[/bold]")
 
         # Start services
-        cmd = compose_cmd + ["up", "-d"] + start_containers
-        _run_cmd(cmd, f"Starting: {', '.join(start_containers)}")
+        # Use --scale for embedding service to get multiple replicas (deploy.replicas is Swarm-only)
+        cmd = compose_cmd + ["up", "-d", "--scale", "embedding=2"] + start_containers
+        _run_cmd(cmd, f"Starting: {', '.join(start_containers)} (embedding×2)")
         _print("[green]✓[/green] Services started")
 
         _print_panel(

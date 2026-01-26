@@ -35,9 +35,15 @@ services:
     ports:
       - "8100-8101:8100"
     environment:
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
+      # Model: use nomic-Q for faster + better quality, or override via EMBEDDING_MODEL
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-ai/nomic-embed-text-v1.5}
       - EMBED_MAX_CONCURRENT=${EMBED_MAX_CONCURRENT:-2}
       - EMBED_MAX_BATCH=${EMBED_MAX_BATCH:-256}
+      # ONNX CPU optimizations
+      - ONNX_THREADS=${ONNX_THREADS:-0}
+      - ONNX_DISABLE_SPINNING=${ONNX_DISABLE_SPINNING:-0}
+      - EMBED_OPTIMAL_BATCH=${EMBED_OPTIMAL_BATCH:-32}
+      # Cache paths
       - HF_HOME=/tmp/huggingface
       - FASTEMBED_CACHE_PATH=/tmp/fastembed
     volumes:
@@ -260,7 +266,9 @@ services:
       - TRANSFORMERS_CACHE=/tmp/huggingface/transformers
       - FASTEMBED_CACHE_PATH=/tmp/huggingface/fastembed
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      # Override: learning worker calls embedder.embed() directly via RecursiveReranker._encode_raw()
+      # which doesn't route through embed_batch(). Needs local ONNX, not RemoteEmbeddingStub.
+      - EMBEDDING_PROVIDER=local
       # Cross-encoder reranker (used as teacher for learning)
       - RERANKER_MODEL=${RERANKER_MODEL:-}
       - RERANKER_ONNX_PATH=${RERANKER_ONNX_PATH:-}
