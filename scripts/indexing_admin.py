@@ -91,6 +91,51 @@ get_graph_collection_name_t: Optional[Callable[[str], str]] = (
 )
 
 
+def get_neo4j_status() -> Dict[str, Any]:
+    """
+    Get Neo4j plugin status.
+
+    Returns:
+        Dict with: enabled, healthy, version, checks, error
+    """
+    neo4j_enabled = os.environ.get("NEO4J_GRAPH", "").strip().lower() in ("1", "true", "yes", "on")
+    if not neo4j_enabled:
+        return {"enabled": False, "healthy": None, "version": None, "checks": {}}
+
+    try:
+        from plugins.neo4j_graph.plugin import register_plugin
+        manifest = register_plugin()
+        if manifest.health_check:
+            health = manifest.health_check()
+            return {
+                "enabled": True,
+                "healthy": health.get("healthy", False),
+                "version": health.get("version") or manifest.version,
+                "checks": health.get("checks", {}),
+            }
+        else:
+            return {
+                "enabled": True,
+                "healthy": False,
+                "version": manifest.version,
+                "checks": {"error": "Health check not available"},
+            }
+    except ImportError as e:
+        return {
+            "enabled": True,
+            "healthy": False,
+            "version": None,
+            "checks": {"import_error": str(e)},
+        }
+    except Exception as e:
+        return {
+            "enabled": True,
+            "healthy": False,
+            "version": None,
+            "checks": {"error": str(e)},
+        }
+
+
 def _staging_enabled() -> bool:
     return bool(is_staging_enabled() if callable(is_staging_enabled) else False)
 

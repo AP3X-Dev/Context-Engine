@@ -53,6 +53,7 @@
             <th>Status</th>
             <th>Progress</th>
             <th>Config</th>
+            <th class="hide-mobile">Graph</th>
             <th class="hide-mobile">Applied Hash</th>
             <th class="hide-mobile">Pending Hash</th>
             <th class="hide-mobile">Current Hash</th>
@@ -124,6 +125,24 @@
                 <div style="margin-top: 6px;">
                   <span class="badge badge-warning">Needs Reindex</span>
                 </div>
+                {% endif %}
+              </td>
+              <td class="hide-mobile">
+                {% if c.index_graph_edges_enabled %}
+                <span class="badge badge-success" title="Graph edges indexed">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="5" cy="6" r="3"/><circle cx="19" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><line x1="5" y1="9" x2="12" y2="15"/><line x1="19" y1="9" x2="12" y2="15"/></svg>
+                  Enabled
+                </span>
+                {% if c.graph_clone_name %}
+                <div class="text-muted text-sm" style="margin-top: 4px;" title="Graph clone: {{ c.graph_clone_name }}">
+                  Clone: {{ c.graph_clone_name[:16] }}...
+                  {% if c.graph_clone_copied %}
+                  <span style="color: var(--green);">✓</span>
+                  {% endif %}
+                </div>
+                {% endif %}
+                {% else %}
+                <span class="text-muted">—</span>
                 {% endif %}
               </td>
               <td class="hide-mobile">
@@ -606,6 +625,15 @@
         <td>
           ${configBadge}
           ${configExtra}
+        </td>
+        <td class="hide-mobile">
+          ${c.index_graph_edges_enabled
+            ? `<span class="badge badge-success" title="Graph edges indexed">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="5" cy="6" r="3"/><circle cx="19" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><line x1="5" y1="9" x2="12" y2="15"/><line x1="19" y1="9" x2="12" y2="15"/></svg>
+                Enabled
+              </span>
+              ${c.graph_clone_name ? `<div class="text-muted text-sm" style="margin-top: 4px;" title="Graph clone: ${escapeHtml(c.graph_clone_name)}">Clone: ${escapeHtml(c.graph_clone_name.slice(0, 16))}...${c.graph_clone_copied ? '<span style="color: var(--green);"> ✓</span>' : ''}</div>` : ''}`
+            : '<span class="text-muted">—</span>'}
         </td>
         <td class="hide-mobile">
           <div class="font-mono text-muted text-sm" title="Applied: ${escapeHtml(c.applied_indexing_hash || 'none')}">${escapeHtml((c.applied_indexing_hash || '—').slice(0, 8))}</div>
