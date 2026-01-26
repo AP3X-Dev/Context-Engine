@@ -86,6 +86,9 @@ from scripts.auth_backend import (
     list_collection_acl,
     grant_collection_access,
     revoke_collection_access,
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
 )
 
 try:
@@ -813,11 +816,16 @@ async def admin_logout():
 @app.get("/admin/acl")
 async def admin_acl_page(request: Request):
     _require_admin_session(request)
+    api_keys = []
     try:
         if AUTH_ENABLED:
             users = list_users()
             collections = list_collections(include_deleted=False)
             grants = list_collection_acl()
+            try:
+                api_keys = list_api_keys()
+            except Exception as e:
+                logger.debug(f"[upload_service] Failed to load API keys: {e}")
         else:
             # Auth disabled - get collections directly from Qdrant
             users = []
@@ -856,6 +864,7 @@ async def admin_acl_page(request: Request):
         users=users,
         collections=enriched,
         grants=grants,
+        api_keys=api_keys,
         deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
         work_dir=WORK_DIR,
         refresh_ms=ADMIN_COLLECTION_REFRESH_MS,
@@ -1452,6 +1461,53 @@ async def admin_acl_revoke(
         raise HTTPException(status_code=404, detail="Auth disabled")
     except Exception as e:
         return render_admin_error(request, title="Revoke Failed", message=str(e), back_href="/admin/acl")
+    return RedirectResponse(url="/admin/acl", status_code=302)
+
+
+@app.post("/admin/keys")
+async def admin_create_api_key(
+    request: Request,
+    name: str = Form(...),
+    scope: str = Form("read"),
+    expires: str = Form("never"),
+):
+    _require_admin_session(request)
+    try:
+        key_info = create_api_key(name=name, scope=scope, expires_in=expires)
+        # Flash the new key to the user (only shown once)
+        new_key = key_info.get("key", "")
+        return render_admin_acl(
+            request,
+            users=list_users() if AUTH_ENABLED else [],
+            collections=build_admin_collections_view(
+                collections=list_collections(include_deleted=False) if AUTH_ENABLED else list_qdrant_collections(),
+                work_dir=WORK_DIR,
+            ),
+            grants=list_collection_acl() if AUTH_ENABLED else [],
+            api_keys=list_api_keys() if AUTH_ENABLED else [],
+            deletion_enabled=ADMIN_COLLECTION_DELETE_ENABLED,
+            work_dir=WORK_DIR,
+            refresh_ms=ADMIN_COLLECTION_REFRESH_MS,
+            flash={"message": f"API key created! Copy it now (shown only once): {new_key}", "level": "success"},
+        )
+    except AuthDisabledError:
+        raise HTTPException(status_code=404, detail="Auth disabled")
+    except Exception as e:
+        return render_admin_error(request, title="Create API Key Failed", message=str(e), back_href="/admin/acl")
+
+
+@app.post("/admin/keys/revoke")
+async def admin_revoke_api_key(
+    request: Request,
+    key_id: str = Form(...),
+):
+    _require_admin_session(request)
+    try:
+        revoke_api_key(key_id=key_id)
+    except AuthDisabledError:
+        raise HTTPException(status_code=404, detail="Auth disabled")
+    except Exception as e:
+        return render_admin_error(request, title="Revoke API Key Failed", message=str(e), back_href="/admin/acl")
     return RedirectResponse(url="/admin/acl", status_code=302)
 
 

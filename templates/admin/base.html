@@ -476,27 +476,76 @@
         backdrop-filter: blur(8px);
       }
 
-      /* Premium select styling */
+      /* Premium select styling - force override native appearance */
       .form-select {
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
+        appearance: none !important;
+        -webkit-appearance: none !important;
+        -moz-appearance: none !important;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
         background-repeat: no-repeat;
         background-position: right 14px center;
+        background-size: 12px;
         padding-right: 40px;
         cursor: pointer;
+        font-family: inherit;
+        line-height: 1.5;
       }
 
       .form-select:hover {
         border-color: var(--accent);
-        background-color: rgba(99, 102, 241, 0.05);
+        background-color: rgba(99, 102, 241, 0.08);
       }
 
+      /* Style the dropdown options */
       .form-select option {
-        background: var(--bg-secondary);
+        background: #1a1a1f;
         color: var(--text-primary);
-        padding: 12px;
+        padding: 12px 14px;
+        font-size: 14px;
+        border: none;
+      }
+
+      .form-select option:hover,
+      .form-select option:focus,
+      .form-select option:checked {
+        background: linear-gradient(90deg, rgba(99, 102, 241, 0.3), rgba(99, 102, 241, 0.1));
+        color: white;
+      }
+
+      /* Custom select wrapper for even better styling */
+      .select-wrapper {
+        position: relative;
+        display: inline-block;
+        width: 100%;
+      }
+
+      .select-wrapper::after {
+        content: '';
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 0;
+        height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 6px solid var(--accent);
+        pointer-events: none;
+      }
+
+      .select-wrapper .form-select {
+        background-image: none;
+      }
+
+      /* Light theme adjustments */
+      [data-theme="light"] .form-select option {
+        background: #ffffff;
+        color: #1a1a2e;
+      }
+
+      [data-theme="light"] .form-select option:hover,
+      [data-theme="light"] .form-select option:checked {
+        background: linear-gradient(90deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.05));
       }
 
       .form-input:focus, .form-select:focus {
