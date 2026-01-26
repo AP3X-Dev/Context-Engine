@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 
 import xxhash
@@ -16,6 +17,17 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# ONNX concurrency control - prevents memory explosion with parallel workers
+# ---------------------------------------------------------------------------
+_EMBED_MAX_CONCURRENT = int(os.environ.get("EMBED_MAX_CONCURRENT", "2") or 2)
+_EMBED_SEMAPHORE = threading.Semaphore(_EMBED_MAX_CONCURRENT)
+
+# Remote embedding service configuration
+_EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local").strip().lower()
+_EMBEDDING_SERVICE_URL = os.environ.get("EMBEDDING_SERVICE_URL", "http://embedding:8100")
+_EMBEDDING_SERVICE_TIMEOUT = int(os.environ.get("EMBEDDING_SERVICE_TIMEOUT", "60") or 60)
 
 from qdrant_client import QdrantClient, models
 
@@ -979,22 +991,54 @@ def hash_id(text: str, path: str, start: int, end: int) -> int:
     return int(h[:16], 16)
 
 
-def embed_batch(model, texts: List[str]) -> List[List[float]]:
-    """Embed a batch of texts using the embedding model.
-
-    When ASYMMETRIC_EMBEDDING=1, uses passage_embed for documents (if available).
-    This enables asymmetric retrieval with models like Jina v3 that have
-    separate query/passage adapters.
-    """
-    # Check for asymmetric embedding mode
+def _embed_local(model, texts: List[str]) -> List[List[float]]:
+    """Local ONNX embedding with concurrency control."""
     asymmetric = (
         str(os.environ.get("ASYMMETRIC_EMBEDDING", "0")).strip().lower()
         in {"1", "true", "yes", "on"}
     )
 
-    if asymmetric and hasattr(model, "passage_embed"):
-        # Use passage_embed for documents (asymmetric models like Jina v3)
-        return [vec.tolist() for vec in model.passage_embed(texts)]
+    # Semaphore prevents ONNX memory explosion with parallel workers
+    with _EMBED_SEMAPHORE:
+        if asymmetric and hasattr(model, "passage_embed"):
+            return [vec.tolist() for vec in model.passage_embed(texts)]
+        else:
+            return [vec.tolist() for vec in model.embed(texts)]
+
+
+def _embed_remote(texts: List[str], model_name: str = "default") -> List[List[float]]:
+    """Remote embedding via HTTP service."""
+    import requests
+
+    try:
+        resp = requests.post(
+            f"{_EMBEDDING_SERVICE_URL}/embed",
+            json={"texts": texts, "model": model_name},
+            timeout=_EMBEDDING_SERVICE_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()["vectors"]
+    except Exception as e:
+        logger.error(f"Remote embedding failed: {e}")
+        raise
+
+
+def embed_batch(model, texts: List[str]) -> List[List[float]]:
+    """Embed a batch of texts using configured provider.
+
+    Providers (set via EMBEDDING_PROVIDER env var):
+    - local: Use local ONNX model with concurrency control (default)
+    - remote: Use remote embedding service at EMBEDDING_SERVICE_URL
+
+    When ASYMMETRIC_EMBEDDING=1, uses passage_embed for documents (if available).
+    """
+    if not texts:
+        return []
+
+    if _EMBEDDING_PROVIDER == "remote":
+        # Get model name for remote service
+        model_name = getattr(model, "model_name", None) or os.environ.get("EMBEDDING_MODEL", "default")
+        return _embed_remote(texts, model_name)
     else:
-        # Standard symmetric embedding
-        return [vec.tolist() for vec in model.embed(texts)]
+        # Local with semaphore-controlled concurrency
+        return _embed_local(model, texts)

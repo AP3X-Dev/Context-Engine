@@ -202,20 +202,21 @@ def reset(
 
     # Determine which containers to build/start based on mode
     # Default is HTTP-only; SSE only starts when explicitly requested with --sse
+    # Embedding service is always included (shared ONNX model for all indexers)
     if mode == "sse":
         # SSE MCPs only (legacy, must be explicitly requested)
-        build_containers = ["indexer", "mcp", "mcp_indexer", "watcher"]
-        start_containers = ["mcp", "mcp_indexer", "watcher"]
+        build_containers = ["embedding", "indexer", "mcp", "mcp_indexer", "watcher"]
+        start_containers = ["embedding", "mcp", "mcp_indexer", "watcher"]
         mode_desc = "SSE MCPs only (legacy)"
     elif mode == "dual":
         # Dual mode (both SSE and HTTP)
-        build_containers = ["indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
-        start_containers = ["mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        build_containers = ["embedding", "indexer", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["embedding", "mcp", "mcp_indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "Dual mode (SSE + HTTP)"
     else:
         # HTTP MCPs only (default, Codex compatible) + upload_service for remote sync
-        build_containers = ["indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
-        start_containers = ["mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        build_containers = ["embedding", "indexer", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
+        start_containers = ["embedding", "mcp_http", "mcp_indexer_http", "watcher", "upload_service"]
         mode_desc = "HTTP MCPs (streamable)"
 
     # Add learning_worker if rerank learning is enabled
@@ -259,7 +260,7 @@ def reset(
         step += 1
         _print(f"\n[bold][{step}/{steps_total}] Stopping services...[/bold]")
         if db_reset:
-            # Full reset including database volumes (qdrant, redis, neo4j)
+            # Full reset including database volumes (qdrant, redis, neo4j, embedding cache)
             _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans"], "Stopping all containers and removing volumes", check=False)
             _print("[green]✓[/green] Services stopped and database volumes removed")
         else:
@@ -448,7 +449,7 @@ Examples:
   ctx reset                # Full reset with HTTP MCPs (default)
   ctx reset --dual         # Both SSE and HTTP MCPs
   ctx reset --sse          # SSE MCPs only (legacy)
-  ctx reset --db-reset     # Reset database volumes (Qdrant, Redis, Neo4j)
+  ctx reset --db-reset     # Reset database volumes (Qdrant, Redis, Neo4j, Embedding cache)
   ctx reset --skip-model   # Skip llama model download
   ctx reset --skip-build   # Skip container rebuild (faster)
 """
@@ -476,7 +477,7 @@ Examples:
     parser.add_argument(
         "--db-reset",
         action="store_true",
-        help="Reset database volumes (Qdrant, Redis, Neo4j)"
+        help="Reset database volumes (Qdrant, Redis, Neo4j, Embedding cache)"
     )
 
     # Skip options
