@@ -203,7 +203,13 @@ def _copy_repo_state_for_clone(
 _COLLECTION_SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
 _COLLECTION_SCHEMA_CACHE_TS: Dict[str, float] = {}  # Track cache timestamps
 try:
-    _COLLECTION_SCHEMA_CACHE_TTL = float(os.environ.get("SCHEMA_CACHE_TTL_SECS", "300"))
+    _ttl_raw = float(os.environ.get("SCHEMA_CACHE_TTL_SECS", "300"))
+    # Validate TTL is finite and positive
+    import math
+    if not math.isfinite(_ttl_raw) or _ttl_raw <= 0:
+        _COLLECTION_SCHEMA_CACHE_TTL = 300.0
+    else:
+        _COLLECTION_SCHEMA_CACHE_TTL = _ttl_raw
 except (ValueError, TypeError):
     _COLLECTION_SCHEMA_CACHE_TTL = 300.0  # 5 min default
 _SNAPSHOT_REFRESHED: Set[str] = set()

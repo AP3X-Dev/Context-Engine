@@ -364,7 +364,11 @@ def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
         # Fallback to hashlib if xxhash not available
         file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
     except Exception:
-        file_hash = ""
+        # Fallback to hashlib on any xxhash runtime error
+        try:
+            file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+        except Exception:
+            file_hash = ""
     return text, file_hash
 
 
