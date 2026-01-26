@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import subprocess
@@ -10,6 +9,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+import xxhash
 
 import scripts.ingest_code as idx
 from scripts.workspace_state import (
@@ -356,19 +357,7 @@ def _read_text_and_sha1(path: Path) -> tuple[Optional[str], str]:
         text = None
     if not text:
         return text, ""
-    try:
-        # Use xxhash for consistency with scripts/ingest/pipeline.py
-        import xxhash
-        file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
-    except ImportError:
-        # Fallback to hashlib if xxhash not available
-        file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
-    except Exception:
-        # Fallback to hashlib on any xxhash runtime error
-        try:
-            file_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
-        except Exception:
-            file_hash = ""
+    file_hash = xxhash.xxh64(text.encode("utf-8", errors="ignore")).hexdigest()
     return text, file_hash
 
 
