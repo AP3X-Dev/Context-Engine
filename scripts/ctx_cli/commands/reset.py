@@ -116,6 +116,26 @@ def _wait_for_qdrant(url: str = "http://localhost:6333", timeout: int = 60) -> b
     return False
 
 
+def _wait_for_embedding(url: str = "http://localhost:8100", timeout: int = 90) -> bool:
+    """Wait for embedding service to be ready."""
+    _print(f"[dim]Waiting for embedding service at {url}...[/dim]")
+    start = time.time()
+
+    while time.time() - start < timeout:
+        try:
+            health_url = f"{url.rstrip('/')}/health"
+            with urllib.request.urlopen(health_url, timeout=5) as r:
+                if getattr(r, "status", 200) < 500:
+                    _print("[green]✓[/green] Embedding service is ready")
+                    return True
+        except Exception as e:
+            logger.debug(f"Suppressed exception: {e}")
+        time.sleep(2)
+
+    _print(f"[red]Error:[/red] Embedding service not ready after {timeout}s", error=True)
+    return False
+
+
 def _download_file(url: str, dest: Path, description: str) -> bool:
     """Download a file with progress display."""
     _print(f"[dim]Downloading {description}...[/dim]")
