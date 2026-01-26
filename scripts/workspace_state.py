@@ -144,20 +144,66 @@ def _redis_retry(fn, retries: int = 2, delay: float = 0.1):
     raise last_err  # type: ignore
 
 
+# LZ4 compression for Redis state storage
+# Provides ~50-70% memory reduction with minimal CPU overhead
+_LZ4_AVAILABLE = False
+try:
+    import lz4.frame as lz4_frame
+    _LZ4_AVAILABLE = True
+except ImportError:
+    lz4_frame = None  # type: ignore
+
+# Prefix to identify LZ4-compressed values in Redis
+_LZ4_PREFIX = b"LZ4:"
+
+def _redis_compress(data: bytes) -> bytes:
+    """Compress data with LZ4 if available, return with prefix."""
+    if not _LZ4_AVAILABLE or lz4_frame is None:
+        return data
+    try:
+        compressed = lz4_frame.compress(data, compression_level=0)  # fastest
+        # Only use compression if it actually saves space
+        if len(compressed) + len(_LZ4_PREFIX) < len(data):
+            return _LZ4_PREFIX + compressed
+        return data
+    except Exception:
+        return data
+
+def _redis_decompress(data: bytes) -> bytes:
+    """Decompress LZ4 data if prefixed, otherwise return as-is."""
+    if not data:
+        return data
+    if data.startswith(_LZ4_PREFIX):
+        if not _LZ4_AVAILABLE or lz4_frame is None:
+            logger.warning("LZ4 compressed data found but lz4 not available")
+            return data
+        try:
+            return lz4_frame.decompress(data[len(_LZ4_PREFIX):])
+        except Exception as e:
+            logger.debug(f"LZ4 decompress failed: {e}")
+            return data
+    return data
+
+
 def _redis_get_json(kind: str, path: Path) -> Optional[Dict[str, Any]]:
     client = _get_redis_client()
     if client is None:
         return None
     key = _redis_key_for_path(kind, path)
     try:
-        raw = _redis_retry(lambda: client.get(key))
+        # Get raw bytes for decompression
+        raw = _redis_retry(lambda: client.execute_command("GET", key))
     except Exception as e:
         logger.debug(f"Redis get failed for {key}: {e}")
         return None
     if not raw:
         return None
     try:
-        obj = json.loads(raw)
+        # Handle both string and bytes responses
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        decompressed = _redis_decompress(raw)
+        obj = json.loads(decompressed.decode("utf-8"))
     except Exception as e:
         logger.debug(f"Redis JSON decode failed for {key}: {e}")
         return None
@@ -172,12 +218,13 @@ def _redis_set_json(kind: str, path: Path, obj: Dict[str, Any]) -> bool:
         return False
     key = _redis_key_for_path(kind, path)
     try:
-        payload = json.dumps(obj, ensure_ascii=False)
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        compressed = _redis_compress(payload)
     except Exception as e:
-        logger.debug(f"Failed to JSON serialize redis payload for {key}: {e}")
+        logger.debug(f"Failed to serialize/compress redis payload for {key}: {e}")
         return False
     try:
-        _redis_retry(lambda: client.set(key, payload))
+        _redis_retry(lambda: client.execute_command("SET", key, compressed))
         return True
     except Exception as e:
         logger.debug(f"Redis set failed for {key}: {e}")
