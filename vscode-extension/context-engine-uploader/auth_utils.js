@@ -240,17 +240,57 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
     const settings = vscode.workspace.getConfiguration('contextEngineUploader');
     endpoint = (settings.get('endpoint') || '').trim();
   }
-  let backendUrl = explicitBackendUrl || endpoint;
+  const settings = vscode.workspace.getConfiguration('contextEngineUploader');
+  const configuredAuthBackendUrl = (settings.get('authBackendUrl') || '').trim();
+  const configuredAuthToken = (settings.get('authSharedToken') || '').trim();
+  
+  let backendUrl = explicitBackendUrl || configuredAuthBackendUrl || endpoint;
   if (!backendUrl) {
-    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint).');
+    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
     return;
   }
 
   try {
     const u = new URL(backendUrl);
-    backendUrl = `${u.protocol}//${u.host}`;
+    if (!backendUrl.includes('/upload') && !backendUrl.includes('/auth')) {
+      backendUrl = `${u.protocol}//${u.host}`;
+    }
   } catch (_) {
     backendUrl = backendUrl.replace(/\/+$/, '');
+  }
+
+  const invocation = resolveBridgeCliInvocation();
+  if (!invocation) {
+    vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for auth.');
+    return;
+  }
+  const cwd = getWorkspaceFolderPath() || process.cwd();
+
+  if (configuredAuthToken) {
+    const args = [...invocation.args, 'auth', 'login'];
+    const env = {
+      ...process.env,
+      CTXCE_AUTH_BACKEND_URL: backendUrl,
+      CTXCE_AUTH_TOKEN: configuredAuthToken,
+    };
+    await new Promise(resolve => {
+      const child = spawn(invocation.command, args, { cwd, env });
+      attachOutput(child, 'auth');
+      child.on('error', error => {
+        log(`ctxce auth login (configured token) failed to start: ${error instanceof Error ? error.message : String(error)}`);
+        vscode.window.showErrorMessage('Context Engine Uploader: auth login failed to start. See output for details.');
+        resolve();
+      });
+      child.on('close', code => {
+        if (code === 0) {
+          vscode.window.showInformationMessage('Context Engine Uploader: auth login successful (using configured token).');
+        } else {
+          vscode.window.showErrorMessage(`Context Engine Uploader: auth login failed with exit code ${code}. See output for details.`);
+        }
+        resolve();
+      });
+    });
+    return;
   }
 
   const mode = await vscode.window.showQuickPick(
@@ -260,13 +300,6 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
   if (!mode) {
     return;
   }
-
-  const invocation = resolveBridgeCliInvocation();
-  if (!invocation) {
-    vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for auth.');
-    return;
-  }
-  const cwd = getWorkspaceFolderPath() || process.cwd();
 
   if (mode.startsWith('Token')) {
     const token = await vscode.window.showInputBox({
