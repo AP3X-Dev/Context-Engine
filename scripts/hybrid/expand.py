@@ -781,18 +781,14 @@ def expand_via_embeddings(
         except Exception:
             vec_name = None
 
-    def _norm_under(u: str | None) -> str | None:
+    def _norm_under_suffix(u: str | None) -> str | None:
         if not u:
             return None
         u = str(u).strip().replace("\\", "/")
         u = "/".join([p for p in u.split("/") if p])
         if not u:
             return None
-        if u.startswith("/work/"):
-            return u
-        if not u.startswith("/"):
-            return "/work/" + u
-        return "/work/" + u.lstrip("/")
+        return "/" + u
 
     flt = None
     try:
@@ -807,12 +803,12 @@ def expand_via_embeddings(
                 )
             )
         if under:
-            eff_under = _norm_under(under)
+            eff_under = _norm_under_suffix(under)
             if eff_under:
                 must.append(
                     models.FieldCondition(
                         key="metadata.path_prefix",
-                        match=models.MatchValue(value=eff_under),
+                        match=models.MatchText(text=eff_under),
                     )
                 )
         if kind:

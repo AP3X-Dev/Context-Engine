@@ -64,6 +64,8 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
   - Increase to limit=5, include_snippet=true for details
   - Use language and under filters to narrow scope
   - Set rerank_enabled=false for faster but less accurate results
+  - Use output_format="toon" for 60-80% token reduction
+  - Fire independent tool calls in parallel (same message block) for 2-3x speedup
 
   When to Use Advanced Features:
 
@@ -158,8 +160,38 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
 
   - Call set_session_defaults (indexer and memory) early in a session so subsequent
     calls inherit the right collection without repeating it in every request.
+  - Set defaults with: set_session_defaults(output_format="toon", compact=true, limit=5)
   - Use context_search with include_memories and per_source_limits when you want
     blended code + memory results instead of calling repo_search and memory.memory_find
     separately.
   - Treat expand_query and the expand flag on context_answer as expensive options:
     only use them after a normal search/answer attempt failed to find good context.
+
+  Two-Phase Search Strategy:
+
+  - Phase 1 (Discovery): limit=3, compact=true, output_format="toon", per_path=1
+  - Phase 2 (Deep Dive): limit=5-8, include_snippet=true, context_lines=3-5
+  - Only move to Phase 2 after identifying high-value targets from Phase 1
+
+  Parallel Execution Pattern:
+
+  - Fire independent tool calls in a single message block (3x faster)
+  - Example: repo_search + repo_search + symbol_graph all at once
+  - Do NOT wait for one search to complete before starting another
+
+  Token Efficiency Defaults:
+
+  | Parameter | Discovery | Deep Dive |
+  |-----------|-----------|-----------|
+  | limit | 3 | 5-8 |
+  | per_path | 1 | 2 |
+  | compact | true | false |
+  | output_format | "toon" | "json" |
+  | include_snippet | false | true |
+  | context_lines | 0 | 3-5 |
+
+  Fallback Chains:
+
+  - context_answer timeout → repo_search + info_request(include_explanation=true)
+  - pattern_search unavailable → repo_search with structural query terms
+  - neo4j_graph_query empty → symbol_graph (Qdrant-backed fallback)

@@ -34,6 +34,35 @@ logger = logging.getLogger(__name__)
 # Environment
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 
+# Remote embedding support
+try:
+    from scripts.embedder import RemoteEmbeddingStub
+    from scripts.ingest.qdrant import embed_batch as _embed_batch_remote
+    _REMOTE_EMBED_AVAILABLE = True
+except ImportError:
+    RemoteEmbeddingStub = None  # type: ignore
+    _embed_batch_remote = None  # type: ignore
+    _REMOTE_EMBED_AVAILABLE = False
+
+
+def _embed_text(model, text: str, model_name: str) -> list:
+    """Embed text using either local model or remote service.
+    
+    Detects RemoteEmbeddingStub and routes to embed_batch() accordingly.
+    """
+    is_remote_stub = (
+        RemoteEmbeddingStub is not None 
+        and isinstance(model, RemoteEmbeddingStub)
+    )
+    
+    if is_remote_stub and _REMOTE_EMBED_AVAILABLE and _embed_batch_remote is not None:
+        # Use remote embedding service
+        vecs = _embed_batch_remote(model, [text])
+        return vecs[0] if isinstance(vecs[0], list) else vecs[0].tolist()
+    else:
+        # Local embedding
+        return next(model.embed([text])).tolist()
+
 
 async def _memory_store_impl(
     information: str,
@@ -116,7 +145,8 @@ async def _memory_store_impl(
         from scripts.mcp_impl.admin_tools import _get_embedding_model
         model = _get_embedding_model(model_name)
 
-    dense = next(model.embed([str(information)])).tolist()
+    # Use helper that handles remote vs local embedding
+    dense = _embed_text(model, str(information), model_name)
 
     lex = _lex_hash_vector(str(information))
 
@@ -254,7 +284,8 @@ async def _memory_find_impl(
             from scripts.mcp_impl.admin_tools import _get_embedding_model
             model = _get_embedding_model(model_name)
 
-        dense_query = next(model.embed([str(query)])).tolist()
+        # Use helper that handles remote vs local embedding
+        dense_query = _embed_text(model, str(query), model_name)
         lex_query = _lex_hash_vector(str(query))
 
         client = QdrantClient(
