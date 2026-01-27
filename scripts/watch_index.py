@@ -133,6 +133,9 @@ def _start_index_signal_listener(work_dir: str, default_collection: str) -> None
                     except Exception:
                         continue
                     workspace_path = data.get("workspace_path", "")
+                    if not workspace_path:
+                        print("[index_signal] Skipping signal with empty workspace_path")
+                        continue
                     collection = data.get("collection") or default_collection
                     print(f"[index_signal] Received signal: workspace={workspace_path} collection={collection}")
 

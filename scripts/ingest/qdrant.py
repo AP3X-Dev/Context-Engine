@@ -1018,14 +1018,30 @@ def _embed_local(model, texts: List[str]) -> List[List[float]]:
             return [vec.tolist() for vec in model.embed(texts)]
 
 
+_REMOTE_MAX_BATCH = int(os.environ.get("EMBED_MAX_BATCH", "128") or 128)
+
+
 def _embed_remote(texts: List[str], model_name: str = "default") -> List[List[float]]:
     """Remote embedding via HTTP service with client-side load balancing.
 
     If EMBEDDING_SERVICE_URLS is set (comma-separated), round-robins across replicas
     for true parallel processing. Otherwise uses single EMBEDDING_SERVICE_URL.
+
+    Large batches are automatically chunked to stay within the service's
+    MAX_BATCH_SIZE limit (default 128).
     """
     global _EMBED_REPLICA_INDEX
     import requests
+
+    # Chunk into sub-batches that fit the service's MAX_BATCH_SIZE.
+    # Each sub-batch gets its own HTTP request; vectors are concatenated
+    # in order so index alignment is preserved for callers.
+    if len(texts) > _REMOTE_MAX_BATCH:
+        all_vectors: List[List[float]] = []
+        for i in range(0, len(texts), _REMOTE_MAX_BATCH):
+            sub = texts[i : i + _REMOTE_MAX_BATCH]
+            all_vectors.extend(_embed_remote(sub, model_name))
+        return all_vectors
 
     # Get URLs at call time (not import time) for test flexibility
     service_urls = _get_embedding_service_urls()

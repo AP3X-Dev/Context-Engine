@@ -242,8 +242,9 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
   const settings = vscode.workspace.getConfiguration('contextEngineUploader');
   const configuredAuthBackendUrl = (settings.get('authBackendUrl') || '').trim();
   const configuredAuthToken = (settings.get('authSharedToken') || '').trim();
-  
-  let backendUrl = normalizeBackendUrl(explicitBackendUrl || configuredAuthBackendUrl || endpoint);
+
+  // Prefer configured authBackendUrl over explicit URL to allow settings override
+  let backendUrl = normalizeBackendUrl(configuredAuthBackendUrl || explicitBackendUrl || endpoint);
   if (!backendUrl) {
     vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
     return;
@@ -382,13 +383,15 @@ async function runAuthLogoutFlow(explicitBackendUrl, deps) {
   } catch (_) {
     endpoint = '';
   }
+  const settings = vscode.workspace.getConfiguration('contextEngineUploader');
   if (!endpoint) {
-    const settings = vscode.workspace.getConfiguration('contextEngineUploader');
     endpoint = (settings.get('endpoint') || '').trim();
   }
-  const backendUrl = normalizeBackendUrl(explicitBackendUrl || endpoint);
+  // Read authBackendUrl to align with login flow - ensures logout targets the same backend as login
+  const configuredAuthBackendUrl = (settings.get('authBackendUrl') || '').trim();
+  const backendUrl = normalizeBackendUrl(configuredAuthBackendUrl || explicitBackendUrl || endpoint);
   if (!backendUrl) {
-    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint).');
+    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
     return;
   }
 
