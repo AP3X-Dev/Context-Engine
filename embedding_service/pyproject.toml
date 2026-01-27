@@ -1,0 +1,12 @@
+[project]
+name = "embedding-service"
+version = "0.1.0"
+description = "FastAPI embedding service for Context-Engine"
+requires-python = ">=3.10"
+
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "fastembed>=0.2.0",
+    "pydantic>=2.0.0",
+]
