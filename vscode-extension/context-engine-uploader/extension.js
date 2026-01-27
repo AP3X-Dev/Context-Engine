@@ -386,7 +386,11 @@ function activate(context) {
 
   // Register Settings Webview
   try {
-    settingsWebviewProvider = new SettingsWebviewProvider(context.extensionUri);
+    const getEndpointForSettings = () => {
+      const cfg = getEffectiveConfig();
+      return cfg.get('endpoint') || 'http://localhost:8004';
+    };
+    settingsWebviewProvider = new SettingsWebviewProvider(context.extensionUri, getEndpointForSettings);
     const openSettingsCmd = vscode.commands.registerCommand('contextEngineUploader.openSettings', () => {
       settingsWebviewProvider.openSettings();
     });
