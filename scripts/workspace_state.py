@@ -41,6 +41,8 @@ _cache_memo_sig: Dict[str, tuple[int, int]] = {}
 _cache_memo_last_check: Dict[str, float] = {}
 _REDIS_CLIENT = None
 _REDIS_CLIENT_LOCK = threading.Lock()
+_REDIS_BIN_CLIENT = None
+_REDIS_BIN_CLIENT_LOCK = threading.Lock()
 
 # Global flag to enable skip-if-contended behavior for Redis locks.
 # When set, locks that are contended will raise LockContendedException
@@ -126,6 +128,49 @@ def _get_redis_client():
             return None
 
 
+def _get_redis_bin_client():
+    """Return a Redis client with decode_responses=False for binary data (LZ4)."""
+    if not _redis_state_enabled():
+        return None
+    global _REDIS_BIN_CLIENT
+    with _REDIS_BIN_CLIENT_LOCK:
+        if _REDIS_BIN_CLIENT is not None:
+            return _REDIS_BIN_CLIENT
+        try:
+            import redis  # type: ignore
+        except Exception as e:
+            logger.warning(f"Redis binary client: redis package not available: {e}")
+            return None
+        url = os.environ.get("CODEBASE_STATE_REDIS_URL") or os.environ.get("REDIS_URL") or "redis://redis:6379/0"
+        try:
+            socket_timeout = float(os.environ.get("CODEBASE_STATE_REDIS_SOCKET_TIMEOUT", "2") or 2)
+            connect_timeout = float(os.environ.get("CODEBASE_STATE_REDIS_CONNECT_TIMEOUT", "2") or 2)
+            max_connections = int(os.environ.get("CODEBASE_STATE_REDIS_MAX_CONNECTIONS", "10") or 10)
+        except Exception:
+            socket_timeout = 2.0
+            connect_timeout = 2.0
+            max_connections = 10
+        try:
+            client = redis.Redis.from_url(
+                url,
+                decode_responses=False,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=connect_timeout,
+                max_connections=max_connections,
+                retry_on_timeout=True,
+            )
+            try:
+                client.ping()
+            except Exception as e:
+                logger.warning(f"Redis binary client ping failed: {e}")
+                return None
+            _REDIS_BIN_CLIENT = client
+            return _REDIS_BIN_CLIENT
+        except Exception as e:
+            logger.warning(f"Redis binary client connection failed: {e}")
+            return None
+
+
 def _redis_retry(fn, retries: int = 2, delay: float = 0.1):
     """Retry a Redis operation on transient failures."""
     last_err = None
@@ -186,20 +231,18 @@ def _redis_decompress(data: bytes) -> bytes:
 
 
 def _redis_get_json(kind: str, path: Path) -> Optional[Dict[str, Any]]:
-    client = _get_redis_client()
+    client = _get_redis_bin_client()
     if client is None:
         return None
     key = _redis_key_for_path(kind, path)
     try:
-        # Get raw bytes for decompression
-        raw = _redis_retry(lambda: client.execute_command("GET", key))
+        raw = _redis_retry(lambda: client.get(key))
     except Exception as e:
         logger.debug(f"Redis get failed for {key}: {e}")
         return None
     if not raw:
         return None
     try:
-        # Handle both string and bytes responses
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
         decompressed = _redis_decompress(raw)
@@ -258,11 +301,11 @@ def _redis_scan_keys(kind: str) -> List[str]:
 
 
 def _redis_get_json_by_key(key: str) -> Optional[Dict[str, Any]]:
-    client = _get_redis_client()
+    client = _get_redis_bin_client()
     if client is None:
         return None
     try:
-        raw = _redis_retry(lambda: client.execute_command("GET", key))
+        raw = _redis_retry(lambda: client.get(key))
     except Exception as e:
         logger.debug(f"Redis get failed for {key}: {e}")
         return None
