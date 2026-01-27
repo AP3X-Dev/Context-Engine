@@ -214,7 +214,6 @@ def reset(
     refrag_runtime = os.environ.get("REFRAG_RUNTIME", "").strip().lower()
     llamacpp_needed = refrag_runtime in ("", "llamacpp")
 
-    # Build docker compose command prefix (with optional neo4j compose file)
     compose_cmd = ["docker", "compose"]
     if neo4j_enabled:
         compose_cmd.extend(["-f", "docker-compose.yml", "-f", "docker-compose.neo4j.yml"])

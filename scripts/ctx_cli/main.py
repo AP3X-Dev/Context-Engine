@@ -76,6 +76,13 @@ except ImportError:
 
 def main():
     """Main CLI entry point."""
+    # macOS is case-insensitive: /Users/x/desktop and /Users/x/Desktop both
+    # work, but Docker stores volume device paths as exact strings. Canonicalize
+    # once so compose always resolves ./dev-workspace to the same path.
+    _real = os.path.realpath(os.getcwd())
+    if _real != os.getcwd():
+        os.chdir(_real)
+
     parser = argparse.ArgumentParser(
         prog="ctx",
         description="Context-Engine CLI - Unified interface for MCP tools",

@@ -356,6 +356,8 @@ watcher:
     WATCH_ROOT: /work
     WATCH_DEBOUNCE_SECS: "2.0"
     WATCH_USE_POLLING: "1"
+    # Multi-repo mode: 0=single-repo, 1=multi-repo (each .git subdir gets own collection)
+    # Falls back to treating all subdirectories as repos if no .git found (K8s resilience)
     MULTI_REPO_MODE: "0"
   # -- Init containers configuration
   initContainers:
