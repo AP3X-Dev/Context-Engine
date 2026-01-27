@@ -154,16 +154,37 @@ def _start_index_signal_listener(work_dir: str, default_collection: str) -> None
                             root = work_dir
 
                         print(f"[index_signal] Spawning ingest_code: root={root} collection={collection}")
-                        spawn_ingest_code(
+                        proc = spawn_ingest_code(
                             root=root,
                             work_dir=work_dir,
                             collection=collection,
                             recreate=False,
                             repo_name=repo_name,
                         )
+
+                        # Hold _ingest_lock until the subprocess finishes so
+                        # concurrent Redis signals are properly skipped.
+                        def _wait_and_release(p, lock):
+                            try:
+                                p.wait()
+                            except Exception:
+                                pass
+                            finally:
+                                lock.release()
+                                print("[index_signal] Ingest process finished, lock released")
+
+                        waiter = threading.Thread(
+                            target=_wait_and_release,
+                            args=(proc, _ingest_lock),
+                            daemon=True,
+                            name="ingest-lock-waiter",
+                        )
+                        waiter.start()
+                        # Lock is now owned by the waiter thread — skip the
+                        # finally-release below.
+                        continue
                     except Exception as e:
                         print(f"[index_signal] Error spawning ingest: {e}")
-                    finally:
                         _ingest_lock.release()
             except Exception as e:
                 print(f"[index_signal] Listener error, reconnecting in 5s: {e}")

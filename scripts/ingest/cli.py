@@ -309,6 +309,11 @@ def main():
                             continue
                         if child.name in {".codebase", "__pycache__"}:
                             continue
+                        # Only treat as a separate repo if it has a .git directory
+                        # This prevents subdirectories like src/, docs/, tests/ from
+                        # being treated as separate repositories
+                        if not (child / ".git").exists():
+                            continue
                         repos.append(child)
                     except Exception as e:
                         logger.debug(f"Suppressed exception, continuing: {e}")
@@ -317,7 +322,8 @@ def main():
             repos = []
 
         if not repos:
-            print(f"[multi_repo] No repo directories found under: {root_path}")
+            print(f"[multi_repo] No git repositories found under: {root_path}")
+            print("[multi_repo] Hint: Each subdirectory must have a .git folder to be treated as a separate repo")
             return
 
         multi_flag = (os.environ.get("PSEUDO_DEFER_TO_WORKER") or "").strip().lower()

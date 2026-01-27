@@ -1219,7 +1219,12 @@ def spawn_ingest_code(
     repo_name: Optional[str],
     env_overrides: Optional[Dict[str, Any]] = None,
     clear_caches: bool = False,
-) -> None:
+) -> "subprocess.Popen[bytes]":
+    """Spawn ingest_code as a subprocess and return the Popen handle.
+
+    Callers that need to wait for completion (e.g. lock-guarded signal
+    listeners) can use the returned handle to call ``proc.wait()``.
+    """
     script_path = str((Path(__file__).resolve().parent / "ingest_code.py").resolve())
     cmd = [sys.executable or "python3", script_path, "--root", root, "--no-skip-unchanged"]
     if recreate:
@@ -1271,6 +1276,8 @@ def spawn_ingest_code(
             raise RuntimeError(f"Failed to start ingest process: {cmd}")
     except Exception as exc:
         raise RuntimeError(f"Failed to spawn ingest_code for {root}: {exc}") from exc
+
+    return proc
 
 
 def _determine_embedding_dim(model_name: str) -> int:
