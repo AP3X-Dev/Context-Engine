@@ -262,14 +262,17 @@ def _redis_get_json_by_key(key: str) -> Optional[Dict[str, Any]]:
     if client is None:
         return None
     try:
-        raw = _redis_retry(lambda: client.get(key))
+        raw = _redis_retry(lambda: client.execute_command("GET", key))
     except Exception as e:
         logger.debug(f"Redis get failed for {key}: {e}")
         return None
     if not raw:
         return None
     try:
-        obj = json.loads(raw)
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        decompressed = _redis_decompress(raw)
+        obj = json.loads(decompressed.decode("utf-8"))
     except Exception as e:
         logger.debug(f"Redis JSON decode failed for {key}: {e}")
         return None
