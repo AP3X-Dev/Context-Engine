@@ -63,7 +63,7 @@ jobs:
         uv run python -c "from fastembed import TextEmbedding; m = TextEmbedding(model_name='BAAI/bge-base-en-v1.5'); list(m.embed(['test']))"
 
     - name: Run tests
-      run: uv run pytest -q --junitxml=test-results.xml
+      run: uv run python -m pytest -q --junitxml=test-results.xml
 
     - name: Upload test results
       uses: actions/upload-artifact@v4
