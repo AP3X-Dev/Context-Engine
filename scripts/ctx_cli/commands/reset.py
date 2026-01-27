@@ -171,6 +171,208 @@ def _download_file(url: str, dest: Path, description: str) -> bool:
             return False
 
 
+def _start_indexer_detached(compose_cmd: list) -> None:
+    """Kick off the indexer container in detached mode for background reindexing."""
+    indexer_env = {}
+    for var in ["INDEX_MICRO_CHUNKS", "MAX_MICRO_CHUNKS_PER_FILE", "TOKENIZER_PATH", "TOKENIZER_URL", "INDEX_WORKERS"]:
+        if var in os.environ:
+            indexer_env[var] = os.environ[var]
+    indexer_env["PSEUDO_DEFER_TO_WORKER"] = "1"
+    if "INDEX_WORKERS" not in indexer_env:
+        indexer_env["INDEX_WORKERS"] = "4"
+
+    subprocess.run(["docker", "rm", "-f", "ctx-reset-indexer"], capture_output=True, check=False)
+    indexer_cmd = compose_cmd + ["run", "-d", "--rm", "--name", "ctx-reset-indexer"]
+    for k, v in indexer_env.items():
+        indexer_cmd.extend(["-e", f"{k}={v}"])
+    indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])
+    _run_cmd(indexer_cmd, "Starting indexer (detached)")
+    _print("[green]✓[/green] Indexer started in background")
+    _print("[dim]  Monitor with: docker logs -f ctx-reset-indexer[/dim]")
+
+
+def _reset_containers(
+    compose_cmd: list,
+    build_containers: list,
+    start_containers: list,
+    mode_desc: str,
+    skip_build: bool,
+) -> int:
+    """Non-db-reset path: stop → rebuild --no-cache → up -d → indexer detached."""
+    _print("\n[bold][1/4] Stopping services...[/bold]")
+    _run_cmd(compose_cmd + ["down", "--remove-orphans", "--timeout", "10"], "Stopping all containers", check=False)
+    # Bind-mount volumes (workspace_pvc, codebase_pvc) cause interactive "config mismatch"
+    # prompts if their compose config-hash changed. Safe to remove — data lives on host disk.
+    for vol in ["context-engine_workspace_pvc", "context-engine_codebase_pvc"]:
+        subprocess.run(["docker", "volume", "rm", "-f", vol], capture_output=True, check=False)
+    _print("[green]✓[/green] Services stopped")
+
+    if not skip_build:
+        _print("\n[bold][2/4] Building containers (no-cache)...[/bold]")
+        _run_cmd(compose_cmd + ["build", "--no-cache"] + build_containers, f"Building: {', '.join(build_containers)}")
+        _print("[green]✓[/green] Containers built")
+    else:
+        _print("\n[bold][2/4] Skipping build[/bold]")
+
+    _print("\n[bold][3/4] Starting services...[/bold]")
+    cmd = compose_cmd + ["up", "-d", "--scale", "embedding=2"] + start_containers
+    _run_cmd(cmd, f"Starting: {', '.join(start_containers)} (embedding×2)")
+    _print("[green]✓[/green] Services started")
+
+    _print("\n[bold][4/4] Starting indexer...[/bold]")
+    qdrant_url = get_qdrant_url_for_host()
+    if not _wait_for_qdrant(qdrant_url):
+        return 1
+    _start_indexer_detached(compose_cmd)
+
+    _print_panel(
+        f"[green]✓[/green] Containers rebuilt and restarted\n\n"
+        f"[cyan]Mode:[/cyan] {mode_desc}\n"
+        f"[cyan]Services:[/cyan] {', '.join(start_containers)}\n\n"
+        f"[dim]Run 'ctx status' to verify all services are healthy.[/dim]",
+        title="Reset Complete",
+        border_style="green"
+    )
+    return 0
+
+
+def _reset_full(
+    compose_cmd: list,
+    build_containers: list,
+    start_containers: list,
+    mode_desc: str,
+    skip_build: bool,
+    skip_model: bool,
+    skip_tokenizer: bool,
+    model_url: str,
+    model_path: Path,
+    tokenizer_url: str,
+    tokenizer_path: Path,
+    neo4j_enabled: bool,
+    redis_enabled: bool,
+) -> int:
+    """Full db-reset path: nuke volumes → rebuild → init_payload → tokenizer → caches → reindex → model → up."""
+    import shutil
+
+    steps_total = 7
+    step = 0
+
+    step += 1
+    _print(f"\n[bold][{step}/{steps_total}] Stopping services and removing volumes...[/bold]")
+    _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans", "--timeout", "10"], "Stopping all containers and removing volumes", check=False)
+    _print("[green]✓[/green] Services stopped and volumes removed")
+
+    step += 1
+    if not skip_build:
+        _print(f"\n[bold][{step}/{steps_total}] Building containers (no-cache)...[/bold]")
+        _run_cmd(compose_cmd + ["build", "--no-cache"] + build_containers, f"Building: {', '.join(build_containers)}")
+        _print("[green]✓[/green] Containers built")
+    else:
+        _print(f"\n[bold][{step}/{steps_total}] Skipping build[/bold]")
+
+    step += 1
+    db_services = ["qdrant"]
+    if redis_enabled:
+        db_services.append("redis")
+    if neo4j_enabled:
+        db_services.append("neo4j")
+    db_services.append("embedding")
+    _print(f"\n[bold][{step}/{steps_total}] Starting {', '.join(db_services)}...[/bold]")
+    _run_cmd(compose_cmd + ["up", "-d", "--scale", "embedding=2"] + db_services, f"Starting {', '.join(db_services)} (embedding×2)")
+
+    qdrant_url = get_qdrant_url_for_host()
+    if not _wait_for_qdrant(qdrant_url):
+        return 1
+    if not _wait_for_embedding("http://localhost:8100"):
+        _print("[yellow]Warning:[/yellow] Embedding service not ready, indexer may have errors")
+
+    step += 1
+    _print(f"\n[bold][{step}/{steps_total}] Initializing payload indexes...[/bold]")
+    _run_cmd(compose_cmd + ["run", "--rm", "init_payload"], "Running init_payload", check=False)
+
+    step += 1
+    if not skip_tokenizer:
+        _print(f"\n[bold][{step}/{steps_total}] Downloading tokenizer...[/bold]")
+        if not _download_file(tokenizer_url, tokenizer_path, "tokenizer"):
+            _print("[yellow]Warning:[/yellow] Tokenizer download failed, continuing...")
+    else:
+        _print(f"\n[bold][{step}/{steps_total}] Skipping tokenizer download[/bold]")
+
+    step += 1
+    _print(f"\n[bold][{step}/{steps_total}] Clearing caches and running indexer...[/bold]")
+
+    _print("[dim]Clearing local caches...[/dim]")
+    cache_cleared = 0
+    codebase_dir = Path(".codebase")
+    if codebase_dir.exists():
+        for cache_file in codebase_dir.rglob("cache.json"):
+            try:
+                cache_file.unlink()
+                cache_cleared += 1
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+        for symbols_dir in codebase_dir.rglob("symbols"):
+            if symbols_dir.is_dir():
+                try:
+                    shutil.rmtree(symbols_dir, ignore_errors=True)
+                    cache_cleared += 1
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+
+    dev_workspace = Path("dev-workspace")
+    if dev_workspace.exists():
+        for cache_file in dev_workspace.rglob(".codebase/cache.json"):
+            try:
+                cache_file.unlink()
+                cache_cleared += 1
+            except Exception as e:
+                logger.debug(f"Suppressed exception: {e}")
+        for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
+            if symbols_dir.is_dir():
+                try:
+                    shutil.rmtree(symbols_dir, ignore_errors=True)
+                    cache_cleared += 1
+                except Exception as e:
+                    logger.debug(f"Suppressed exception: {e}")
+    _print(f"[dim]Cleared {cache_cleared} host cache entries[/dim]")
+
+    _print("[dim]Clearing container caches...[/dim]")
+    _run_cmd(
+        compose_cmd + ["run", "--rm", "--entrypoint", "sh", "indexer", "-c",
+         "find /work -path '*/.codebase/*/cache.json' -delete 2>/dev/null; "
+         "find /work -path '*/.codebase/cache.json' -delete 2>/dev/null; "
+         "find /work -path '*/.codebase/*/symbols' -type d -exec rm -rf {} + 2>/dev/null; "
+         "find /work -path '*/.codebase/symbols' -type d -exec rm -rf {} + 2>/dev/null; "
+         "echo 'Container caches cleared'"],
+        "Clearing container caches",
+        check=False,
+    )
+
+    _start_indexer_detached(compose_cmd)
+
+    step += 1
+    if not skip_model:
+        _print(f"\n[bold][{step}/{steps_total}] Downloading model and starting services...[/bold]")
+        if not _download_file(model_url, model_path, "llama model"):
+            _print("[yellow]Warning:[/yellow] Model download failed, continuing...")
+    else:
+        _print(f"\n[bold][{step}/{steps_total}] Starting services...[/bold]")
+
+    cmd = compose_cmd + ["up", "-d", "--scale", "embedding=2"] + start_containers
+    _run_cmd(cmd, f"Starting: {', '.join(start_containers)} (embedding×2)")
+    _print("[green]✓[/green] Services started")
+
+    _print_panel(
+        f"[green]✓[/green] Full environment reset complete!\n\n"
+        f"[cyan]Mode:[/cyan] {mode_desc}\n"
+        f"[cyan]Services:[/cyan] {', '.join(start_containers)}\n\n"
+        f"[dim]Run 'ctx status' to verify all services are healthy.[/dim]",
+        title="Reset Complete",
+        border_style="green"
+    )
+    return 0
+
+
 def reset(
     mode: str = "mcp",
     skip_build: bool = False,
@@ -268,193 +470,39 @@ def reset(
 
     _print_panel(
         f"[cyan]Mode:[/cyan] {mode_desc}\n"
-        f"[cyan]Skip Build:[/cyan] {skip_build}\n"
-        f"[cyan]Skip Model:[/cyan] {skip_model}\n"
-        f"[cyan]Skip Tokenizer:[/cyan] {skip_tokenizer}\n"
-        f"[cyan]DB Reset:[/cyan] {db_reset}",
+        f"[cyan]DB Reset:[/cyan] {db_reset}\n"
+        f"[cyan]Skip Build:[/cyan] {skip_build}",
         title="Development Environment Reset",
         border_style="yellow"
     )
 
-    steps_total = 7
-    step = 0
-
     try:
-        # Step 1: Stop all services (and optionally reset database volumes)
-        step += 1
-        _print(f"\n[bold][{step}/{steps_total}] Stopping services...[/bold]")
         if db_reset:
-            # Full reset including database volumes (qdrant, redis, neo4j, embedding cache)
-            _run_cmd(compose_cmd + ["down", "-v", "--remove-orphans"], "Stopping all containers and removing volumes", check=False)
-            _print("[green]✓[/green] Services stopped and database volumes removed")
+            return _reset_full(
+                compose_cmd=compose_cmd,
+                build_containers=build_containers,
+                start_containers=start_containers,
+                mode_desc=mode_desc,
+                skip_build=skip_build,
+                skip_model=skip_model,
+                skip_tokenizer=skip_tokenizer,
+                model_url=model_url,
+                model_path=model_path,
+                tokenizer_url=tokenizer_url,
+                tokenizer_path=tokenizer_path,
+                neo4j_enabled=neo4j_enabled,
+                redis_enabled=redis_enabled,
+            )
         else:
-            # Stop services but preserve database volumes
-            _run_cmd(compose_cmd + ["down", "--remove-orphans"], "Stopping all containers", check=False)
-            _print("[green]✓[/green] Services stopped (database volumes preserved)")
-
-        # Step 2: Build containers (unless skipped)
-        step += 1
-        if not skip_build:
-            _print(f"\n[bold][{step}/{steps_total}] Building containers...[/bold]")
-            cmd = compose_cmd + ["build", "--no-cache"] + build_containers
-            _run_cmd(cmd, f"Building: {', '.join(build_containers)}")
-            _print("[green]✓[/green] Containers built")
-        else:
-            _print(f"\n[bold][{step}/{steps_total}] Skipping container build[/bold]")
-
-        # Step 3: Start Qdrant, Redis (if enabled), Neo4j (if enabled), and Embedding service
-        step += 1
-        db_services = ["qdrant"]
-        if redis_enabled:
-            db_services.append("redis")
-        if neo4j_enabled:
-            db_services.append("neo4j")
-        # Start embedding service early (indexer needs it)
-        db_services.append("embedding")
-        _print(f"\n[bold][{step}/{steps_total}] Starting {', '.join(db_services)}...[/bold]")
-        # Use --scale for embedding to get 2 replicas (deploy.replicas is Swarm-only)
-        _run_cmd(compose_cmd + ["up", "-d", "--scale", "embedding=2"] + db_services, f"Starting {', '.join(db_services)} (embedding×2)")
-
-        # Use helper that normalizes Docker hostname to localhost for host CLI
-        qdrant_url = get_qdrant_url_for_host()
-        if not _wait_for_qdrant(qdrant_url):
-            return 1
-
-        # Wait for embedding service to be ready (indexer needs it)
-        if not _wait_for_embedding("http://localhost:8100"):
-            _print("[yellow]Warning:[/yellow] Embedding service not ready, indexer may have errors")
-
-        # Step 4: Initialize payload indexes
-        step += 1
-        _print(f"\n[bold][{step}/{steps_total}] Initializing payload indexes...[/bold]")
-        _run_cmd(
-            compose_cmd + ["run", "--rm", "init_payload"],
-            "Running init_payload",
-            check=False  # May fail if collection doesn't exist yet
-        )
-
-        # Step 5: Download tokenizer
-        step += 1
-        if not skip_tokenizer:
-            _print(f"\n[bold][{step}/{steps_total}] Downloading tokenizer...[/bold]")
-            if not _download_file(tokenizer_url, tokenizer_path, "tokenizer"):
-                _print("[yellow]Warning:[/yellow] Tokenizer download failed, continuing...")
-        else:
-            _print(f"\n[bold][{step}/{steps_total}] Skipping tokenizer download[/bold]")
-
-        # Step 6: Clear caches and run indexer with recreate
-        step += 1
-        _print(f"\n[bold][{step}/{steps_total}] Clearing caches and running indexer...[/bold]")
-
-        # Clear local caches (host side) - use rglob to find all cache files
-        _print("[dim]Clearing local caches...[/dim]")
-        import shutil
-        cache_cleared = 0
-
-        # Clear all cache.json files under .codebase (including repos subdirs)
-        codebase_dir = Path(".codebase")
-        if codebase_dir.exists():
-            for cache_file in codebase_dir.rglob("cache.json"):
-                try:
-                    cache_file.unlink()
-                    cache_cleared += 1
-                except Exception as e:
-                    logger.debug(f"Suppressed exception: {e}")
-            # Clear all symbols directories
-            for symbols_dir in codebase_dir.rglob("symbols"):
-                if symbols_dir.is_dir():
-                    try:
-                        shutil.rmtree(symbols_dir, ignore_errors=True)
-                        cache_cleared += 1
-                    except Exception as e:
-                        logger.debug(f"Suppressed exception: {e}")
-
-        # Also clear dev-workspace caches (if present)
-        dev_workspace = Path("dev-workspace")
-        if dev_workspace.exists():
-            for cache_file in dev_workspace.rglob(".codebase/cache.json"):
-                try:
-                    cache_file.unlink()
-                    cache_cleared += 1
-                except Exception as e:
-                    logger.debug(f"Suppressed exception: {e}")
-            for symbols_dir in dev_workspace.rglob(".codebase/symbols"):
-                if symbols_dir.is_dir():
-                    try:
-                        shutil.rmtree(symbols_dir, ignore_errors=True)
-                        cache_cleared += 1
-                    except Exception as e:
-                        logger.debug(f"Suppressed exception: {e}")
-
-        _print(f"[dim]Cleared {cache_cleared} host cache entries[/dim]")
-
-        # Also clear caches inside the container (critical for bind-mounted workspaces)
-        _print("[dim]Clearing container caches...[/dim]")
-        _run_cmd(
-            compose_cmd + ["run", "--rm", "--entrypoint", "sh", "indexer", "-c",
-             "find /work -path '*/.codebase/*/cache.json' -delete 2>/dev/null; "
-             "find /work -path '*/.codebase/cache.json' -delete 2>/dev/null; "
-             "find /work -path '*/.codebase/*/symbols' -type d -exec rm -rf {} + 2>/dev/null; "
-             "find /work -path '*/.codebase/symbols' -type d -exec rm -rf {} + 2>/dev/null; "
-             "echo 'Container caches cleared'"],
-            "Clearing container caches",
-            check=False,
-        )
-
-        # Build env vars for indexer
-        indexer_env = {}
-        for var in ["INDEX_MICRO_CHUNKS", "MAX_MICRO_CHUNKS_PER_FILE", "TOKENIZER_PATH", "TOKENIZER_URL", "INDEX_WORKERS"]:
-            if var in os.environ:
-                indexer_env[var] = os.environ[var]
-
-        indexer_env["PSEUDO_DEFER_TO_WORKER"] = "1"
-        if "INDEX_WORKERS" not in indexer_env:
-            indexer_env["INDEX_WORKERS"] = "4"
-
-        # Run indexer detached (-d) so CLI doesn't block
-        # Use --rm to auto-remove container on exit; first remove any stale container with same name
-        # to ensure idempotent operation across multiple runs
-        subprocess.run(
-            ["docker", "rm", "-f", "ctx-reset-indexer"],
-            capture_output=True,
-            check=False,  # Ignore error if container doesn't exist
-        )
-        indexer_cmd = compose_cmd + ["run", "-d", "--rm", "--name", "ctx-reset-indexer"]
-        for k, v in indexer_env.items():
-            indexer_cmd.extend(["-e", f"{k}={v}"])
-        indexer_cmd.extend(["indexer", "--root", "/work", "--recreate"])
-
-        _run_cmd(indexer_cmd, "Starting indexer (detached)")
-        _print("[green]✓[/green] Indexer started in background (pseudo-tags deferred)")
-        _print("[dim]  Monitor with: docker logs -f ctx-reset-indexer[/dim]")
-
-        # Step 7: Download model and start services
-        step += 1
-        if not skip_model:
-            _print(f"\n[bold][{step}/{steps_total}] Downloading model and starting services...[/bold]")
-            if not _download_file(model_url, model_path, "llama model"):
-                _print("[yellow]Warning:[/yellow] Model download failed, continuing...")
-        else:
-            _print(f"\n[bold][{step}/{steps_total}] Starting services...[/bold]")
-
-        # Start services
-        # Use --scale for embedding service to get multiple replicas (deploy.replicas is Swarm-only)
-        cmd = compose_cmd + ["up", "-d", "--scale", "embedding=2"] + start_containers
-        _run_cmd(cmd, f"Starting: {', '.join(start_containers)} (embedding×2)")
-        _print("[green]✓[/green] Services started")
-
-        _print_panel(
-            f"[green]✓[/green] Development environment reset complete!\n\n"
-            f"[cyan]Mode:[/cyan] {mode_desc}\n"
-            f"[cyan]Services:[/cyan] {', '.join(start_containers)}\n\n"
-            f"[dim]Run 'ctx status' to verify all services are healthy.[/dim]",
-            title="Reset Complete",
-            border_style="green"
-        )
-        return 0
-
-    except subprocess.CalledProcessError as e:
-        _print(f"[red]Error:[/red] Reset failed at step {step}", error=True)
+            return _reset_containers(
+                compose_cmd=compose_cmd,
+                build_containers=build_containers,
+                start_containers=start_containers,
+                mode_desc=mode_desc,
+                skip_build=skip_build,
+            )
+    except subprocess.CalledProcessError:
+        _print("[red]Error:[/red] Reset failed", error=True)
         return 1
     except KeyboardInterrupt:
         _print("\n[yellow]Reset interrupted[/yellow]")
