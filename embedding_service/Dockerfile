@@ -1,28 +1,27 @@
 FROM python:3.11-slim
 
+COPY --from=ghcr.io/astral-sh/uv:0.5.27 /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    FASTEMBED_CACHE_PATH=/app/models \
+    HF_HOME=/app/models
+
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
 
-# Copy service
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-install-project --no-dev
+
 COPY main.py .
 
-# Pre-download embedding model during build for faster startup
-# Default: nomic-Q (quantized, 4x smaller, same quality)
-# Override at build time: --build-arg EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+ENV PATH="/app/.venv/bin:$PATH"
+
 ARG EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5-Q
-
-# Set cache path BEFORE download so runtime uses same path
-ENV FASTEMBED_CACHE_PATH=/app/models
-ENV HF_HOME=/app/models
-
-# Download model to the same path used at runtime
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('${EMBEDDING_MODEL}')"
 
 ENV EMBED_SERVICE_PORT=8100
 EXPOSE 8100
 
 CMD ["python", "main.py"]
-
