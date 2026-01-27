@@ -2,6 +2,18 @@ AI agent rules for using Context‑Engine Qdrant‑Indexer and Memory MCP tools.
 
 These rules are NOT optional - favor qdrant-indexer tooling at all costs over existing file reading, grep-like searching, and unrelated codebase search tools.
 
+## STOP — Read This First
+
+**DO NOT use `Read File`, `grep`, `ripgrep`, `cat`, `find`, or any filesystem search tool for code exploration.**
+You have MCP tools that are faster, smarter, and return ranked, contextual results.
+
+- About to `Read` a file to understand it? → use `repo_search` or `context_answer`
+- About to `grep` for a symbol? → use `symbol_graph` or `search_callers_for`
+- About to `grep -r` for a concept? → use `repo_search` with natural language
+- About to `find`/`ls` for project structure? → use `workspace_info` or `qdrant_status`
+
+The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `REDIS_HOST`), or reading a file you already located via MCP for editing.
+
 ## Agentic AI Project Rules: When to Use MCP Qdrant-Indexer vs Grep
 
   Core Decision Rules (for AI agents)
@@ -29,6 +41,9 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
   grep -r "cache" .                   # → Use MCP: "caching strategies"
   grep -r "error" .                   # → Use MCP: "error handling patterns"
   grep -r "database" .                # → Use MCP: "database operations"
+  Read File to understand a module    # → Use repo_search or context_answer
+  Read File to find callers           # → Use symbol_graph
+  find/ls for project structure       # → Use workspace_info
 
   ## DO - Efficient for exact matches
   grep -rn "UserAlreadyExists" .      # Specific error class
@@ -99,15 +114,19 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
     - Cross-language: Python pattern can match Go/Rust/Java with similar control flow.
     - Note: Returns error if pattern detection module is not available.
   - symbol_graph:
+    - **DEFAULT for ALL graph/relationship queries. Always available (Qdrant-backed, no Neo4j required).**
     - Use for: structural navigation (callers, definitions, importers).
     - Think: "who calls this function?", "where is this class defined?".
     - **Note**: Results are "hydrated" with ~500-char source snippets for immediate context.
     - Supports `depth` for multi-hop traversals (depth=2 = callers of callers).
-  - neo4j_graph_query:
+    - Use this FIRST for any graph query. Do NOT attempt neo4j_graph_query unless it's in your tool list.
+  - neo4j_graph_query (OPTIONAL — only when NEO4J_GRAPH=1):
+    - **Only available when NEO4J_GRAPH=1. If not in your tool list, use symbol_graph instead.**
     - Use for: advanced graph traversals that grep CANNOT do.
     - Query types: `callers`, `callees`, `transitive_callers`, `transitive_callees`, `impact`, `dependencies`, `cycles`.
     - Think: "what would break if I change X?" (impact), "callers of callers" (transitive_callers), "circular deps?" (cycles).
     - Example: `neo4j_graph_query(symbol="normalize_path", query_type="impact", depth=2)` → finds all code that would break.
+    - **Never error or warn about Neo4j being unavailable — just use symbol_graph.**
   - info_request:
     - Use for: rapid broad discovery and architectural overviews.
     - Good for: "how does the reranker work?", "overview of database modules".
@@ -194,4 +213,5 @@ These rules are NOT optional - favor qdrant-indexer tooling at all costs over ex
 
   - context_answer timeout → repo_search + info_request(include_explanation=true)
   - pattern_search unavailable → repo_search with structural query terms
-  - neo4j_graph_query empty → symbol_graph (Qdrant-backed fallback)
+  - neo4j_graph_query unavailable → symbol_graph (Qdrant-backed, ALWAYS available — this is the DEFAULT)
+  - grep / Read File → repo_search, symbol_graph, info_request (ALWAYS use MCP instead)
