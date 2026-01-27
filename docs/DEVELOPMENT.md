@@ -19,13 +19,14 @@ Setting up development environment, understanding codebase structure, and contri
 
 ### Required Software
 - **Python 3.11+**: Primary development language
+- **uv**: Fast Python package manager (recommended, 10-100x faster than pip)
 - **Docker & Docker Compose**: Containerized development environment
 - **Make**: Build automation (recommended)
 - **Git**: Version control
 - **Node.js & npm**: For MCP development dependencies
 
 ### Optional Tools
-- **pytest**: Testing framework (included in requirements.txt)
+- **pytest**: Testing framework (included in dependencies)
 - **pre-commit**: Git hooks for code quality
 - **jq**: JSON processing for CLI tools
 
@@ -40,7 +41,10 @@ cd Context-Engine
 # Copy environment configuration
 cp .env.example .env
 
-# Install Python dependencies
+# Install Python dependencies (using uv - recommended)
+uv sync
+
+# Or using pip (legacy)
 pip install -r requirements.txt
 ```
 

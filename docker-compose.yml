@@ -132,6 +132,11 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_storage_dev_remote:/qdrant/storage
+    environment:
+      # FOR LOCAL DEV: Larger WAL buffer = fewer disk flushes during bulk inserts
+      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=${QDRANT_WAL_CAPACITY_MB:-64}
+      # FOR LOCAL DEV: Batch optimizer runs for better insert throughput
+      - QDRANT__STORAGE__OPTIMIZERS__INDEXING_THRESHOLD_KB=${QDRANT_INDEXING_THRESHOLD_KB:-20000}
     networks:
       - dev-remote-network
 
