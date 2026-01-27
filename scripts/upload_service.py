@@ -529,12 +529,32 @@ def validate_bundle_format(bundle_path: Path) -> Dict[str, Any]:
         raise ValueError(f"Invalid bundle format: {str(e)}")
 
 
+def _publish_index_signal(workspace_path: str, collection_name: Optional[str]) -> None:
+    """Publish a Redis signal to tell the watcher to index files after upload."""
+    try:
+        from scripts.workspace_state import _get_redis_client
+        rc = _get_redis_client()
+        if rc is None:
+            return
+        import json as _json
+        payload = _json.dumps({
+            "workspace_path": workspace_path,
+            "collection": collection_name,
+            "timestamp": datetime.now().isoformat(),
+        })
+        rc.publish("context-engine:index-signal", payload)
+        logger.info(f"[upload_service] Published index signal for {workspace_path} -> {collection_name}")
+    except Exception as e:
+        logger.debug(f"[upload_service] Failed to publish index signal: {e}")
+
+
 async def _process_bundle_background(
     workspace_path: str,
     bundle_path: Path,
     manifest: Dict[str, Any],
     sequence_number: Optional[int],
     bundle_id: Optional[str],
+    collection_name: Optional[str] = None,
 ) -> None:
     try:
         start_time = datetime.now()
@@ -563,6 +583,7 @@ async def _process_bundle_background(
         logger.info(
             f"[upload_service] Finished processing bundle {bundle_id} seq {sequence_number} in {int(processing_time)}ms"
         )
+        _publish_index_signal(workspace_path, collection_name)
     except Exception as e:
         logger.error(f"[upload_service] Error in background processing for bundle {bundle_id}: {e}")
     finally:
@@ -2012,6 +2033,7 @@ async def upload_delta_bundle(
                     manifest=manifest,
                     sequence_number=sequence_number,
                     bundle_id=bundle_id,
+                    collection_name=collection_name,
                 )
             )
 

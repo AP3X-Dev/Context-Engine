@@ -298,7 +298,10 @@ def main():
         print("[multi_repo] Multi-repo mode enabled - will create separate collections per repository")
 
         root_path = Path(args.root).resolve()
-        repos = []
+
+        # First pass: find directories with .git (git repos)
+        git_repos = []
+        non_git_dirs = []
         try:
             if root_path.is_dir():
                 for child in sorted(root_path.iterdir()):
@@ -309,15 +312,36 @@ def main():
                             continue
                         if child.name in {".codebase", "__pycache__"}:
                             continue
-                        repos.append(child)
+
+                        if (child / ".git").exists():
+                            git_repos.append(child)
+                        else:
+                            non_git_dirs.append(child)
                     except Exception as e:
                         logger.debug(f"Suppressed exception, continuing: {e}")
                         continue
         except Exception:
+            git_repos = []
+            non_git_dirs = []
+
+        # Always prefer git repos, but fall back to all subdirectories if none found
+        # This ensures multi-repo mode works in K8s where code may be copied without .git
+        if git_repos:
+            repos = git_repos
+            print(f"[multi_repo] Found {len(git_repos)} git repositories")
+            if non_git_dirs:
+                print(f"[multi_repo] Ignoring {len(non_git_dirs)} non-git directories")
+        elif non_git_dirs:
+            # Fallback: treat all subdirectories as repos when no .git found
+            repos = non_git_dirs
+            print(f"[multi_repo] WARNING: No .git directories found - falling back to directory-based detection")
+            print(f"[multi_repo] Treating {len(non_git_dirs)} subdirectories as separate repos")
+        else:
             repos = []
 
         if not repos:
-            print(f"[multi_repo] No repo directories found under: {root_path}")
+            print(f"[multi_repo] No repositories found under: {root_path}")
+            print("[multi_repo] Hint: Each subdirectory should have a .git folder for best results")
             return
 
         multi_flag = (os.environ.get("PSEUDO_DEFER_TO_WORKER") or "").strip().lower()

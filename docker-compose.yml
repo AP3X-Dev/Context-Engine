@@ -3,8 +3,6 @@
 # Repos stored in /work/ (which is project root - avoiding docker volumes) and metadata are stored in /work/.codebase/repos (project root/.codebase)
 # Updated to use separate PVCs for workspace and codebase to eliminate circular dependencies
 
-version: '3.8'
-
 # YAML Anchors for common configurations
 x-common-config: &common-config
   env_file:

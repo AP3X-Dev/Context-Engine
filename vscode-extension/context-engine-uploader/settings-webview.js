@@ -6,6 +6,13 @@ const vscode = require('vscode');
 
 // Settings grouped by category
 const SETTINGS_SCHEMA = {
+  status: {
+    title: 'Status',
+    icon: 'pulse',
+    description: 'Live indexing progress and system status',
+    isStatus: true,  // Special flag for status section rendering
+    settings: []  // No editable settings - purely informational
+  },
   general: {
     title: 'General',
     icon: 'home',
@@ -15,6 +22,15 @@ const SETTINGS_SCHEMA = {
       { key: 'endpoint', label: 'Server Endpoint', type: 'string', description: 'URL for the upload server', placeholder: 'http://localhost:8004' },
       { key: 'targetPath', label: 'Workspace Path', type: 'string', description: 'Path to index (leave empty for current workspace)', placeholder: '/path/to/project' },
       { key: 'pythonPath', label: 'Python Path', type: 'string', description: 'Python executable for scripts', placeholder: 'python3' },
+    ]
+  },
+  team: {
+    title: 'Team',
+    icon: 'organization',
+    description: 'Shared authentication for team deployments',
+    settings: [
+      { key: 'authBackendUrl', label: 'Auth Backend URL', type: 'string', description: 'Upload service URL for authentication (e.g. http://ce.yourteam.com/upload)', placeholder: 'http://localhost:8004' },
+      { key: 'authSharedToken', label: 'Shared API Token', type: 'password', description: 'Team-wide shared token for upload authentication. All team members use the same token.', placeholder: '••••••••' },
     ]
   },
   indexing: {
@@ -106,10 +122,11 @@ const SETTINGS_SCHEMA = {
 class SettingsWebviewProvider {
   static viewType = 'contextEngineSettingsPanel';
 
-  constructor(extensionUri) {
+  constructor(extensionUri, getEndpoint) {
     this._extensionUri = extensionUri;
+    this._getEndpoint = getEndpoint || (() => 'http://localhost:8004');
     this._panel = undefined;
-    this._activeSection = 'general';
+    this._activeSection = 'status';  // Default to status section
   }
 
   openSettings() {
@@ -181,13 +198,15 @@ class SettingsWebviewProvider {
     const nonce = getNonce();
     const values = this._getAllSettings();
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'assets', 'logo.jpeg'));
+    const endpoint = this._getEndpoint();
+    const workspacePath = values.targetPath || '';
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://microsoft.github.io; img-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://microsoft.github.io; img-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${endpoint} http://localhost:8004 http://127.0.0.1:8004;">
   <title>Context Engine Settings</title>
   <link href="https://microsoft.github.io/vscode-codicons/dist/codicon.css" rel="stylesheet">
   <style>${this._getStyles()}</style>
@@ -213,7 +232,11 @@ class SettingsWebviewProvider {
       ${this._getSectionContent(values)}
     </main>
   </div>
-  <script nonce="${nonce}">${this._getScript()}</script>
+  <script nonce="${nonce}">
+    const STATUS_ENDPOINT = '${endpoint}';
+    const WORKSPACE_PATH = '${workspacePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}';
+    ${this._getScript()}
+  </script>
 </body>
 </html>`;
   }
@@ -231,6 +254,11 @@ class SettingsWebviewProvider {
     const section = SETTINGS_SCHEMA[this._activeSection];
     if (!section) return '';
 
+    // Special rendering for status section
+    if (section.isStatus) {
+      return this._getStatusSectionHtml();
+    }
+
     return `
       <div class="section-header">
         <h2><span class="codicon codicon-${section.icon}"></span> ${section.title}</h2>
@@ -238,6 +266,71 @@ class SettingsWebviewProvider {
       </div>
       <div class="settings-list">
         ${section.settings.map(s => this._getSettingHtml(s, values[s.key])).join('')}
+      </div>
+    `;
+  }
+
+  _getStatusSectionHtml() {
+    return `
+      <div class="section-header">
+        <h2><span class="codicon codicon-pulse"></span> Status</h2>
+        <p class="section-desc">Live indexing progress and system status</p>
+      </div>
+      <div class="status-section">
+        <div class="status-card" id="indexing-status-card">
+          <div class="status-card-header">
+            <span class="codicon codicon-database"></span>
+            <span class="status-card-title">Indexing Status</span>
+            <span class="status-badge" id="status-badge">Checking...</span>
+          </div>
+          <div class="status-card-body">
+            <div class="progress-container" id="progress-container" style="display: none;">
+              <div class="progress-info">
+                <span id="progress-text">0 / 0 files</span>
+                <span id="progress-percent">0%</span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+              </div>
+              <div class="current-file" id="current-file"></div>
+            </div>
+            <div class="status-details" id="status-details">
+              <div class="status-row">
+                <span class="status-label">State</span>
+                <span class="status-value" id="state-value">--</span>
+              </div>
+              <div class="status-row">
+                <span class="status-label">Points Indexed</span>
+                <span class="status-value" id="points-value">--</span>
+              </div>
+              <div class="status-row">
+                <span class="status-label">Watcher</span>
+                <span class="status-value" id="watcher-value">--</span>
+              </div>
+              <div class="status-row">
+                <span class="status-label">Qdrant</span>
+                <span class="status-value" id="qdrant-value">--</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="status-card" id="connection-status-card">
+          <div class="status-card-header">
+            <span class="codicon codicon-globe"></span>
+            <span class="status-card-title">Server Connection</span>
+            <span class="status-badge" id="connection-badge">Checking...</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-row">
+              <span class="status-label">Endpoint</span>
+              <span class="status-value" id="endpoint-value">--</span>
+            </div>
+            <div class="status-row">
+              <span class="status-label">Last Checked</span>
+              <span class="status-value" id="last-checked-value">--</span>
+            </div>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -461,12 +554,97 @@ class SettingsWebviewProvider {
     .toggle input:checked + .toggle-slider { background: var(--accent); }
     .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
     .toggle input:focus + .toggle-slider { box-shadow: 0 0 0 2px var(--focus-ring); }
+
+    /* Status section styles */
+    .status-section { display: flex; flex-direction: column; gap: 16px; }
+    .status-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+    .status-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .status-card-header .codicon { font-size: 16px; color: var(--accent); }
+    .status-card-title { font-weight: 500; flex: 1; }
+    .status-badge {
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .status-badge.idle { background: var(--border); color: var(--text-secondary); }
+    .status-badge.indexing { background: var(--vscode-charts-yellow, #e9a700); color: #000; }
+    .status-badge.watching { background: var(--vscode-charts-purple, #a855f7); color: #fff; }
+    .status-badge.ready { background: var(--vscode-charts-green, #22c55e); color: #fff; }
+    .status-badge.error { background: var(--vscode-errorForeground, #f14c4c); color: #fff; }
+    .status-badge.offline { background: var(--vscode-errorForeground, #f14c4c); color: #fff; }
+    .status-badge.online { background: var(--vscode-charts-green, #22c55e); color: #fff; }
+    .status-card-body { padding: 16px; }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .status-row:last-child { border-bottom: none; }
+    .status-label { color: var(--text-secondary); font-size: 12px; }
+    .status-value { font-weight: 500; font-size: 13px; }
+
+    /* Progress bar styles */
+    .progress-container { margin-bottom: 16px; }
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    #progress-text { color: var(--text-primary); }
+    #progress-percent { color: var(--accent); font-weight: 600; }
+    .progress-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--vscode-charts-green, #22c55e));
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+    .current-file {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .current-file::before {
+      content: '\\eb68';
+      font-family: codicon;
+      margin-right: 6px;
+      opacity: 0.7;
+    }
     `;
   }
 
   _getScript() {
     return `
     const vscode = acquireVsCodeApi();
+    let pollInterval = null;
+    let isStatusSection = false;
+
     function updateSetting(key, value) {
       vscode.postMessage({ command: 'updateSetting', key, value });
     }
@@ -478,6 +656,121 @@ class SettingsWebviewProvider {
         vscode.postMessage({ command: 'setSection', section: btn.dataset.section });
       });
     });
+
+    // Status polling functions
+    function formatNumber(num) {
+      return num != null ? num.toLocaleString() : '--';
+    }
+
+    function updateStatusUI(data) {
+      const statusBadge = document.getElementById('status-badge');
+      const progressContainer = document.getElementById('progress-container');
+      const progressText = document.getElementById('progress-text');
+      const progressPercent = document.getElementById('progress-percent');
+      const progressFill = document.getElementById('progress-fill');
+      const currentFile = document.getElementById('current-file');
+      const stateValue = document.getElementById('state-value');
+      const pointsValue = document.getElementById('points-value');
+      const watcherValue = document.getElementById('watcher-value');
+      const qdrantValue = document.getElementById('qdrant-value');
+
+      if (!statusBadge) return; // Not on status section
+
+      const state = data.indexing_state || 'idle';
+      const progress = data.progress;
+
+      // Update badge
+      statusBadge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+      statusBadge.className = 'status-badge ' + state;
+
+      // Update progress bar if indexing
+      if (state === 'indexing' && progress) {
+        progressContainer.style.display = 'block';
+        const processed = progress.files_processed || 0;
+        const total = progress.total_files || 1;
+        const percent = Math.round((processed / total) * 100);
+
+        progressText.textContent = formatNumber(processed) + ' / ' + formatNumber(total) + ' files';
+        progressPercent.textContent = percent + '%';
+        progressFill.style.width = percent + '%';
+
+        if (progress.current_file) {
+          const shortPath = progress.current_file.split('/').slice(-2).join('/');
+          currentFile.textContent = shortPath;
+          currentFile.style.display = 'block';
+        } else {
+          currentFile.style.display = 'none';
+        }
+      } else {
+        progressContainer.style.display = 'none';
+      }
+
+      // Update details
+      stateValue.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+      pointsValue.textContent = formatNumber(data.points_count);
+      watcherValue.textContent = data.watcher_active ? 'Active' : 'Inactive';
+      watcherValue.style.color = data.watcher_active ? 'var(--vscode-charts-green, #22c55e)' : 'var(--text-secondary)';
+      qdrantValue.textContent = data.qdrant_healthy ? 'Connected' : 'Disconnected';
+      qdrantValue.style.color = data.qdrant_healthy ? 'var(--vscode-charts-green, #22c55e)' : 'var(--vscode-errorForeground, #f14c4c)';
+    }
+
+    function updateConnectionUI(isConnected, endpoint) {
+      const connectionBadge = document.getElementById('connection-badge');
+      const endpointValue = document.getElementById('endpoint-value');
+      const lastCheckedValue = document.getElementById('last-checked-value');
+
+      if (!connectionBadge) return;
+
+      connectionBadge.textContent = isConnected ? 'Online' : 'Offline';
+      connectionBadge.className = 'status-badge ' + (isConnected ? 'online' : 'offline');
+      endpointValue.textContent = endpoint || '--';
+      lastCheckedValue.textContent = new Date().toLocaleTimeString();
+    }
+
+    async function pollStatus() {
+      if (!STATUS_ENDPOINT) {
+        updateConnectionUI(false, 'Not configured');
+        return;
+      }
+
+      try {
+        const params = new URLSearchParams();
+        if (WORKSPACE_PATH) params.set('workspace_path', WORKSPACE_PATH);
+
+        const url = STATUS_ENDPOINT + '/api/v1/indexing/status' + (params.toString() ? '?' + params.toString() : '');
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          updateStatusUI(data);
+          updateConnectionUI(true, STATUS_ENDPOINT);
+
+          // Poll faster during indexing
+          const newInterval = data.indexing_state === 'indexing' ? 1500 : 5000;
+          if (pollInterval && pollInterval._interval !== newInterval) {
+            clearInterval(pollInterval);
+            pollInterval = setInterval(pollStatus, newInterval);
+            pollInterval._interval = newInterval;
+          }
+        } else {
+          updateConnectionUI(false, STATUS_ENDPOINT);
+        }
+      } catch (error) {
+        updateConnectionUI(false, STATUS_ENDPOINT);
+        console.log('Status poll error:', error.message);
+      }
+    }
+
+    // Start polling if on status section
+    if (document.getElementById('indexing-status-card')) {
+      isStatusSection = true;
+      pollStatus();
+      pollInterval = setInterval(pollStatus, 3000);
+      pollInterval._interval = 3000;
+    }
     `;
   }
 }

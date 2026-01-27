@@ -103,6 +103,100 @@ def get_collection() -> str:
     return default_collection_name()
 
 
+_INDEX_SIGNAL_CHANNEL = "context-engine:index-signal"
+_ingest_lock = threading.Lock()
+
+
+def _start_index_signal_listener(work_dir: str, default_collection: str) -> None:
+    """Listen for Redis pub/sub index signals from the upload service and spawn ingest_code."""
+    from scripts.workspace_state import _get_redis_client, _redis_state_enabled
+
+    if not _redis_state_enabled():
+        print("[index_signal] Redis not enabled, skipping signal listener")
+        return
+
+    def _listener():
+        while True:
+            try:
+                rc = _get_redis_client()
+                if rc is None:
+                    time.sleep(5)
+                    continue
+                pubsub = rc.pubsub()
+                pubsub.subscribe(_INDEX_SIGNAL_CHANNEL)
+                print(f"[index_signal] Subscribed to {_INDEX_SIGNAL_CHANNEL}")
+                for message in pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    try:
+                        data = json.loads(message["data"])
+                    except Exception:
+                        continue
+                    workspace_path = data.get("workspace_path", "")
+                    if not workspace_path:
+                        print("[index_signal] Skipping signal with empty workspace_path")
+                        continue
+                    collection = data.get("collection") or default_collection
+                    print(f"[index_signal] Received signal: workspace={workspace_path} collection={collection}")
+
+                    if not _ingest_lock.acquire(blocking=False):
+                        print("[index_signal] Ingest already running, skipping")
+                        continue
+                    try:
+                        from scripts.indexing_admin import spawn_ingest_code
+                        repo_name = None
+                        try:
+                            repo_name = _extract_repo_name_from_path(workspace_path)
+                        except Exception:
+                            pass
+
+                        root = workspace_path
+                        if not Path(root).is_absolute():
+                            root = str(Path(work_dir) / root)
+                        if not Path(root).exists():
+                            root = work_dir
+
+                        print(f"[index_signal] Spawning ingest_code: root={root} collection={collection}")
+                        proc = spawn_ingest_code(
+                            root=root,
+                            work_dir=work_dir,
+                            collection=collection,
+                            recreate=False,
+                            repo_name=repo_name,
+                        )
+
+                        # Hold _ingest_lock until the subprocess finishes so
+                        # concurrent Redis signals are properly skipped.
+                        def _wait_and_release(p, lock):
+                            try:
+                                p.wait()
+                            except Exception:
+                                pass
+                            finally:
+                                lock.release()
+                                print("[index_signal] Ingest process finished, lock released")
+
+                        waiter = threading.Thread(
+                            target=_wait_and_release,
+                            args=(proc, _ingest_lock),
+                            daemon=True,
+                            name="ingest-lock-waiter",
+                        )
+                        waiter.start()
+                        # Lock is now owned by the waiter thread — skip the
+                        # finally-release below.
+                        continue
+                    except Exception as e:
+                        print(f"[index_signal] Error spawning ingest: {e}")
+                        _ingest_lock.release()
+            except Exception as e:
+                print(f"[index_signal] Listener error, reconnecting in 5s: {e}")
+                time.sleep(5)
+
+    th = threading.Thread(target=_listener, daemon=True, name="index-signal-listener")
+    th.start()
+
+
 def main() -> None:
     global _watcher_healthy, _watcher_started_at
     from datetime import datetime, timezone
@@ -250,6 +344,8 @@ def main() -> None:
     global _watcher_healthy
     _watcher_healthy = True
     print("[health] Watcher is now healthy and monitoring for changes")
+
+    _start_index_signal_listener(str(ROOT), default_collection)
 
     try:
         while True:

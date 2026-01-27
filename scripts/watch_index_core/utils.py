@@ -95,14 +95,56 @@ def create_observer(use_polling: bool, observer_cls: Type[Observer] = Observer) 
 
 
 def _detect_repo_for_file(file_path: Path) -> Optional[Path]:
-    """Detect repository root for a file under WATCH root."""
+    """Detect repository root for a file by finding the nearest .git parent.
+
+    In multi-repo mode, walks up from the file to find the actual git repository
+    root (directory containing .git), rather than assuming the first subdirectory
+    under ROOT is a repo. This prevents subdirectories like src/, docs/, tests/
+    from being treated as separate repositories.
+
+    Falls back to first subdirectory behavior only when no .git is found,
+    unless MULTI_REPO_GIT_STRICT=1 is set.
+    """
     try:
-        rel_path = file_path.resolve().relative_to(ROOT.resolve())
-    except Exception:
+        resolved = file_path.resolve()
+        root_resolved = ROOT.resolve()
+
+        # Walk up from file to find actual git repo root
+        for parent in [resolved] + list(resolved.parents):
+            try:
+                # Check if this directory has a .git folder
+                if (parent / ".git").exists():
+                    # Ensure it's still under our watch root
+                    try:
+                        parent.relative_to(root_resolved)
+                        return parent
+                    except ValueError:
+                        # Parent is outside watch root, stop here
+                        break
+                # Stop at workspace root
+                if parent == root_resolved:
+                    break
+            except Exception as e:
+                logger.debug(f"Suppressed exception checking .git at {parent}: {e}")
+                continue
+
+        # Fallback: use first subdirectory (legacy behavior for non-git dirs)
+        # This ensures multi-repo mode works in K8s where code may be copied without .git
+        try:
+            rel_path = resolved.relative_to(root_resolved)
+        except ValueError:
+            return None
+        if not rel_path.parts:
+            return ROOT
+
+        fallback_repo = ROOT / rel_path.parts[0]
+        logger.debug(
+            f"[multi_repo] No .git found for {file_path}, using fallback: {fallback_repo}"
+        )
+        return fallback_repo
+    except Exception as e:
+        logger.debug(f"Suppressed exception in _detect_repo_for_file: {e}")
         return None
-    if not rel_path.parts:
-        return ROOT
-    return ROOT / rel_path.parts[0]
 
 
 def _repo_name_or_none(repo_path: Optional[Path]) -> Optional[str]:

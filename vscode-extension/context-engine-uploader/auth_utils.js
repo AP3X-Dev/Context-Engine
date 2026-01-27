@@ -16,6 +16,20 @@ function getFetch(deps) {
   return null;
 }
 
+function normalizeBackendUrl(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return trimmed;
+  try {
+    const u = new URL(trimmed);
+    if (!trimmed.includes('/upload') && !trimmed.includes('/auth')) {
+      return `${u.protocol}//${u.host}`;
+    }
+    return trimmed;
+  } catch (_) {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
 /**
  * Check auth status for the given endpoint using ctxce CLI.
  * Returns { state: 'ok' | 'missing' | 'expired' | 'error', userId?: string }
@@ -25,16 +39,9 @@ async function checkAuthStatus(endpoint, deps) {
     return { state: 'error' };
   }
   const { spawn, resolveBridgeCliInvocation, getWorkspaceFolderPath } = deps;
-  const raw = (endpoint || '').trim();
-  if (!raw) {
+  const backendUrl = normalizeBackendUrl(endpoint);
+  if (!backendUrl) {
     return { state: 'error' };
-  }
-  let backendUrl = raw;
-  try {
-    const u = new URL(raw);
-    backendUrl = `${u.protocol}//${u.host}`;
-  } catch (_) {
-    backendUrl = raw.replace(/\/+$/, '');
   }
 
   const invocation = resolveBridgeCliInvocation();
@@ -118,21 +125,13 @@ async function ensureAuthIfRequired(endpoint, deps) {
     }
     const { vscode, spawnSync, resolveBridgeCliInvocation, getWorkspaceFolderPath, log } = deps;
     const fetchFn = getFetch(deps);
-    const raw = (endpoint || '').trim();
-    if (!raw) {
+    const baseUrl = normalizeBackendUrl(endpoint);
+    if (!baseUrl) {
       return;
     }
     if (!fetchFn) {
       log('Auth status probe skipped: fetch is not available in this runtime.');
       return;
-    }
-
-    let baseUrl = raw;
-    try {
-      const u = new URL(raw);
-      baseUrl = `${u.protocol}//${u.host}`;
-    } catch (_) {
-      baseUrl = raw.replace(/\/+$/, '');
     }
     const statusUrl = `${baseUrl.replace(/\/+$/, '')}/auth/status`;
 
@@ -240,24 +239,14 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
     const settings = vscode.workspace.getConfiguration('contextEngineUploader');
     endpoint = (settings.get('endpoint') || '').trim();
   }
-  let backendUrl = explicitBackendUrl || endpoint;
+  const settings = vscode.workspace.getConfiguration('contextEngineUploader');
+  const configuredAuthBackendUrl = (settings.get('authBackendUrl') || '').trim();
+  const configuredAuthToken = (settings.get('authSharedToken') || '').trim();
+
+  // Prefer configured authBackendUrl over explicit URL to allow settings override
+  let backendUrl = normalizeBackendUrl(configuredAuthBackendUrl || explicitBackendUrl || endpoint);
   if (!backendUrl) {
-    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint).');
-    return;
-  }
-
-  try {
-    const u = new URL(backendUrl);
-    backendUrl = `${u.protocol}//${u.host}`;
-  } catch (_) {
-    backendUrl = backendUrl.replace(/\/+$/, '');
-  }
-
-  const mode = await vscode.window.showQuickPick(
-    ['Token (shared dev token)', 'Username / password'],
-    { placeHolder: 'Select Context Engine auth method' },
-  );
-  if (!mode) {
+    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
     return;
   }
 
@@ -267,6 +256,41 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
     return;
   }
   const cwd = getWorkspaceFolderPath() || process.cwd();
+
+  if (configuredAuthToken) {
+    const args = [...invocation.args, 'auth', 'login'];
+    const env = {
+      ...process.env,
+      CTXCE_AUTH_BACKEND_URL: backendUrl,
+      CTXCE_AUTH_TOKEN: configuredAuthToken,
+    };
+    await new Promise(resolve => {
+      const child = spawn(invocation.command, args, { cwd, env });
+      attachOutput(child, 'auth');
+      child.on('error', error => {
+        log(`ctxce auth login (configured token) failed to start: ${error instanceof Error ? error.message : String(error)}`);
+        vscode.window.showErrorMessage('Context Engine Uploader: auth login failed to start. See output for details.');
+        resolve();
+      });
+      child.on('close', code => {
+        if (code === 0) {
+          vscode.window.showInformationMessage('Context Engine Uploader: auth login successful (using configured token).');
+        } else {
+          vscode.window.showErrorMessage(`Context Engine Uploader: auth login failed with exit code ${code}. See output for details.`);
+        }
+        resolve();
+      });
+    });
+    return;
+  }
+
+  const mode = await vscode.window.showQuickPick(
+    ['Token (shared dev token)', 'Username / password'],
+    { placeHolder: 'Select Context Engine auth method' },
+  );
+  if (!mode) {
+    return;
+  }
 
   if (mode.startsWith('Token')) {
     const token = await vscode.window.showInputBox({
@@ -359,20 +383,16 @@ async function runAuthLogoutFlow(explicitBackendUrl, deps) {
   } catch (_) {
     endpoint = '';
   }
+  const settings = vscode.workspace.getConfiguration('contextEngineUploader');
   if (!endpoint) {
-    const settings = vscode.workspace.getConfiguration('contextEngineUploader');
     endpoint = (settings.get('endpoint') || '').trim();
   }
-  let backendUrl = explicitBackendUrl || endpoint;
+  // Read authBackendUrl to align with login flow - ensures logout targets the same backend as login
+  const configuredAuthBackendUrl = (settings.get('authBackendUrl') || '').trim();
+  const backendUrl = normalizeBackendUrl(configuredAuthBackendUrl || explicitBackendUrl || endpoint);
   if (!backendUrl) {
-    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint).');
+    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
     return;
-  }
-  try {
-    const u = new URL(backendUrl);
-    backendUrl = `${u.protocol}//${u.host}`;
-  } catch (_) {
-    backendUrl = backendUrl.replace(/\/+$/, '');
   }
 
   const invocation = resolveBridgeCliInvocation();
@@ -409,6 +429,7 @@ async function runAuthLogoutFlow(explicitBackendUrl, deps) {
 module.exports = {
   checkAuthStatus,
   ensureAuthIfRequired,
+  normalizeBackendUrl,
   runAuthLoginFlow,
   runAuthLogoutFlow,
 };

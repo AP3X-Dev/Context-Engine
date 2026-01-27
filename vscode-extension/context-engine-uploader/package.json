@@ -2,7 +2,7 @@
   "name": "context-engine-uploader",
   "displayName": "Context-Engine.AI",
   "description": "Supercharge your AI coding assistants with rich codebase context. Integrates with Claude Code, Windsurf, Augment, and more via MCP.",
-  "version": "0.1.48",
+  "version": "0.1.50",
   "publisher": "context-engine",
   "engines": {
     "vscode": "^1.85.0"
@@ -376,6 +376,18 @@
             "default": "http://localhost:8002/mcp",
             "order": 6,
             "description": "MCP server URL for memory/search."
+          },
+          "contextEngineUploader.authBackendUrl": {
+            "type": "string",
+            "default": "",
+            "order": 7,
+            "markdownDescription": "Auth backend URL for remote deployments (e.g., `http://ce.example.com/upload`). Leave empty for local stack."
+          },
+          "contextEngineUploader.authSharedToken": {
+            "type": "string",
+            "default": "",
+            "order": 8,
+            "markdownDescription": "Shared authentication token for team deployments. **Keep this secret!**"
           }
         }
       },
