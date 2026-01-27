@@ -17,6 +17,15 @@ const SETTINGS_SCHEMA = {
       { key: 'pythonPath', label: 'Python Path', type: 'string', description: 'Python executable for scripts', placeholder: 'python3' },
     ]
   },
+  team: {
+    title: 'Team',
+    icon: 'organization',
+    description: 'Shared authentication for team deployments',
+    settings: [
+      { key: 'authBackendUrl', label: 'Auth Backend URL', type: 'string', description: 'Upload service URL for authentication (e.g. http://ce.yourteam.com/upload)', placeholder: 'http://localhost:8004' },
+      { key: 'authSharedToken', label: 'Shared API Token', type: 'password', description: 'Team-wide shared token for upload authentication. All team members use the same token.', placeholder: '••••••••' },
+    ]
+  },
   indexing: {
     title: 'Indexing',
     icon: 'database',
