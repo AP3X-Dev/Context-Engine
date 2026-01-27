@@ -5,6 +5,10 @@ Unified command-line interface for Context-Engine.
 ## Installation
 
 ```bash
+# Using uv (recommended - 10-100x faster)
+uv sync
+
+# Or using pip (legacy)
 pip install -e .
 ```
 

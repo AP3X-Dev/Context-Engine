@@ -5,15 +5,21 @@ SHELL := /bin/bash
 export DOCKER_HOST =
 
 .PHONY: help up down up-redis down-redis restart-redis logs ps restart rebuild index reindex watch watch-remote env hybrid bootstrap history rerank-local setup-reranker prune warm health test-e2e
-.PHONY: venv venv-install dev-remote-up dev-remote-down dev-remote-logs dev-remote-restart dev-remote-bootstrap dev-remote-test dev-remote-client dev-remote-clean
+.PHONY: venv venv-install uv-sync uv-run dev-remote-up dev-remote-down dev-remote-logs dev-remote-restart dev-remote-bootstrap dev-remote-test dev-remote-client dev-remote-clean
 .PHONY: rerank-eval rerank-eval-ablations rerank-benchmark
 
 .PHONY: qdrant-status qdrant-list qdrant-prune qdrant-index-root
 
-venv: ## create local virtualenv .venv
+uv-sync: ## install dependencies via uv (10-100x faster than pip)
+	uv sync
+
+uv-run: ## run a command via uv (auto-syncs if needed): make uv-run CMD="python scripts/foo.py"
+	uv run $(CMD)
+
+venv: ## create local virtualenv .venv (legacy, prefer uv-sync)
 	python3 -m venv .venv && . .venv/bin/activate && pip install -U pip
 
-venv-install: ## install project dependencies into .venv
+venv-install: ## install project dependencies into .venv (legacy, prefer uv-sync)
 	[ -d .venv ] || $(MAKE) venv
 	. .venv/bin/activate && pip install -r requirements.txt
 

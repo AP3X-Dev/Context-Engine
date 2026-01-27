@@ -1,47 +1,41 @@
 # Dockerfile for Context-Engine Delta Upload Service
 FROM python:3.11-slim
 
-# Set environment variables
+COPY --from=ghcr.io/astral-sh/uv:0.5.27 /uv /uvx /bin/
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+COPY pyproject.toml uv.lock ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-install-project --no-dev
 
-# Copy application code
 COPY scripts/ ./scripts/
 COPY . .
 
-# Create work dir, non-root user, and set ownership in single layer
+ENV PATH="/app/.venv/bin:$PATH"
+
 RUN mkdir -p /work && chmod 755 /work \
     && useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app /work
 USER app
 
-# Expose port
 EXPOSE 8002
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8002/health || exit 1
 
-# Default environment variables
 ENV UPLOAD_SERVICE_HOST=0.0.0.0 \
     UPLOAD_SERVICE_PORT=8002 \
     QDRANT_URL=http://qdrant:6333 \
@@ -49,5 +43,4 @@ ENV UPLOAD_SERVICE_HOST=0.0.0.0 \
     MAX_BUNDLE_SIZE_MB=100 \
     UPLOAD_TIMEOUT_SECS=300
 
-# Run the upload service
 CMD ["python", "scripts/upload_service.py"]
