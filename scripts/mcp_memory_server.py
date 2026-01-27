@@ -79,6 +79,31 @@ MEMORY_FIND_LIMIT_DEFAULT = int(os.environ.get("MEMORY_FIND_LIMIT_DEFAULT", "10"
 from scripts.utils import sanitize_vector_name as _sanitize_vector_name
 from scripts.utils import lex_hash_vector_text as _lex_hash_vector_text
 
+# Remote embedding support
+try:
+    from scripts.embedder import RemoteEmbeddingStub
+    from scripts.ingest.qdrant import embed_batch as _embed_batch_remote
+    _REMOTE_EMBED_AVAILABLE = True
+except ImportError:
+    RemoteEmbeddingStub = None  # type: ignore
+    _embed_batch_remote = None  # type: ignore
+    _REMOTE_EMBED_AVAILABLE = False
+
+
+def _embed_text(model, text: str) -> list:
+    """Embed text using either local model or remote service."""
+    is_remote_stub = (
+        RemoteEmbeddingStub is not None 
+        and isinstance(model, RemoteEmbeddingStub)
+    )
+    
+    if is_remote_stub and _REMOTE_EMBED_AVAILABLE and _embed_batch_remote is not None:
+        vecs = _embed_batch_remote(model, [text])
+        return vecs[0] if isinstance(vecs[0], list) else vecs[0].tolist()
+    else:
+        return next(model.embed([text])).tolist()
+
+
 VECTOR_NAME = _sanitize_vector_name(EMBEDDING_MODEL)
 
 # I/O-safety knobs for memory server behavior
@@ -806,7 +831,7 @@ def memory_store(
         md["source"] = "memory"
 
     model = _get_embedding_model()
-    dense = next(model.embed([str(information)])).tolist()
+    dense = _embed_text(model, str(information))
     lex = _lex_hash_vector_text(str(information), LEX_VECTOR_DIM)
 
     # Use UUID to avoid point ID collisions under concurrent load
@@ -959,7 +984,7 @@ def memory_find(
         use_dense = False
     if use_dense:
         model = _get_embedding_model()
-        dense = next(model.embed([str(query)])).tolist()
+        dense = _embed_text(model, str(query))
     else:
         dense = None
     lex = _lex_hash_vector_text(str(query), LEX_VECTOR_DIM)

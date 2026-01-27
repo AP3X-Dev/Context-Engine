@@ -166,18 +166,14 @@ def _start_background_warmup():
 _start_background_warmup()
 
 
-def _norm_under(u: str | None) -> str | None:
+def _norm_under_suffix(u: str | None) -> str | None:
     if not u:
         return None
     u = str(u).strip().replace("\\", "/")
     u = "/".join([p for p in u.split("/") if p])
     if not u:
         return None
-    if not u.startswith("/"):
-        return "/work/" + u
-    if not u.startswith("/work/"):
-        return "/work/" + u.lstrip("/")
-    return u
+    return "/" + u
 
 
 def _select_dense_vector_name(
@@ -369,11 +365,11 @@ def rerank_in_process(
                 key="metadata.language", match=models.MatchValue(value=language)
             )
         )
-    eff_under = _norm_under(under)
+    eff_under = _norm_under_suffix(under)
     if eff_under:
         must.append(
             models.FieldCondition(
-                key="metadata.path_prefix", match=models.MatchValue(value=eff_under)
+                key="metadata.path_prefix", match=models.MatchText(text=eff_under)
             )
         )
     flt = models.Filter(must=must) if must else None
@@ -450,11 +446,11 @@ def main():
                 key="metadata.language", match=models.MatchValue(value=args.language)
             )
         )
-    eff_under = _norm_under(args.under)
+    eff_under = _norm_under_suffix(args.under)
     if eff_under:
         must.append(
             models.FieldCondition(
-                key="metadata.path_prefix", match=models.MatchValue(value=eff_under)
+                key="metadata.path_prefix", match=models.MatchText(text=eff_under)
             )
         )
     flt = models.Filter(must=must) if must else None

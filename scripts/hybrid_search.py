@@ -510,7 +510,13 @@ def run_pure_dense_search(
     if language:
         must.append(models.FieldCondition(key="metadata.language", match=models.MatchValue(value=language)))
     if under:
-        must.append(models.FieldCondition(key="metadata.path_prefix", match=models.MatchValue(value=under)))
+        # Normalize under to suffix format for substring matching
+        # e.g., "scripts" -> "/scripts" matches path_prefix "/work/Context-Engine-xxx/scripts"
+        norm_under = str(under).strip().replace("\\", "/")
+        norm_under = "/".join([p for p in norm_under.split("/") if p])
+        if norm_under:
+            norm_under = "/" + norm_under
+            must.append(models.FieldCondition(key="metadata.path_prefix", match=models.MatchText(text=norm_under)))
     if repo and repo != "*":
         if isinstance(repo, list):
             must.append(models.FieldCondition(key="metadata.repo", match=models.MatchAny(any=repo)))
@@ -981,21 +987,17 @@ def _run_hybrid_search_impl(
     eff_path_globs_norm = _normalize_globs(eff_path_globs)
     eff_not_globs_norm = _normalize_globs(eff_not_globs)
 
-    # Normalize under
-    def _norm_under(u: str | None) -> str | None:
+    def _norm_under_suffix(u: str | None) -> str | None:
+        """Normalize under to suffix format for MatchText substring matching."""
         if not u:
             return None
         u = str(u).strip().replace("\\", "/")
         u = "/".join([p for p in u.split("/") if p])
         if not u:
             return None
-        if not u.startswith("/"):
-            v = "/work/" + u
-        else:
-            v = "/work/" + u.lstrip("/") if not u.startswith("/work/") else u
-        return v
+        return "/" + u
 
-    eff_under = _norm_under(eff_under)
+    eff_under = _norm_under_suffix(eff_under)
 
     # Expansion knobs that affect query construction/results (must be part of cache key)
     try:
@@ -1106,7 +1108,7 @@ def _run_hybrid_search_impl(
     if eff_under:
         must.append(
             models.FieldCondition(
-                key="metadata.path_prefix", match=models.MatchValue(value=eff_under)
+                key="metadata.path_prefix", match=models.MatchText(text=eff_under)
             )
         )
     if eff_kind:
