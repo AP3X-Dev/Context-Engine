@@ -87,6 +87,13 @@ make reset      # Equivalent to: ctx reset --mcp
 Context-Engine includes agent skills that teach AI coding assistants how to use the MCP tools effectively.
 
 **For Codex (OpenAI):**
+
+Install directly from GitHub using the `$skill-installer`:
+```
+$skill-installer install https://github.com/Context-Engine-AI/Context-Engine/tree/main/.codex/skills/context-engine
+```
+
+Or copy manually:
 ```bash
 # Global install
 cp -r .codex/skills/context-engine ~/.codex/skills/
@@ -94,6 +101,8 @@ cp -r .codex/skills/context-engine ~/.codex/skills/
 # Or project-specific
 cp -r .codex/skills/context-engine /path/to/your/project/.codex/skills/
 ```
+
+Restart Codex after installing to pick up the new skill.
 
 **For Claude:**
 ```bash
