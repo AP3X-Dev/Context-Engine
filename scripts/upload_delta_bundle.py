@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 WORK_DIR = os.environ.get("WORK_DIR") or os.environ.get("WORKDIR") or "/work"
 _SLUGGED_REPO_RE = re.compile(r"^.+-[0-9a-f]{16}(?:_old)?$")
 
+# Paths containing any of these segments are never materialized from bundles.
+# Prevents recursive nesting (e.g. dev-workspace/<slug>/dev-workspace/…).
+_BLOCKED_PATH_SEGMENTS = {"dev-workspace", ".codebase", ".remote-git"}
+
 
 def get_workspace_key(workspace_path: str) -> str:
     """Generate 16-char hash for collision avoidance in remote uploads.
@@ -393,6 +397,16 @@ def process_delta_bundle(workspace_path: str, bundle_path: Path, manifest: Dict[
                     continue
 
                 rel_path = sanitized_path
+
+                # Block paths that would create recursive nesting
+                _path_parts = set(rel_path.replace("\\", "/").split("/"))
+                if _path_parts & _BLOCKED_PATH_SEGMENTS:
+                    logger.debug(
+                        f"[upload_service] Blocking {op_type} for {rel_path}: "
+                        "contains a blocked path segment.",
+                    )
+                    operations_count["skipped"] += 1
+                    continue
 
                 replica_results: Dict[str, bool] = {}
                 for slug, root in replica_roots.items():

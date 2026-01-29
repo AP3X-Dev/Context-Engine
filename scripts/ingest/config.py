@@ -205,6 +205,8 @@ _DEFAULT_EXCLUDE_DIRS = [
     "/.vscode",
     "/.cache",
     "/.codebase",
+    "/dev-workspace",
+    "dev-workspace",
     "/.remote-git",
     "/node_modules",
     "/dist",
@@ -223,6 +225,8 @@ _DEFAULT_EXCLUDE_DIRS = [
 # Glob patterns for directories (matched against basename)
 _DEFAULT_EXCLUDE_DIR_GLOBS = [
     ".venv*",  # .venv, .venv311, .venv39, etc.
+    "venv*",   # venv, venv-3.11, venv-py39, etc.
+    "dev-workspace",  # sandbox clones - prevent recursive indexing
 ]
 
 _DEFAULT_EXCLUDE_FILES = [
@@ -239,6 +243,7 @@ _ANY_DEPTH_EXCLUDE_DIR_NAMES = {
     ".remote-git",
     ".codebase",
     "node_modules",
+    "dev-workspace",
 }
 
 

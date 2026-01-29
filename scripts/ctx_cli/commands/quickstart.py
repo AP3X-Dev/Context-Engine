@@ -169,7 +169,26 @@ def _import_repo_into_workspace(source: Path, dev_workspace: Path) -> Path:
             raise ValueError(f"Import target exists and is not a directory: {target}")
         return target
 
-    shutil.copytree(source, target, symlinks=True)
+    # Exclude directories that cause recursive nesting loops or are never useful
+    # inside an imported workspace copy.  The most critical entry is "dev-workspace"
+    # itself: without this filter, importing the Context-Engine repo creates
+    # dev-workspace/<slug>/dev-workspace/<slug>/… ad infinitum.
+    _IMPORT_EXCLUDE_DIRS = {
+        "dev-workspace",
+        ".codebase",
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".cache",
+        ".remote-git",
+    }
+
+    def _ignore_on_copy(directory: str, contents: list[str]) -> list[str]:
+        return [name for name in contents if name in _IMPORT_EXCLUDE_DIRS]
+
+    shutil.copytree(source, target, symlinks=True, ignore=_ignore_on_copy)
     return target
 
 

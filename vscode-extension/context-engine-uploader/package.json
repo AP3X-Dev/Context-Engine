@@ -1,552 +1,552 @@
 {
-  "name": "context-engine-uploader",
-  "displayName": "Context-Engine.AI",
-  "description": "Supercharge your AI coding assistants with rich codebase context. Integrates with Claude Code, Windsurf, Augment, and more via MCP.",
-  "version": "0.1.54",
-  "publisher": "context-engine",
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [
-    "onStartupFinished",
-    "onCommand:contextEngineUploader.start",
-    "onCommand:contextEngineUploader.stop",
-    "onCommand:contextEngineUploader.restart",
-    "onView:contextEngineUploaderProfiles",
-    "onView:contextEngineUploaderStatus",
-    "onView:contextEngineUploaderActions",
-    "onCommand:contextEngineUploader.promptEnhance",
-    "onCommand:contextEngineUploader.promptEnhanceCopy",
-    "onCommand:contextEngineUploader.promptEnhanceOpen",
-    "onCommand:contextEngineUploader.setCtxDefaultMode",
-    "onCommand:contextEngineUploader.authLogin",
-    "onCommand:contextEngineUploader.writeMcpConfig",
-    "onCommand:contextEngineUploader.writeMcpConfigSelect",
-    "onCommand:contextEngineUploader.writeMcpConfigClaude",
-    "onCommand:contextEngineUploader.writeMcpConfigWindsurf",
-    "onCommand:contextEngineUploader.writeMcpConfigAugment",
-    "onCommand:contextEngineUploader.writeMcpConfigAntigravity",
-    "onCommand:contextEngineUploader.writeMcpConfigCursor",
-    "onCommand:contextEngineUploader.cloneAndStartStack",
-    "onCommand:contextEngineUploader.startSavedStack",
-    "onCommand:contextEngineUploader.openSettings",
-    "onWebviewPanel:contextEngineSettingsPanel"
-  ],
-  "main": "./extension.js",
-  "icon": "assets/icon.png",
-  "contributes": {
-    "commands": [
-      {
-        "command": "contextEngineUploader.start",
-        "title": "Context Engine Uploader: Start"
-      },
-      {
-        "command": "contextEngineUploader.stop",
-        "title": "Context Engine Uploader: Stop"
-      },
-      {
-        "command": "contextEngineUploader.restart",
-        "title": "Context Engine Uploader: Restart"
-      },
-      {
-        "command": "contextEngineUploader.indexCodebase",
-        "title": "Context Engine Uploader: Index Codebase"
-      },
-      {
-        "command": "contextEngineUploader.uploadGitHistory",
-        "title": "Context Engine Uploader: Upload Git History (force sync bundle)"
-      },
-      {
-        "command": "contextEngineUploader.startMcpHttpBridge",
-        "title": "Context Engine Uploader: Start MCP HTTP Bridge"
-      },
-      {
-        "command": "contextEngineUploader.stopMcpHttpBridge",
-        "title": "Context Engine Uploader: Stop MCP HTTP Bridge"
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfig",
-        "title": "Context Engine Uploader: Write MCP Config (.mcp.json)"
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfigSelect",
-        "title": "Context Engine Uploader: Write MCP Config..."
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfigClaude",
-        "title": "Context Engine Uploader: Write MCP Config (Claude Code / .mcp.json)"
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfigWindsurf",
-        "title": "Context Engine Uploader: Write MCP Config (Windsurf / mcp_config.json)"
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfigAugment",
-        "title": "Context Engine Uploader: Write MCP Config (Augment Code / settings.json)"
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfigAntigravity",
-        "title": "Context Engine Uploader: Write MCP Config (Antigravity / mcp_config.json)"
-      },
-      {
-        "command": "contextEngineUploader.writeMcpConfigCursor",
-        "title": "Context Engine Uploader: Write MCP Config (Cursor / mcp.json)"
-      },
-      {
-        "command": "contextEngineUploader.writeCtxConfig",
-        "title": "Context Engine Uploader: Write CTX Config (ctx_config.json/.env)"
-      },
-      {
-        "command": "contextEngineUploader.showUploadServiceLogs",
-        "title": "Context Engine Uploader: Show Extension Output"
-      },
-      {
-        "command": "contextEngineUploader.tailUploadServiceLogs",
-        "title": "Context Engine Uploader: Tail Upload Service Logs (Docker)"
-      },
-      {
-        "command": "contextEngineUploader.promptEnhance",
-        "title": "Context Engine Uploader: Prompt+ (Unicorn Mode)"
-      },
-      {
-        "command": "contextEngineUploader.promptEnhanceCopy",
-        "title": "Context Engine Uploader: Prompt+ (Copy to Clipboard)"
-      },
-      {
-        "command": "contextEngineUploader.promptEnhanceOpen",
-        "title": "Context Engine Uploader: Prompt+ (Open in New Editor)"
-      },
-      {
-        "command": "contextEngineUploader.setCtxDefaultMode",
-        "title": "Context Engine Uploader: Prompt+ Default Mode (ctx_config.json)"
-      },
-      {
-        "command": "contextEngineUploader.authLogin",
-        "title": "Context Engine Uploader: Sign In (ctxce auth)"
-      },
-      {
-        "command": "contextEngineUploader.cloneAndStartStack",
-        "title": "Context Engine Uploader: Clone Stack & Run docker compose"
-      },
-      {
-        "command": "contextEngineUploader.startSavedStack",
-        "title": "Context Engine Uploader: Start Saved Stack (docker compose up)"
-      },
-      {
-        "command": "contextEngineUploader.deleteProfile",
-        "title": "Context Engine Uploader: Delete Profile"
-      },
-      {
-        "command": "contextEngineUploader.openSettings",
-        "title": "Context Engine: Open Settings",
-        "icon": "$(settings-gear)"
-      }
-    ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "contextEngineUploader",
-          "title": "Context Engine",
-          "icon": "assets/activitybar.svg"
-        }
-      ]
-    },
-    "views": {
-      "contextEngineUploader": [
-        {
-          "id": "contextEngineUploaderProfiles",
-          "name": "Profiles"
-        },
-        {
-          "id": "contextEngineUploaderStatus",
-          "name": "Status"
-        },
-        {
-          "id": "contextEngineUploaderActions",
-          "name": "Actions"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "contextEngineUploader.openSettings",
-          "when": "view == contextEngineUploaderProfiles",
-          "group": "navigation@1"
-        },
-        {
-          "command": "contextEngineUploader.openSettings",
-          "when": "view == contextEngineUploaderStatus",
-          "group": "navigation@1"
-        },
-        {
-          "command": "contextEngineUploader.openSettings",
-          "when": "view == contextEngineUploaderActions",
-          "group": "navigation@1"
-        }
-      ],
-      "extension/context": [
-        {
-          "command": "contextEngineUploader.openSettings",
-          "when": "extension == context-engine.context-engine-uploader",
-          "group": "1_settings@1"
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "contextEngineUploader.openSettings",
-          "when": "true"
-        }
-      ]
-    },
-    "configuration": [
-      {
-        "title": "Context Engine",
-        "properties": {
-          "contextEngineUploader.runOnStartup": {
-            "type": "boolean",
-            "default": false,
-            "order": 1,
-            "markdownDescription": "Automatically start indexing when VS Code opens this workspace."
-          },
-          "contextEngineUploader.endpoint": {
-            "type": "string",
-            "default": "http://localhost:8004",
-            "order": 2,
-            "markdownDescription": "Server URL for uploading indexed codebase data.\n\n`http://localhost:8004` for local Docker stack"
-          },
-          "contextEngineUploader.targetPath": {
-            "type": "string",
-            "default": "",
-            "order": 3,
-            "markdownDescription": "Workspace path to index. Leave empty for current workspace."
-          },
-          "contextEngineUploader.pythonPath": {
-            "type": "string",
-            "default": "python3",
-            "order": 4,
-            "markdownDescription": "Python executable for running upload scripts. Examples: `python3`, `/usr/bin/python3.11`"
-          }
-        }
-      },
-      {
-        "title": "Context Engine › Indexing",
-        "properties": {
-          "contextEngineUploader.intervalSeconds": {
-            "type": "number",
-            "default": 5,
-            "minimum": 1,
-            "order": 1,
-            "description": "Watch mode polling interval in seconds."
-          },
-          "contextEngineUploader.startWatchAfterForce": {
-            "type": "boolean",
-            "default": true,
-            "order": 2,
-            "description": "Automatically start watch mode after force sync completes."
-          },
-          "contextEngineUploader.extraForceArgs": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "default": [],
-            "order": 3,
-            "markdownDescription": "Additional CLI arguments for force sync. Example: `[\"--verbose\"]`"
-          },
-          "contextEngineUploader.extraWatchArgs": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "default": [],
-            "order": 4,
-            "description": "Additional CLI arguments for watch mode."
-          },
-          "contextEngineUploader.gitMaxCommits": {
-            "type": "number",
-            "default": 500,
-            "minimum": 0,
-            "order": 5,
-            "markdownDescription": "Maximum git commits to index. Set to `0` to disable git history."
-          },
-          "contextEngineUploader.gitSince": {
-            "type": "string",
-            "default": "",
-            "order": 6,
-            "markdownDescription": "Only index commits after this date. Example: `2 years ago` or `2023-01-01`"
-          }
-        }
-      },
-      {
-        "title": "Context Engine › MCP Integrations",
-        "properties": {
-          "contextEngineUploader.mcpClaudeEnabled": {
-            "type": "boolean",
-            "default": true,
-            "order": 1,
-            "markdownDescription": "Write `.mcp.json` for **Claude Code** integration."
-          },
-          "contextEngineUploader.mcpWindsurfEnabled": {
-            "type": "boolean",
-            "default": false,
-            "order": 2,
-            "markdownDescription": "Write MCP config for **Windsurf/Codeium**."
-          },
-          "contextEngineUploader.mcpAugmentEnabled": {
-            "type": "boolean",
-            "default": false,
-            "order": 3,
-            "markdownDescription": "Write MCP config for **Augment Code**."
-          },
-          "contextEngineUploader.mcpAntigravityEnabled": {
-            "type": "boolean",
-            "default": false,
-            "order": 4,
-            "markdownDescription": "Write MCP config for **Google Antigravity**."
-          },
-          "contextEngineUploader.mcpCursorEnabled": {
-            "type": "boolean",
-            "default": false,
-            "order": 5,
-            "markdownDescription": "Write MCP config for **Cursor** (~/.cursor/mcp.json)."
-          },
-          "contextEngineUploader.autoWriteMcpConfigOnStartup": {
-            "type": "boolean",
-            "default": false,
-            "order": 6,
-            "description": "Automatically write MCP configs when extension activates."
-          }
-        }
-      },
-      {
-        "title": "Context Engine › MCP Server",
-        "properties": {
-          "contextEngineUploader.mcpServerMode": {
-            "type": "string",
-            "enum": [
-              "bridge",
-              "direct"
-            ],
-            "default": "bridge",
-            "order": 1,
-            "markdownDescription": "Server architecture mode.",
-            "enumDescriptions": [
-              "Single unified 'context-engine' server (recommended)",
-              "Separate 'qdrant-indexer' and 'memory' servers"
-            ]
-          },
-          "contextEngineUploader.mcpTransportMode": {
-            "type": "string",
-            "enum": [
-              "http",
-              "sse-remote"
-            ],
-            "default": "http",
-            "order": 2,
-            "markdownDescription": "Transport layer for MCP communication.",
-            "enumDescriptions": [
-              "HTTP endpoints (recommended for most setups)",
-              "SSE tunnel over stdio processes"
-            ]
-          },
-          "contextEngineUploader.autoStartMcpBridge": {
-            "type": "boolean",
-            "default": true,
-            "order": 3,
-            "description": "Automatically start the MCP bridge HTTP server when the extension activates."
-          },
-          "contextEngineUploader.mcpBridgePort": {
-            "type": "number",
-            "default": 30810,
-            "order": 4,
-            "description": "Port for the MCP bridge HTTP server."
-          },
-          "contextEngineUploader.mcpIndexerUrl": {
-            "type": "string",
-            "default": "http://localhost:8003/mcp",
-            "order": 5,
-            "description": "MCP server URL for the Qdrant indexer."
-          },
-          "contextEngineUploader.mcpMemoryUrl": {
-            "type": "string",
-            "default": "http://localhost:8002/mcp",
-            "order": 6,
-            "description": "MCP server URL for memory/search."
-          },
-          "contextEngineUploader.authBackendUrl": {
-            "type": "string",
-            "default": "",
-            "order": 7,
-            "markdownDescription": "Auth backend URL for remote deployments (e.g., `http://ce.example.com/upload`). Leave empty for local stack."
-          },
-          "contextEngineUploader.authSharedToken": {
-            "type": "string",
-            "default": "",
-            "order": 8,
-            "markdownDescription": "Shared authentication token for team deployments. **Keep this secret!**"
-          }
-        }
-      },
-      {
-        "title": "Context Engine › Claude Hook",
-        "properties": {
-          "contextEngineUploader.claudeHookEnabled": {
-            "type": "boolean",
-            "default": false,
-            "order": 1,
-            "markdownDescription": "Write Claude hook to `.claude/settings.local.json` for prompt enhancement."
-          },
-          "contextEngineUploader.surfaceQdrantCollectionHint": {
-            "type": "boolean",
-            "default": false,
-            "order": 2,
-            "description": "Add Qdrant collection ID hint to enhanced prompts."
-          },
-          "contextEngineUploader.ctxIndexerUrl": {
-            "type": "string",
-            "default": "http://localhost:8003/mcp",
-            "order": 3,
-            "description": "MCP indexer endpoint for ctx.py hook."
-          },
-          "contextEngineUploader.scaffoldCtxConfig": {
-            "type": "boolean",
-            "default": true,
-            "order": 4,
-            "markdownDescription": "Automatically create `ctx_config.json` and `.env` files."
-          }
-        }
-      },
-      {
-        "title": "Context Engine › Decoder",
-        "properties": {
-          "contextEngineUploader.decoderRuntime": {
-            "type": "string",
-            "enum": [
-              "glm",
-              "llamacpp"
-            ],
-            "default": "glm",
-            "order": 1,
-            "markdownDescription": "AI backend for Prompt+ enhancement.",
-            "enumDescriptions": [
-              "GLM cloud API (requires API key)",
-              "Local llama.cpp server"
-            ]
-          },
-          "contextEngineUploader.decoderUrl": {
-            "type": "string",
-            "default": "http://localhost:8081",
-            "order": 2,
-            "description": "Local llama.cpp endpoint URL."
-          },
-          "contextEngineUploader.useGpuDecoder": {
-            "type": "boolean",
-            "default": false,
-            "order": 3,
-            "description": "Use GPU-accelerated decoder for Prompt+."
-          },
-          "contextEngineUploader.glmApiKey": {
-            "type": "string",
-            "default": "",
-            "order": 4,
-            "markdownDescription": "API key for GLM cloud service. **Keep this secret!**"
-          },
-          "contextEngineUploader.glmApiBase": {
-            "type": "string",
-            "default": "https://api.z.ai/api/coding/paas/v4/",
-            "order": 5,
-            "description": "GLM API base URL."
-          },
-          "contextEngineUploader.glmModel": {
-            "type": "string",
-            "default": "glm-4.6",
-            "order": 6,
-            "description": "GLM model name."
-          }
-        }
-      },
-      {
-        "title": "Context Engine › Advanced",
-        "properties": {
-          "contextEngineUploader.scriptWorkingDirectory": {
-            "type": "string",
-            "default": "",
-            "order": 1,
-            "description": "Override folder containing upload scripts."
-          },
-          "contextEngineUploader.hostRoot": {
-            "type": "string",
-            "default": "",
-            "order": 2,
-            "description": "Host path prefix for container path rewrites."
-          },
-          "contextEngineUploader.containerRoot": {
-            "type": "string",
-            "default": "/work",
-            "order": 3,
-            "description": "Container path that mirrors the host root."
-          },
-          "contextEngineUploader.devRemoteMode": {
-            "type": "boolean",
-            "default": false,
-            "order": 4,
-            "description": "Enable dev-remote upload mode (ignores dev-workspace directories)."
-          },
-          "contextEngineUploader.mcpBridgeBinPath": {
-            "type": "string",
-            "default": "",
-            "order": 5,
-            "description": "Custom path to ctxce CLI binary for development."
-          },
-          "contextEngineUploader.mcpBridgeLocalOnly": {
-            "type": "boolean",
-            "default": false,
-            "order": 6,
-            "description": "Prefer local bridge binaries over npm package."
-          },
-          "contextEngineUploader.windsurfMcpPath": {
-            "type": "string",
-            "default": "",
-            "order": 7,
-            "description": "Custom Windsurf mcp_config.json path."
-          },
-          "contextEngineUploader.augmentMcpPath": {
-            "type": "string",
-            "default": "",
-            "order": 8,
-            "description": "Custom Augment settings.json path."
-          },
-          "contextEngineUploader.antigravityMcpPath": {
-            "type": "string",
-            "default": "",
-            "order": 9,
-            "description": "Custom Antigravity mcp_config.json path."
-          },
-          "contextEngineUploader.cursorMcpPath": {
-            "type": "string",
-            "default": "",
-            "order": 10,
-            "description": "Custom Cursor mcp.json path."
-          },
-          "contextEngineUploader.profilesDb": {
-            "type": "object",
-            "default": {
-              "version": 1,
-              "profiles": []
-            },
-            "order": 99,
-            "markdownDescription": "**[Internal]** Profiles database. Do not edit manually."
-          }
-        }
-      }
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/m1rl0k/Context-Engine"
-  }
+	"name": "context-engine-uploader",
+	"displayName": "Context-Engine.AI",
+	"description": "Supercharge your AI coding assistants with rich codebase context. Integrates with Claude Code, Windsurf, Augment, and more via MCP.",
+	"version": "0.1.55",
+	"publisher": "context-engine",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"onStartupFinished",
+		"onCommand:contextEngineUploader.start",
+		"onCommand:contextEngineUploader.stop",
+		"onCommand:contextEngineUploader.restart",
+		"onView:contextEngineUploaderProfiles",
+		"onView:contextEngineUploaderStatus",
+		"onView:contextEngineUploaderActions",
+		"onCommand:contextEngineUploader.promptEnhance",
+		"onCommand:contextEngineUploader.promptEnhanceCopy",
+		"onCommand:contextEngineUploader.promptEnhanceOpen",
+		"onCommand:contextEngineUploader.setCtxDefaultMode",
+		"onCommand:contextEngineUploader.authLogin",
+		"onCommand:contextEngineUploader.writeMcpConfig",
+		"onCommand:contextEngineUploader.writeMcpConfigSelect",
+		"onCommand:contextEngineUploader.writeMcpConfigClaude",
+		"onCommand:contextEngineUploader.writeMcpConfigWindsurf",
+		"onCommand:contextEngineUploader.writeMcpConfigAugment",
+		"onCommand:contextEngineUploader.writeMcpConfigAntigravity",
+		"onCommand:contextEngineUploader.writeMcpConfigCursor",
+		"onCommand:contextEngineUploader.cloneAndStartStack",
+		"onCommand:contextEngineUploader.startSavedStack",
+		"onCommand:contextEngineUploader.openSettings",
+		"onWebviewPanel:contextEngineSettingsPanel"
+	],
+	"main": "./extension.js",
+	"icon": "assets/icon.png",
+	"contributes": {
+		"commands": [
+			{
+				"command": "contextEngineUploader.start",
+				"title": "Context Engine Uploader: Start"
+			},
+			{
+				"command": "contextEngineUploader.stop",
+				"title": "Context Engine Uploader: Stop"
+			},
+			{
+				"command": "contextEngineUploader.restart",
+				"title": "Context Engine Uploader: Restart"
+			},
+			{
+				"command": "contextEngineUploader.indexCodebase",
+				"title": "Context Engine Uploader: Index Codebase"
+			},
+			{
+				"command": "contextEngineUploader.uploadGitHistory",
+				"title": "Context Engine Uploader: Upload Git History (force sync bundle)"
+			},
+			{
+				"command": "contextEngineUploader.startMcpHttpBridge",
+				"title": "Context Engine Uploader: Start MCP HTTP Bridge"
+			},
+			{
+				"command": "contextEngineUploader.stopMcpHttpBridge",
+				"title": "Context Engine Uploader: Stop MCP HTTP Bridge"
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfig",
+				"title": "Context Engine Uploader: Write MCP Config (.mcp.json)"
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfigSelect",
+				"title": "Context Engine Uploader: Write MCP Config..."
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfigClaude",
+				"title": "Context Engine Uploader: Write MCP Config (Claude Code / .mcp.json)"
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfigWindsurf",
+				"title": "Context Engine Uploader: Write MCP Config (Windsurf / mcp_config.json)"
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfigAugment",
+				"title": "Context Engine Uploader: Write MCP Config (Augment Code / settings.json)"
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfigAntigravity",
+				"title": "Context Engine Uploader: Write MCP Config (Antigravity / mcp_config.json)"
+			},
+			{
+				"command": "contextEngineUploader.writeMcpConfigCursor",
+				"title": "Context Engine Uploader: Write MCP Config (Cursor / mcp.json)"
+			},
+			{
+				"command": "contextEngineUploader.writeCtxConfig",
+				"title": "Context Engine Uploader: Write CTX Config (ctx_config.json/.env)"
+			},
+			{
+				"command": "contextEngineUploader.showUploadServiceLogs",
+				"title": "Context Engine Uploader: Show Extension Output"
+			},
+			{
+				"command": "contextEngineUploader.tailUploadServiceLogs",
+				"title": "Context Engine Uploader: Tail Upload Service Logs (Docker)"
+			},
+			{
+				"command": "contextEngineUploader.promptEnhance",
+				"title": "Context Engine Uploader: Prompt+ (Unicorn Mode)"
+			},
+			{
+				"command": "contextEngineUploader.promptEnhanceCopy",
+				"title": "Context Engine Uploader: Prompt+ (Copy to Clipboard)"
+			},
+			{
+				"command": "contextEngineUploader.promptEnhanceOpen",
+				"title": "Context Engine Uploader: Prompt+ (Open in New Editor)"
+			},
+			{
+				"command": "contextEngineUploader.setCtxDefaultMode",
+				"title": "Context Engine Uploader: Prompt+ Default Mode (ctx_config.json)"
+			},
+			{
+				"command": "contextEngineUploader.authLogin",
+				"title": "Context Engine Uploader: Sign In (ctxce auth)"
+			},
+			{
+				"command": "contextEngineUploader.cloneAndStartStack",
+				"title": "Context Engine Uploader: Clone Stack & Run docker compose"
+			},
+			{
+				"command": "contextEngineUploader.startSavedStack",
+				"title": "Context Engine Uploader: Start Saved Stack (docker compose up)"
+			},
+			{
+				"command": "contextEngineUploader.deleteProfile",
+				"title": "Context Engine Uploader: Delete Profile"
+			},
+			{
+				"command": "contextEngineUploader.openSettings",
+				"title": "Context Engine: Open Settings",
+				"icon": "$(settings-gear)"
+			}
+		],
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "contextEngineUploader",
+					"title": "Context Engine",
+					"icon": "assets/activitybar.svg"
+				}
+			]
+		},
+		"views": {
+			"contextEngineUploader": [
+				{
+					"id": "contextEngineUploaderProfiles",
+					"name": "Profiles"
+				},
+				{
+					"id": "contextEngineUploaderStatus",
+					"name": "Status"
+				},
+				{
+					"id": "contextEngineUploaderActions",
+					"name": "Actions"
+				}
+			]
+		},
+		"menus": {
+			"view/title": [
+				{
+					"command": "contextEngineUploader.openSettings",
+					"when": "view == contextEngineUploaderProfiles",
+					"group": "navigation@1"
+				},
+				{
+					"command": "contextEngineUploader.openSettings",
+					"when": "view == contextEngineUploaderStatus",
+					"group": "navigation@1"
+				},
+				{
+					"command": "contextEngineUploader.openSettings",
+					"when": "view == contextEngineUploaderActions",
+					"group": "navigation@1"
+				}
+			],
+			"extension/context": [
+				{
+					"command": "contextEngineUploader.openSettings",
+					"when": "extension == context-engine.context-engine-uploader",
+					"group": "1_settings@1"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "contextEngineUploader.openSettings",
+					"when": "true"
+				}
+			]
+		},
+		"configuration": [
+			{
+				"title": "Context Engine",
+				"properties": {
+					"contextEngineUploader.runOnStartup": {
+						"type": "boolean",
+						"default": false,
+						"order": 1,
+						"markdownDescription": "Automatically start indexing when VS Code opens this workspace."
+					},
+					"contextEngineUploader.endpoint": {
+						"type": "string",
+						"default": "http://localhost:8004",
+						"order": 2,
+						"markdownDescription": "Server URL for uploading indexed codebase data.\n\n`http://localhost:8004` for local Docker stack"
+					},
+					"contextEngineUploader.targetPath": {
+						"type": "string",
+						"default": "",
+						"order": 3,
+						"markdownDescription": "Workspace path to index. Leave empty for current workspace."
+					},
+					"contextEngineUploader.pythonPath": {
+						"type": "string",
+						"default": "python3",
+						"order": 4,
+						"markdownDescription": "Python executable for running upload scripts. Examples: `python3`, `/usr/bin/python3.11`"
+					}
+				}
+			},
+			{
+				"title": "Context Engine › Indexing",
+				"properties": {
+					"contextEngineUploader.intervalSeconds": {
+						"type": "number",
+						"default": 5,
+						"minimum": 1,
+						"order": 1,
+						"description": "Watch mode polling interval in seconds."
+					},
+					"contextEngineUploader.startWatchAfterForce": {
+						"type": "boolean",
+						"default": true,
+						"order": 2,
+						"description": "Automatically start watch mode after force sync completes."
+					},
+					"contextEngineUploader.extraForceArgs": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"default": [],
+						"order": 3,
+						"markdownDescription": "Additional CLI arguments for force sync. Example: `[\"--verbose\"]`"
+					},
+					"contextEngineUploader.extraWatchArgs": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"default": [],
+						"order": 4,
+						"description": "Additional CLI arguments for watch mode."
+					},
+					"contextEngineUploader.gitMaxCommits": {
+						"type": "number",
+						"default": 500,
+						"minimum": 0,
+						"order": 5,
+						"markdownDescription": "Maximum git commits to index. Set to `0` to disable git history."
+					},
+					"contextEngineUploader.gitSince": {
+						"type": "string",
+						"default": "",
+						"order": 6,
+						"markdownDescription": "Only index commits after this date. Example: `2 years ago` or `2023-01-01`"
+					}
+				}
+			},
+			{
+				"title": "Context Engine › MCP Integrations",
+				"properties": {
+					"contextEngineUploader.mcpClaudeEnabled": {
+						"type": "boolean",
+						"default": true,
+						"order": 1,
+						"markdownDescription": "Write `.mcp.json` for **Claude Code** integration."
+					},
+					"contextEngineUploader.mcpWindsurfEnabled": {
+						"type": "boolean",
+						"default": false,
+						"order": 2,
+						"markdownDescription": "Write MCP config for **Windsurf/Codeium**."
+					},
+					"contextEngineUploader.mcpAugmentEnabled": {
+						"type": "boolean",
+						"default": false,
+						"order": 3,
+						"markdownDescription": "Write MCP config for **Augment Code**."
+					},
+					"contextEngineUploader.mcpAntigravityEnabled": {
+						"type": "boolean",
+						"default": false,
+						"order": 4,
+						"markdownDescription": "Write MCP config for **Google Antigravity**."
+					},
+					"contextEngineUploader.mcpCursorEnabled": {
+						"type": "boolean",
+						"default": false,
+						"order": 5,
+						"markdownDescription": "Write MCP config for **Cursor** (~/.cursor/mcp.json)."
+					},
+					"contextEngineUploader.autoWriteMcpConfigOnStartup": {
+						"type": "boolean",
+						"default": false,
+						"order": 6,
+						"description": "Automatically write MCP configs when extension activates."
+					}
+				}
+			},
+			{
+				"title": "Context Engine › MCP Server",
+				"properties": {
+					"contextEngineUploader.mcpServerMode": {
+						"type": "string",
+						"enum": [
+							"bridge",
+							"direct"
+						],
+						"default": "bridge",
+						"order": 1,
+						"markdownDescription": "Server architecture mode.",
+						"enumDescriptions": [
+							"Single unified 'context-engine' server (recommended)",
+							"Separate 'qdrant-indexer' and 'memory' servers"
+						]
+					},
+					"contextEngineUploader.mcpTransportMode": {
+						"type": "string",
+						"enum": [
+							"http",
+							"sse-remote"
+						],
+						"default": "http",
+						"order": 2,
+						"markdownDescription": "Transport layer for MCP communication.",
+						"enumDescriptions": [
+							"HTTP endpoints (recommended for most setups)",
+							"SSE tunnel over stdio processes"
+						]
+					},
+					"contextEngineUploader.autoStartMcpBridge": {
+						"type": "boolean",
+						"default": true,
+						"order": 3,
+						"description": "Automatically start the MCP bridge HTTP server when the extension activates."
+					},
+					"contextEngineUploader.mcpBridgePort": {
+						"type": "number",
+						"default": 30810,
+						"order": 4,
+						"description": "Port for the MCP bridge HTTP server."
+					},
+					"contextEngineUploader.mcpIndexerUrl": {
+						"type": "string",
+						"default": "http://localhost:8003/mcp",
+						"order": 5,
+						"description": "MCP server URL for the Qdrant indexer."
+					},
+					"contextEngineUploader.mcpMemoryUrl": {
+						"type": "string",
+						"default": "http://localhost:8002/mcp",
+						"order": 6,
+						"description": "MCP server URL for memory/search."
+					},
+					"contextEngineUploader.authBackendUrl": {
+						"type": "string",
+						"default": "",
+						"order": 7,
+						"markdownDescription": "Auth backend URL for remote deployments (e.g., `http://ce.example.com/upload`). Leave empty for local stack."
+					},
+					"contextEngineUploader.authSharedToken": {
+						"type": "string",
+						"default": "",
+						"order": 8,
+						"markdownDescription": "Shared authentication token for team deployments. **Keep this secret!**"
+					}
+				}
+			},
+			{
+				"title": "Context Engine › Claude Hook",
+				"properties": {
+					"contextEngineUploader.claudeHookEnabled": {
+						"type": "boolean",
+						"default": false,
+						"order": 1,
+						"markdownDescription": "Write Claude hook to `.claude/settings.local.json` for prompt enhancement."
+					},
+					"contextEngineUploader.surfaceQdrantCollectionHint": {
+						"type": "boolean",
+						"default": false,
+						"order": 2,
+						"description": "Add Qdrant collection ID hint to enhanced prompts."
+					},
+					"contextEngineUploader.ctxIndexerUrl": {
+						"type": "string",
+						"default": "http://localhost:8003/mcp",
+						"order": 3,
+						"description": "MCP indexer endpoint for ctx.py hook."
+					},
+					"contextEngineUploader.scaffoldCtxConfig": {
+						"type": "boolean",
+						"default": true,
+						"order": 4,
+						"markdownDescription": "Automatically create `ctx_config.json` and `.env` files."
+					}
+				}
+			},
+			{
+				"title": "Context Engine › Decoder",
+				"properties": {
+					"contextEngineUploader.decoderRuntime": {
+						"type": "string",
+						"enum": [
+							"glm",
+							"llamacpp"
+						],
+						"default": "glm",
+						"order": 1,
+						"markdownDescription": "AI backend for Prompt+ enhancement.",
+						"enumDescriptions": [
+							"GLM cloud API (requires API key)",
+							"Local llama.cpp server"
+						]
+					},
+					"contextEngineUploader.decoderUrl": {
+						"type": "string",
+						"default": "http://localhost:8081",
+						"order": 2,
+						"description": "Local llama.cpp endpoint URL."
+					},
+					"contextEngineUploader.useGpuDecoder": {
+						"type": "boolean",
+						"default": false,
+						"order": 3,
+						"description": "Use GPU-accelerated decoder for Prompt+."
+					},
+					"contextEngineUploader.glmApiKey": {
+						"type": "string",
+						"default": "",
+						"order": 4,
+						"markdownDescription": "API key for GLM cloud service. **Keep this secret!**"
+					},
+					"contextEngineUploader.glmApiBase": {
+						"type": "string",
+						"default": "https://api.z.ai/api/coding/paas/v4/",
+						"order": 5,
+						"description": "GLM API base URL."
+					},
+					"contextEngineUploader.glmModel": {
+						"type": "string",
+						"default": "glm-4.6",
+						"order": 6,
+						"description": "GLM model name."
+					}
+				}
+			},
+			{
+				"title": "Context Engine › Advanced",
+				"properties": {
+					"contextEngineUploader.scriptWorkingDirectory": {
+						"type": "string",
+						"default": "",
+						"order": 1,
+						"description": "Override folder containing upload scripts."
+					},
+					"contextEngineUploader.hostRoot": {
+						"type": "string",
+						"default": "",
+						"order": 2,
+						"description": "Host path prefix for container path rewrites."
+					},
+					"contextEngineUploader.containerRoot": {
+						"type": "string",
+						"default": "/work",
+						"order": 3,
+						"description": "Container path that mirrors the host root."
+					},
+					"contextEngineUploader.devRemoteMode": {
+						"type": "boolean",
+						"default": false,
+						"order": 4,
+						"description": "Enable dev-remote upload mode (ignores dev-workspace directories)."
+					},
+					"contextEngineUploader.mcpBridgeBinPath": {
+						"type": "string",
+						"default": "",
+						"order": 5,
+						"description": "Custom path to ctxce CLI binary for development."
+					},
+					"contextEngineUploader.mcpBridgeLocalOnly": {
+						"type": "boolean",
+						"default": false,
+						"order": 6,
+						"description": "Prefer local bridge binaries over npm package."
+					},
+					"contextEngineUploader.windsurfMcpPath": {
+						"type": "string",
+						"default": "",
+						"order": 7,
+						"description": "Custom Windsurf mcp_config.json path."
+					},
+					"contextEngineUploader.augmentMcpPath": {
+						"type": "string",
+						"default": "",
+						"order": 8,
+						"description": "Custom Augment settings.json path."
+					},
+					"contextEngineUploader.antigravityMcpPath": {
+						"type": "string",
+						"default": "",
+						"order": 9,
+						"description": "Custom Antigravity mcp_config.json path."
+					},
+					"contextEngineUploader.cursorMcpPath": {
+						"type": "string",
+						"default": "",
+						"order": 10,
+						"description": "Custom Cursor mcp.json path."
+					},
+					"contextEngineUploader.profilesDb": {
+						"type": "object",
+						"default": {
+							"version": 1,
+							"profiles": []
+						},
+						"order": 99,
+						"markdownDescription": "**[Internal]** Profiles database. Do not edit manually."
+					}
+				}
+			}
+		]
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/m1rl0k/Context-Engine"
+	}
 }
