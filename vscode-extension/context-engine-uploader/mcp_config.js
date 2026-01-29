@@ -195,10 +195,21 @@ function createMcpConfigManager(deps) {
     if (memoryUrl) {
       args.push('--memory-url', memoryUrl);
     }
+
+    // Include auth backend URL so bridge can find session from ~/.ctxce/auth.json
+    const env = {};
+    const settings = vscode.workspace.getConfiguration('contextEngineUploader');
+    const authBackendUrl = (settings.get('authBackendUrl') || '').trim();
+    const endpoint = (settings.get('endpoint') || '').trim();
+    const effectiveAuthBackend = authBackendUrl || endpoint;
+    if (effectiveAuthBackend) {
+      env.CTXCE_AUTH_BACKEND_URL = effectiveAuthBackend;
+    }
+
     return {
       command: invocation.command,
       args,
-      env: {},
+      env,
     };
   }
 

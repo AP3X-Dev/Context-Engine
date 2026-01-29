@@ -348,12 +348,27 @@ def validate_session(session_id: str) -> Optional[Dict[str, Any]]:
     Returns a dict with keys {id, user_id, created_at, expires_at, metadata}
     when valid, or None when missing/expired/unknown. Raises AuthDisabledError
     when auth is disabled.
+
+    Special case: if session_id matches AUTH_SHARED_TOKEN, returns a synthetic
+    session for the "shared" user without DB lookup. This allows local users
+    to use the shared token directly as a session ID.
     """
     if not AUTH_ENABLED:
         raise AuthDisabledError("Auth not enabled")
     sid = (session_id or "").strip()
     if not sid:
         return None
+
+    # Fast path: if session_id matches the shared token, return synthetic session
+    if AUTH_SHARED_TOKEN and sid == AUTH_SHARED_TOKEN:
+        return {
+            "id": "shared",
+            "user_id": "shared",
+            "created_at": 0,
+            "expires_at": 0,
+            "metadata": {"source": "shared_token"},
+        }
+
     _ensure_db()
     with _db_connection() as conn:
         cur = conn.cursor()

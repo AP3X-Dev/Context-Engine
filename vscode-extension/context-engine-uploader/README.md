@@ -118,7 +118,39 @@ High-level steps:
       the uploader's `upload_endpoint` (`CTXCE_UPLOAD_ENDPOINT` / `UPLOAD_ENDPOINT`) →
       `http://localhost:8004`.
 
-Token-based login:
+**Auto-setup for local users (recommended):**
+
+The simplest way to authenticate is to configure the shared token in VS Code settings.
+The extension will automatically set up auth on activation—no manual CLI commands needed:
+
+1. Add these settings to your VS Code `settings.json` (workspace or user):
+
+   ```json
+   {
+     "contextEngineUploader.endpoint": "http://localhost:8004",
+     "contextEngineUploader.authSharedToken": "change-me-dev-token"
+   }
+   ```
+
+2. Reload VS Code. The extension will:
+   - Check if auth is enabled on the backend (`/auth/status`)
+   - If no valid session exists, automatically write the token to `~/.ctxce/auth.json`
+   - The watcher, bridge, and MCP tools will then authenticate seamlessly
+
+This auto-setup only runs when:
+- `authSharedToken` is configured in settings
+- Auth is enabled on the backend (`CTXCE_AUTH_ENABLED=1`)
+- No valid session already exists in `~/.ctxce/auth.json`
+
+**If you're a dev without auth enabled** (`AUTH_ENABLED=0` or not set), the extension
+will detect this via `/auth/status` and skip auth setup entirely. Everything works
+without auth—no configuration needed. The auto-setup is completely transparent.
+
+The extension uses a two-tier fallback when auth IS enabled:
+- **Option A (default):** Writes the token directly to `~/.ctxce/auth.json`
+- **Option C (fallback):** If direct write fails, triggers `ctxce auth login` in silent mode
+
+**Manual token-based login (alternative):**
 
 ```bash
 export CTXCE_AUTH_BACKEND_URL=http://localhost:8004   # optional when using this extension

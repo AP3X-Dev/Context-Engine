@@ -512,6 +512,11 @@ class RemoteUploadClient:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
+        # Set auth session header if available (from ~/.ctxce/auth.json or env)
+        auth_session = get_auth_session(self.upload_endpoint)
+        if auth_session:
+            self.session.headers["X-Session-Id"] = auth_session
+
     def __enter__(self):
         """Context manager entry."""
         return self

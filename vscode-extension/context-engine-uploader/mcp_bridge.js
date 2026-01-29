@@ -250,9 +250,20 @@ function createBridgeManager(deps) {
 
     const finalArgs = [...invocation.args, ...cliArgs];
     log(`Starting HTTP MCP bridge via ${invocation.command} ${finalArgs.join(' ')}`);
+
+    // Build environment with auth backend URL so bridge can find the session
+    const bridgeEnv = { ...process.env };
+    const settings = vscode.workspace.getConfiguration('contextEngineUploader');
+    const authBackendUrl = (settings.get('authBackendUrl') || '').trim();
+    const endpoint = (settings.get('endpoint') || '').trim();
+    const effectiveAuthBackend = authBackendUrl || endpoint;
+    if (effectiveAuthBackend && !bridgeEnv.CTXCE_AUTH_BACKEND_URL) {
+      bridgeEnv.CTXCE_AUTH_BACKEND_URL = effectiveAuthBackend;
+    }
+
     const child = spawn(invocation.command, finalArgs, {
       cwd: options.workspacePath,
-      env: process.env,
+      env: bridgeEnv,
     });
     httpBridgeProcess = child;
     httpBridgePort = actualPort;

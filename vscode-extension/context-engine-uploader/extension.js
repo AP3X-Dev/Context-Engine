@@ -2,7 +2,7 @@ const vscode = require('vscode');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { ensureAuthIfRequired, runAuthLoginFlow, runAuthLogoutFlow } = require('./auth_utils');
+const { ensureAuthIfRequired, hasValidAuthEntry, normalizeBackendUrl, runAuthLoginFlow, runAuthLogoutFlow, writeAuthEntry } = require('./auth_utils');
 const profiles = require('./profiles');
 const sidebar = require('./sidebar');
 const { createBridgeManager } = require('./mcp_bridge');
@@ -507,6 +507,10 @@ function activate(context) {
   if (onboardingManager && typeof onboardingManager.checkOnboarding === 'function') {
     onboardingManager.checkOnboarding(config, configResolver);
   }
+
+  // Auto-setup auth if shared token is configured (runs silently)
+  autoSetupAuthIfNeeded().catch(error => log(`Auto-auth setup failed: ${error instanceof Error ? error.message : String(error)}`));
+
   if (config.get('runOnStartup')) {
     runSequence('auto').catch(error => log(`Startup run failed: ${error instanceof Error ? error.message : String(error)}`));
   }
@@ -543,6 +547,80 @@ function buildAuthDeps() {
     fetchGlobal: (typeof fetch === 'function' ? fetch : undefined),
   };
 }
+
+/**
+ * Auto-setup auth for local users with shared token configured.
+ * This runs silently on activation to provide a seamless experience:
+ * 1. Checks if auth is enabled on the backend
+ * 2. If authSharedToken is configured but no valid session exists:
+ *    - Option A: Writes the token directly to ~/.ctxce/auth.json
+ *    - Option C: Triggers runAuthLoginFlow in silent mode (for full login flow)
+ */
+async function autoSetupAuthIfNeeded() {
+  try {
+    const config = getEffectiveConfig();
+    const endpoint = (config.get('endpoint') || '').trim();
+    const authBackendUrl = (config.get('authBackendUrl') || '').trim();
+    const sharedToken = (config.get('authSharedToken') || '').trim();
+
+    if (!sharedToken) {
+      // No shared token configured, nothing to auto-setup
+      return;
+    }
+
+    const backendUrl = normalizeBackendUrl(authBackendUrl || endpoint);
+    if (!backendUrl) {
+      log('Context Engine Uploader: auto-auth skipped - no backend URL configured');
+      return;
+    }
+
+    // Check if auth is enabled on the backend - MUST verify before writing auth config
+    const fetchFn = typeof fetch === 'function' ? fetch : undefined;
+    if (!fetchFn) {
+      log('Context Engine Uploader: auto-auth skipped - fetch not available');
+      return;
+    }
+    try {
+      const statusUrl = `${backendUrl.replace(/\/+$/, '')}/auth/status`;
+      const res = await fetchFn(statusUrl, { method: 'GET' });
+      if (res && res.ok) {
+        const json = await res.json();
+        if (!json || !json.enabled) {
+          // Auth is explicitly disabled on backend (AUTH_ENABLED=0 or not set)
+          log('Context Engine Uploader: auto-auth skipped - auth not enabled on backend');
+          return;
+        }
+      } else {
+        // Could not determine auth status - don't assume auth is needed
+        log('Context Engine Uploader: auto-auth skipped - could not check auth status');
+        return;
+      }
+    } catch (error) {
+      // Backend unreachable or /auth/status doesn't exist - skip auth setup
+      log(`Context Engine Uploader: auto-auth skipped - backend unreachable: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    // Check if we already have a valid session
+    if (hasValidAuthEntry(backendUrl)) {
+      log('Context Engine Uploader: valid auth session already exists');
+      return;
+    }
+
+    // Option A: Write shared token directly to ~/.ctxce/auth.json
+    log('Context Engine Uploader: auto-setup auth with configured shared token');
+    const written = writeAuthEntry(backendUrl, sharedToken, log);
+
+    if (!written) {
+      // Option C fallback: Try full login flow via ctxce CLI (silent mode)
+      log('Context Engine Uploader: direct write failed, trying login flow');
+      await runAuthLoginFlow(backendUrl, buildAuthDeps(), { silent: true });
+    }
+  } catch (error) {
+    log(`Context Engine Uploader: auto-auth setup error: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function runSequence(mode = 'auto') {
   const options = configResolver ? configResolver.resolveOptions() : undefined;
   if (!options) {

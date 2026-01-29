@@ -1,7 +1,107 @@
 const process = require('process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const _skippedAuthCombos = new Set();
 const _SKIPPED_AUTH_MAX_SIZE = 100;
+
+/**
+ * Write a session entry directly to ~/.ctxce/auth.json.
+ * Used for auto-setup with shared token (Option A).
+ * @param {string} backendUrl - The backend URL (e.g., "http://localhost:8004")
+ * @param {string} sessionId - The session ID or shared token
+ * @param {function} log - Logging function
+ * @returns {boolean} True if successful
+ */
+function writeAuthEntry(backendUrl, sessionId, log) {
+  try {
+    const home = os.homedir();
+    const configDir = path.join(home, '.ctxce');
+    const configPath = path.join(configDir, 'auth.json');
+
+    // Read existing config or create empty object
+    let config = {};
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf8');
+        config = JSON.parse(raw);
+        if (!config || typeof config !== 'object') {
+          config = {};
+        }
+      }
+    } catch (_) {
+      config = {};
+    }
+
+    // Normalize backend URL (remove trailing slashes)
+    const key = backendUrl.replace(/\/+$/, '');
+
+    // Write or update entry
+    config[key] = {
+      sessionId: sessionId,
+      userId: 'shared',
+      expiresAt: null, // Non-expiring for shared tokens
+    };
+
+    // Ensure directory exists
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+
+    // Write config
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+    if (log) {
+      log(`Context Engine Uploader: wrote auth entry to ${configPath}`);
+    }
+    return true;
+  } catch (error) {
+    if (log) {
+      log(`Context Engine Uploader: failed to write auth entry: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return false;
+  }
+}
+
+/**
+ * Check if a valid session exists for the given backend URL.
+ * @param {string} backendUrl - The backend URL
+ * @returns {boolean} True if valid session exists
+ */
+function hasValidAuthEntry(backendUrl) {
+  try {
+    const home = os.homedir();
+    const configPath = path.join(home, '.ctxce', 'auth.json');
+    if (!fs.existsSync(configPath)) {
+      return false;
+    }
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const config = JSON.parse(raw);
+    if (!config || typeof config !== 'object') {
+      return false;
+    }
+    const key = backendUrl.replace(/\/+$/, '');
+    const entry = config[key];
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    const sessionId = entry.sessionId || entry.session_id;
+    if (!sessionId || typeof sessionId !== 'string' || !sessionId.trim()) {
+      return false;
+    }
+    // Check expiration
+    const expiresAt = entry.expiresAt || entry.expires_at;
+    if (typeof expiresAt === 'number' && expiresAt > 0) {
+      const nowSecs = Math.floor(Date.now() / 1000);
+      if (expiresAt < nowSecs) {
+        return false; // Expired
+      }
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 function getFetch(deps) {
   if (deps && typeof deps.fetchGlobal === 'function') {
@@ -221,11 +321,12 @@ async function ensureAuthIfRequired(endpoint, deps) {
   }
 }
 
-async function runAuthLoginFlow(explicitBackendUrl, deps) {
+async function runAuthLoginFlow(explicitBackendUrl, deps, options = {}) {
   if (!deps || !deps.vscode || !deps.spawn || !deps.resolveBridgeCliInvocation || !deps.getWorkspaceFolderPath || !deps.attachOutput || !deps.log) {
     return;
   }
   const { vscode, spawn, resolveBridgeCliInvocation, getWorkspaceFolderPath, attachOutput, log } = deps;
+  const { silent = false } = options; // silent mode for auto-login on activation
   let endpoint = '';
   try {
     if (deps && typeof deps.getEffectiveConfig === 'function') {
@@ -246,13 +347,36 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
   // Prefer configured authBackendUrl over explicit URL to allow settings override
   let backendUrl = normalizeBackendUrl(configuredAuthBackendUrl || explicitBackendUrl || endpoint);
   if (!backendUrl) {
-    vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
+    if (!silent) {
+      vscode.window.showErrorMessage('Context Engine Uploader: backend endpoint is not configured (contextEngineUploader.endpoint or contextEngineUploader.authBackendUrl).');
+    }
     return;
+  }
+
+  // Check if auth is enabled on the backend before attempting login
+  const fetchFn = getFetch(deps);
+  if (fetchFn) {
+    try {
+      const statusUrl = `${backendUrl.replace(/\/+$/, '')}/auth/status`;
+      const res = await fetchFn(statusUrl, { method: 'GET' });
+      if (res && res.ok) {
+        const json = await res.json();
+        if (!json || !json.enabled) {
+          log('Context Engine Uploader: auth is not enabled on backend; skipping login.');
+          return;
+        }
+      }
+    } catch (error) {
+      log(`Auth status check failed: ${error instanceof Error ? error.message : String(error)}`);
+      // Continue anyway - backend may be unreachable but we should still try
+    }
   }
 
   const invocation = resolveBridgeCliInvocation();
   if (!invocation) {
-    vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for auth.');
+    if (!silent) {
+      vscode.window.showErrorMessage('Context Engine Uploader: unable to locate ctxce CLI for auth.');
+    }
     return;
   }
   const cwd = getWorkspaceFolderPath() || process.cwd();
@@ -269,14 +393,22 @@ async function runAuthLoginFlow(explicitBackendUrl, deps) {
       attachOutput(child, 'auth');
       child.on('error', error => {
         log(`ctxce auth login (configured token) failed to start: ${error instanceof Error ? error.message : String(error)}`);
-        vscode.window.showErrorMessage('Context Engine Uploader: auth login failed to start. See output for details.');
+        if (!silent) {
+          vscode.window.showErrorMessage('Context Engine Uploader: auth login failed to start. See output for details.');
+        }
         resolve();
       });
       child.on('close', code => {
         if (code === 0) {
-          vscode.window.showInformationMessage('Context Engine Uploader: auth login successful (using configured token).');
+          log('Context Engine Uploader: auth login successful (using configured token).');
+          if (!silent) {
+            vscode.window.showInformationMessage('Context Engine Uploader: auth login successful (using configured token).');
+          }
         } else {
-          vscode.window.showErrorMessage(`Context Engine Uploader: auth login failed with exit code ${code}. See output for details.`);
+          log(`Context Engine Uploader: auth login failed with exit code ${code}.`);
+          if (!silent) {
+            vscode.window.showErrorMessage(`Context Engine Uploader: auth login failed with exit code ${code}. See output for details.`);
+          }
         }
         resolve();
       });
@@ -429,7 +561,9 @@ async function runAuthLogoutFlow(explicitBackendUrl, deps) {
 module.exports = {
   checkAuthStatus,
   ensureAuthIfRequired,
+  hasValidAuthEntry,
   normalizeBackendUrl,
   runAuthLoginFlow,
+  writeAuthEntry,
   runAuthLogoutFlow,
 };
