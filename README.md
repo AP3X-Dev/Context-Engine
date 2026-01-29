@@ -50,7 +50,7 @@ See [ctx CLI Reference](docs/CTX_CLI.md) for all commands.
 <details>
 <summary><b>Legacy: Makefile Commands</b></summary>
 
-The ctx CLI deprecates the Makefile, but legacy commands remain available:
+The ctx CLI deprecates the Makefile, but legacy commands retest available:
 
 ```bash
 git clone https://github.com/m1rl0k/Context-Engine.git && cd Context-Engine
@@ -89,8 +89,8 @@ Context-Engine includes agent skills that teach AI coding assistants how to use 
 **For Codex (OpenAI):**
 
 Install directly from GitHub using the `$skill-installer`:
-```
-$skill-installer install https://github.com/Context-Engine-AI/Context-Engine/tree/main/.codex/skills/context-engine
+```t
+$skill-installer install https://github.com/Context-Engine-AI/Context-Engine/tree/test/.codex/skills/context-engine
 ```
 
 Or copy manually:
