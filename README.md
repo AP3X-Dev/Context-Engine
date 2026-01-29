@@ -11,78 +11,64 @@
 
 Open-core, self-improving code search that gets smarter every time you use it.
 
-<p align="center">
-  <img src="useage.png" alt="Context-Engine Usage" width="50%"/>
-</p>
-
 ---
 
-## Quick Start: Stack in 30 Seconds
+## Quick Start
 
-### VS Code Extension (Easiest)
-1. Install [Context Engine Uploader](https://marketplace.visualstudio.com/items?itemName=context-engine.context-engine-uploader)
-2. Open any project → extension prompts to set up Context-Engine stack
-3. Opened workspace is indexed
-4. MCP configs can configure your agent/IDE
+### Install the CLI
 
-**That's it!** The extension handles everything:
-- Clones Context-Engine to your chosen location (keeps it separate from your project)
-- Starts the Docker stack automatically
-- Sets up MCP bridge configuration
-- Writes MCP configs for Claude Code, Windsurf, and Augment
+```bash
+# Using pip
+pip install context-engine
 
-**Claude Code users:** Install the skill plugin:
-```
-/plugin marketplace add m1rl0k/Context-Engine
-/plugin install context-engine
+# Or using uv (recommended)
+uv pip install context-engine
 ```
 
-### Manual Setup (Alternative)
+This installs the `ctx` command (also available as `ctx-cli`).
+
+### One Command Setup
+
+```bash
+ctx quickstart
+```
+
+This single command starts all services, indexes your codebase, and warms up models.
+
+### Common Commands
+
+```bash
+ctx status              # Check service health
+ctx reset --mcp         # Reset with HTTP MCP endpoints (for Codex, modern clients)
+ctx reset --mcp --db-reset  # Hard reset: wipe database and rebuild everything
+ctx search "auth flow"  # Search your codebase
+ctx answer "How does caching work?"  # Get answers with citations
+```
+
+See [ctx CLI Reference](docs/CTX_CLI.md) for all commands.
+
+<details>
+<summary><b>Legacy: Makefile Commands</b></summary>
+
+The ctx CLI deprecates the Makefile, but legacy commands remain available:
+
 ```bash
 git clone https://github.com/m1rl0k/Context-Engine.git && cd Context-Engine
-make bootstrap  # One-shot: up → wait → index → warm → health
+make bootstrap  # Equivalent to: ctx quickstart
+make reset      # Equivalent to: ctx reset --mcp
 ```
 
-Or step-by-step:
-```bash
-docker compose up -d
-HOST_INDEX_PATH=/path/to/your/project docker compose run --rm indexer
-```
-
-*See [Configuration](docs/CONFIGURATION.md) for environment variables and [IDE_CLIENTS.md](docs/IDE_CLIENTS.md) for MCP setup.*
+</details>
 
 ---
-
-## Why This Stack Works Better
-
-| Problem | Context-Engine Solution |
-|---------|------------------------|
-| **Large file chunks** → returns entire files | **Precise spans**: Returns 5-50 line chunks, not whole files |
-| **Lost context** → missing relevant code | **Hybrid search**: Semantic + lexical + cross-encoder reranking |
-| **Cloud dependency** → vendor lock-in | **Local stack**: Docker Compose on your machine |
-| **Static knowledge** → never improves | **Adaptive learning**: Gets smarter with every use |
-| **Tool limits** → only works in specific IDEs | **MCP native**: Works with any MCP-compatible tool |
-
----
-
-## What You Get Out of the Box
-
-- **ReFRAG-inspired micro-chunking**: Research-grade precision retrieval
-- **Self-hosted stack**: No cloud dependency, no vendor lock-in
-- **Universal compatibility**: Claude Code, Windsurf, Cursor, Cline, etc.
-- **Auto-syncing**: Extension watches for changes and re-indexes automatically
-- **Memory system**: Store team knowledge alongside your code
-- **Optional LLM features**: Local decoder (llama.cpp), cloud integration (GLM, MiniMax), adaptive rerank learning
-
-### Works With Your Local Files
-No complicated path setup - Context-Engine automatically handles the mapping between your local files and the search index.
 
 ### Enterprise-Ready Features
+
 - **Built-in authentication** with session management (optional)
 - **Unified MCP endpoint** that combines indexer and memory services
 - **Automatic collection injection** for workspace-aware queries
 
-**Alternative: Direct HTTP endpoints**
+**Direct HTTP endpoints:**
 ```json
 {
   "mcpServers": {
@@ -92,74 +78,7 @@ No complicated path setup - Context-Engine automatically handles the mapping bet
 }
 ```
 
-*Using other IDEs? See [docs/IDE_CLIENTS.md](docs/IDE_CLIENTS.md) for complete MCP configuration examples.*
-
----
-
-## Supported Clients
-
-| Client | Transport |
-|--------|-----------|
-| Claude Code | SSE / RMCP |
-| Cursor | SSE / RMCP |
-| Windsurf | SSE / RMCP |
-| Cline | SSE / RMCP |
-| Roo | SSE / RMCP |
-| OpenCode | RMCP |
-| Augment | SSE |
-| Codex | RMCP |
-| Copilot | RMCP |
-| AmpCode | RMCP |
-| Kiro | RMCP |
-| Antigravity | RMCP |
-| Zed | SSE (via mcp-remote) |
-
----
-
-## Endpoints
-
-| Service | URL |
-|---------|-----|
-| Indexer MCP (SSE) | `http://localhost:8001/sse` |
-| Indexer MCP (RMCP) | `http://localhost:8003/mcp` |
-| Memory MCP (SSE) | `http://localhost:8000/sse` |
-| Memory MCP (RMCP) | `http://localhost:8002/mcp` |
-| Qdrant | `http://localhost:6333` |
-| Upload Service | `http://localhost:8004` |
-
----
-
-## VS Code Extension
-
-[Context Engine Uploader](https://marketplace.visualstudio.com/items?itemName=context-engine.context-engine-uploader) provides:
-
-- **One-click upload** — Sync workspace to Context-Engine
-- **Auto-sync** — Watch for changes and re-index automatically
-- **Prompt+ button** — Enhance prompts with code context before sending
-- **MCP auto-config** — Writes Claude/Windsurf MCP configs
-
-See [docs/vscode-extension.md](docs/vscode-extension.md) for full documentation.
-
----
-
-## MCP Tools
-
-**Search** (Indexer MCP):
-- `repo_search` — Hybrid code search with filters
-- `context_search` — Blend code + memory results
-- `context_answer` — LLM-generated answers with citations
-- `search_tests_for`, `search_config_for`, `search_callers_for`
-
-**Memory** (Memory MCP):
-- `store` — Save knowledge with metadata
-- `find` — Retrieve stored memories
-
-**Indexing**:
-- `qdrant_index_root` — Index the workspace
-- `qdrant_status` — Check collection health
-- `qdrant_prune` — Remove stale entries
-
-See [docs/MCP_API.md](docs/MCP_API.md) for complete API reference.
+*See [docs/IDE_CLIENTS.md](docs/IDE_CLIENTS.md) for MCP configuration examples and [docs/MCP_API.md](docs/MCP_API.md) for the complete API reference.*
 
 ---
 
@@ -195,52 +114,95 @@ Skills teach agents to prefer Context-Engine MCP tools over grep/find/cat for co
 
 ---
 
-## Documentation
+## Architecture
 
-| Guide | Description |
-|-------|-------------|
-| [Getting Started](docs/GETTING_STARTED.md) | VS Code + dev-remote walkthrough |
-| [IDE Clients](docs/IDE_CLIENTS.md) | Config examples for all supported clients |
-| [Configuration](docs/CONFIGURATION.md) | Environment variables reference |
-| [MCP API](docs/MCP_API.md) | Full tool documentation |
-| [Architecture](docs/ARCHITECTURE.md) | System design |
-| [Multi-Repo](docs/MULTI_REPO_COLLECTIONS.md) | Multiple repositories in one collection |
-| [Kubernetes](deploy/kubernetes/README.md) | Production deployment |
-
----
-
-## How It Works
+### Local Mode
+*Development and single-user deployment*
 
 ```mermaid
-flowchart LR
-  subgraph Your Machine
-    A[IDE / AI Tool]
-    V[VS Code Extension]
-  end
-  subgraph Docker
-    U[Upload Service]
-    I[Indexer MCP]
-    M[Memory MCP]
-    Q[(Qdrant)]
-    L[[LLM Decoder]]
-    W[[Learning Worker]]
-  end
-  V -->|sync| U
-  U --> I
-  A -->|MCP| I
-  A -->|MCP| M
-  I --> Q
-  M --> Q
-  I -.-> L
-  I -.-> W
-  W -.-> Q
+flowchart TB
+    subgraph client["CLIENT LAYER"]
+        direction LR
+        IDE["<b>IDE / AI Tool</b><br/>Claude, Cursor, etc."]
+        VSC["<b>VS Code Extension</b><br/>File Watcher"]
+    end
+
+    subgraph mcp["MCP LAYER"]
+        direction LR
+        subgraph search["Search Services"]
+            MCP_SSE["<b>Memory MCP</b><br/>:8000 SSE"]
+            MCP_HTTP["<b>Memory MCP</b><br/>:8002 RMCP"]
+        end
+        subgraph index["Index Services"]
+            IDX_SSE["<b>Indexer MCP</b><br/>:8001 SSE"]
+            IDX_HTTP["<b>Indexer MCP</b><br/>:8003 RMCP"]
+        end
+    end
+
+    subgraph processing["PROCESSING LAYER"]
+        direction LR
+        EMB["<b>Embedding Service</b><br/>:8100-8101<br/>ONNX (2 replicas)"]
+        LLAMA["<b>LLM Decoder</b><br/>:8080<br/>llama.cpp"]
+        LEARN["<b>Learning Worker</b><br/>Background<br/>Adaptive Reranker"]
+        WATCH["<b>Watcher</b><br/>File Monitor<br/>Auto-reindex"]
+    end
+
+    subgraph storage["STORAGE LAYER"]
+        direction LR
+        QDRANT[("<b>Qdrant</b><br/>:6333/:6334<br/>Vector DB")]
+        REDIS[("<b>Redis</b><br/>:6379<br/>Cache/State")]
+        FS[("<b>Filesystem</b><br/>/work<br/>Direct Access")]
+    end
+
+    %% Client connections
+    IDE -->|"MCP Protocol"| MCP_SSE & MCP_HTTP
+    IDE -->|"MCP Protocol"| IDX_SSE & IDX_HTTP
+    VSC -->|"File Sync"| FS
+
+    %% MCP to Processing
+    MCP_SSE & MCP_HTTP -->|"embed()"| EMB
+    IDX_SSE & IDX_HTTP -->|"embed()"| EMB
+    IDX_SSE & IDX_HTTP -->|"expand query"| LLAMA
+
+    %% Processing to Storage
+    EMB -->|"vectors"| QDRANT
+    LEARN -->|"update weights"| QDRANT
+    WATCH -->|"file events"| FS
+    WATCH -->|"reindex"| QDRANT
+
+    %% Storage connections
+    MCP_SSE & MCP_HTTP -->|"search"| QDRANT
+    IDX_SSE & IDX_HTTP -->|"upsert"| QDRANT
+    IDX_SSE & IDX_HTTP -->|"state"| REDIS
+
+    %% Styling - GitHub light/dark compatible
+    classDef clientStyle fill:#4a90d9,stroke:#2563eb,stroke-width:2px,color:#fff
+    classDef mcpStyle fill:#8b5cf6,stroke:#6d28d9,stroke-width:2px,color:#fff
+    classDef processStyle fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#000
+    classDef storageStyle fill:#10b981,stroke:#059669,stroke-width:2px,color:#fff
+
+    class IDE,VSC clientStyle
+    class MCP_SSE,MCP_HTTP,IDX_SSE,IDX_HTTP mcpStyle
+    class EMB,LLAMA,LEARN,WATCH processStyle
+    class QDRANT,REDIS,FS storageStyle
 ```
 
----
+<details>
+<summary><b>Service Port Reference</b></summary>
 
-## Language Support
+| Service | Port | Protocol | Description |
+|---------|------|----------|-------------|
+| Memory MCP (SSE) | 8000 | SSE | Legacy streaming transport |
+| Memory MCP (RMCP) | 8002 | HTTP | Modern streamable HTTP |
+| Indexer MCP (SSE) | 8001 | SSE | Legacy streaming transport |
+| Indexer MCP (RMCP) | 8003 | HTTP | Modern streamable HTTP |
+| Upload Service | 8004 | HTTP | Delta bundle uploads |
+| Embedding Service | 8100-8101 | HTTP | ONNX embeddings (2 replicas) |
+| LLM Decoder | 8080 | HTTP | llama.cpp query expansion |
+| Qdrant | 6333/6334 | HTTP/gRPC | Vector database |
+| Redis | 6379 | TCP | Cache and state backend |
 
-Python, TypeScript/JavaScript, Go, Java, Rust, C#, PHP, Shell, Terraform, YAML, PowerShell
+</details>
 
 ---
 
