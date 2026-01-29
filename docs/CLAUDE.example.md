@@ -1,6 +1,6 @@
-AI agent rules for using Context‑Engine Qdrant‑Indexer and Memory MCP tools.
+AI agent rules for using Context Engine MCP tools.
 
-These rules are NOT optional - favor qdrant-indexer tooling at all costs over existing file reading, grep-like searching, and unrelated codebase search tools.
+These rules are NOT optional - favor Context Engine tools at all costs over existing file reading, grep-like searching, and unrelated codebase search tools.
 
 ## STOP — Read This First
 
@@ -14,13 +14,13 @@ You have MCP tools that are faster, smarter, and return ranked, contextual resul
 
 The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `REDIS_HOST`), or reading a file you already located via MCP for editing.
 
-## Agentic AI Project Rules: When to Use MCP Qdrant-Indexer vs Grep
+## Agentic AI Project Rules: When to Use Context Engine MCP Tools vs Grep
 
   Core Decision Rules (for AI agents)
 
-  Workspace default: MCP Qdrant-Indexer tools are primary for exploring code and history. Start with MCP for exploration, debugging, or "where/why" questions; use literal search/file-open only for narrow exact-literal lookups.
+  Workspace default: Context Engine MCP tools are primary for exploring code and history. Start with MCP for exploration, debugging, or "where/why" questions; use literal search/file-open only for narrow exact-literal lookups.
 
-  Use MCP Qdrant-Indexer when:
+  Use Context Engine tools when:
   - Exploring or don't know exact strings/symbols
   - Need semantic or cross-file understanding (relationships, patterns, architecture)
   - Want ranked results with surrounding context, not just line hits
@@ -63,7 +63,7 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
   "places where user sessions are managed"
   "logging and error reporting patterns"
 
-  MCP Qdrant-Indexer Specific Knobs
+  Context Engine Tool Parameters
 
   Essential Parameters:
 
@@ -160,7 +160,7 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
     - Then call context_answer to summarize behavior, using a behavior-focused question that doesn't over-specify filenames.
   - Avoid using context_answer as a primary debugger for low-level helper/env behavior; prefer repo_search + direct code reading for detailed semantics.
 
-  MCP Tool Families (for AI agents)
+  Context Engine Tool Families
 
   - Indexer / Qdrant tools:
     - qdrant_index_root, qdrant_index, qdrant_prune
