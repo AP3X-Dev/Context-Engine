@@ -163,6 +163,29 @@ See [docs/MCP_API.md](docs/MCP_API.md) for complete API reference.
 
 ---
 
+## Agent Skills (Codex / Claude)
+
+Context-Engine includes agent skills that teach AI coding assistants how to use the MCP tools effectively.
+
+**For Codex (OpenAI):**
+```bash
+# Copy skills to your home directory (available globally)
+cp -r .codex/skills/context-engine ~/.codex/skills/
+
+# Or copy to your project (project-specific)
+cp -r .codex/skills/context-engine /path/to/your/project/.codex/skills/
+```
+
+**For Claude:**
+```bash
+# Copy CLAUDE.md to your project root
+cp CLAUDE.md /path/to/your/project/
+```
+
+Skills teach agents to prefer Context-Engine MCP tools over grep/find/cat for code exploration.
+
+---
+
 ## Documentation
 
 | Guide | Description |
