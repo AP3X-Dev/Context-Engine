@@ -123,10 +123,10 @@ Skills teach agents to prefer Context-Engine MCP tools over grep/find/cat for co
 
 ---
 
-## Architecture
+## How It Works
 
-### Local Mode
-*Development and single-user deployment*
+### Local Mode Architecture
+*Zero auth, single-tenant, perfect for personal use*
 
 ```mermaid
 flowchart TB
