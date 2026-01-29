@@ -1398,9 +1398,14 @@ class RemoteUploadClient:
             connect_timeout = min(self.timeout, 10)
             # Allow slower responses (e.g., cold starts/large collections) before bailing
             read_timeout = max(self.timeout, 30)
+            params = {'workspace_path': container_workspace_path}
+            # Add session to params if available (flows through to backend auth)
+            sess = get_auth_session(self.upload_endpoint)
+            if sess:
+                params['session'] = sess
             response = self.session.get(
                 f"{self.upload_endpoint}/api/v1/delta/status",
-                params={'workspace_path': container_workspace_path},
+                params=params,
                 timeout=(connect_timeout, read_timeout)
             )
 
