@@ -534,7 +534,7 @@ export function handleOAuthStoreSession(req, res) {
 export function handleOAuthToken(req, res) {
   let body = "";
   req.on("data", (chunk) => { body += chunk; });
-  req.on("end", () => {
+  req.on("end", async () => {
     try {
       const data = new URLSearchParams(body);
       const code = data.get("code");
@@ -585,8 +585,24 @@ export function handleOAuthToken(req, res) {
         return;
       }
 
-      // TODO: Validate PKCE code_verifier against code_challenge
-      // For now, skip validation (local bridge, trusted)
+      // TODO: PKCE validation - disabled for now, no clients implement it yet
+      // if (pendingData.codeChallenge && pendingData.codeChallengeMethod === "S256") {
+      //   const codeVerifier = data.get("code_verifier");
+      //   if (!codeVerifier) {
+      //     pendingCodes.delete(code);
+      //     res.statusCode = 400;
+      //     res.end(JSON.stringify({ error: "invalid_grant", error_description: "code_verifier required for PKCE" }));
+      //     return;
+      //   }
+      //   const crypto = await import("node:crypto");
+      //   const expectedChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
+      //   if (expectedChallenge !== pendingData.codeChallenge) {
+      //     pendingCodes.delete(code);
+      //     res.statusCode = 400;
+      //     res.end(JSON.stringify({ error: "invalid_grant", error_description: "code_verifier validation failed" }));
+      //     return;
+      //   }
+      // }
 
       // Clean up expired tokens periodically to prevent unbounded growth
       cleanupExpiredTokens();
@@ -649,6 +665,33 @@ export function isOAuthEndpoint(pathname) {
     pathname === "/oauth/store-session" ||
     pathname === "/oauth/token"
   );
+}
+
+/**
+ * Check if the token store has any entries (indicates auth is active)
+ * @returns {boolean}
+ */
+export function hasTokenStore() {
+  return tokenStore.size > 0;
+}
+
+/**
+ * Look up a bearer token and return the associated session ID
+ * @param {string} token - Bearer token to validate
+ * @returns {string|null} - Session ID if valid, null otherwise
+ */
+export function lookupToken(token) {
+  const entry = tokenStore.get(token);
+  if (!entry) return null;
+
+  // Check expiration
+  const tokenAge = Date.now() - entry.createdAt;
+  if (tokenAge > TOKEN_EXPIRY_MS) {
+    tokenStore.delete(token);
+    return null;
+  }
+
+  return entry.sessionId || null;
 }
 
 startCleanupInterval();

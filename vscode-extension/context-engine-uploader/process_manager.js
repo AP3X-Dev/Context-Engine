@@ -95,6 +95,56 @@ function createProcessManager(deps) {
         return args;
     }
 
+    // Track if we've already shown an auth error notification to avoid spamming
+    let _authErrorNotificationShown = false;
+    let _authErrorNotificationTimer = null;
+
+    /**
+     * Parse auth error notification from bridge stderr output.
+     * Format: [ctxce:auth-error] {"type":"auth_rejection","backend":"...","message":"...","hint":"..."}
+     */
+    function parseAuthErrorNotification(chunk) {
+        const marker = '[ctxce:auth-error]';
+        const idx = chunk.indexOf(marker);
+        if (idx === -1) {
+            return null;
+        }
+        try {
+            const jsonStart = idx + marker.length;
+            const jsonStr = chunk.slice(jsonStart).trim().split('\n')[0];
+            return JSON.parse(jsonStr);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
+     * Show a notification toast for auth errors with a Sign In action button.
+     */
+    function showAuthErrorNotification(authError) {
+        if (_authErrorNotificationShown) {
+            return;
+        }
+        _authErrorNotificationShown = true;
+
+        const backend = authError.backend || 'the server';
+        const message = `Context Engine authentication failed (${backend}). Please sign in to continue.`;
+
+        vscode.window.showWarningMessage(message, 'Sign In', 'Dismiss').then(choice => {
+            if (choice === 'Sign In') {
+                vscode.commands.executeCommand('contextEngineUploader.authLogin');
+            }
+        });
+
+        // Reset the flag after a delay to allow showing the notification again if error persists
+        if (_authErrorNotificationTimer) {
+            clearTimeout(_authErrorNotificationTimer);
+        }
+        _authErrorNotificationTimer = setTimeout(() => {
+            _authErrorNotificationShown = false;
+        }, 60000); // 60 seconds before allowing another notification
+    }
+
     function attachOutput(child, label) {
         const outputChannel = getOutputChannel();
         if (!outputChannel) {
@@ -110,6 +160,13 @@ function createProcessManager(deps) {
             child.stderr.on('data', data => {
                 const chunk = data.toString();
                 outputChannel.append(`[${label} err] ${chunk}`);
+
+                // Detect auth error notifications from bridge and show toast
+                const authError = parseAuthErrorNotification(chunk);
+                if (authError) {
+                    log(`Auth error detected from bridge: ${JSON.stringify(authError)}`);
+                    showAuthErrorNotification(authError);
+                }
             });
         }
     }

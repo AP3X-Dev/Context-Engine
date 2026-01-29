@@ -97,6 +97,67 @@ const _ENDPOINT_REACHABLE_TTL_MS = 15_000;
 const _ENDPOINT_REACHABLE_TIMEOUT_MS = 750;
 const _ENDPOINT_REACHABLE_MAX_ENTRIES = 100;
 
+// Health status cache for status panel
+const _healthStatusCache = new Map();
+const _HEALTH_STATUS_TTL_MS = 10_000;
+const _HEALTH_STATUS_TIMEOUT_MS = 1500;
+
+/**
+ * Probe a service health endpoint.
+ * @param {string} url - Full URL to probe (e.g., http://localhost:8004/health)
+ * @returns {Promise<{ok: boolean, latencyMs?: number, error?: string}>}
+ */
+async function probeHealthEndpoint(url) {
+  const fetchFn = (typeof fetch === 'function' ? fetch : undefined);
+  if (!fetchFn || !url) {
+    return { ok: false, error: 'No fetch available or invalid URL' };
+  }
+
+  let timer;
+  let controller;
+  const start = Date.now();
+  try {
+    controller = (typeof AbortController === 'function') ? new AbortController() : undefined;
+    if (controller) {
+      timer = setTimeout(() => {
+        try { controller.abort(); } catch (_) { }
+      }, _HEALTH_STATUS_TIMEOUT_MS);
+    }
+    const res = await fetchFn(url, { method: 'GET', signal: controller ? controller.signal : undefined });
+    const latencyMs = Date.now() - start;
+    if (res && res.ok) {
+      return { ok: true, latencyMs };
+    }
+    return { ok: false, error: `HTTP ${res.status}`, latencyMs };
+  } catch (err) {
+    return { ok: false, error: err && err.name === 'AbortError' ? 'Timeout' : 'Connection failed' };
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Get cached health status for a service.
+ * @param {string} key - Cache key (e.g., 'backend', 'mcp-indexer', 'qdrant')
+ * @param {string} url - Health endpoint URL
+ * @returns {Promise<{ok: boolean, latencyMs?: number, error?: string}>}
+ */
+async function getCachedHealthStatus(key, url) {
+  if (!url) {
+    return { ok: false, error: 'Not configured' };
+  }
+  const now = Date.now();
+  const cached = _healthStatusCache.get(key);
+  if (cached && cached.ts && (now - cached.ts) < _HEALTH_STATUS_TTL_MS) {
+    return cached.status;
+  }
+  const status = await probeHealthEndpoint(url);
+  _healthStatusCache.set(key, { status, ts: now });
+  return status;
+}
+
 function pruneCache(cache, ttlMs, maxEntries) {
   const now = Date.now();
   for (const [key, entry] of cache.entries()) {
@@ -383,27 +444,101 @@ function register(context, deps) {
       try { return (cfg.get('endpoint') || '').trim(); } catch (_) { return ''; }
     })();
 
-    const resolvedTarget = typeof getResolvedTargetPath === 'function' ? getResolvedTargetPath() : undefined;
-    const targetDescription = resolvedTarget && resolvedTarget.path ? resolvedTarget.path : '(unset)';
-    const targetTooltip = resolvedTarget && resolvedTarget.source ? `Source: ${resolvedTarget.source}` : undefined;
+    // Health endpoints configuration
+    const backendUrl = endpoint ? `${endpoint.replace(/\/+$/, '')}/health` : '';
+    const mcpIndexerPort = cfg.get('mcpIndexerPort') || 18003;
+    const mcpIndexerUrl = `http://localhost:${mcpIndexerPort}/readyz`;
+    const qdrantPort = cfg.get('qdrantPort') || 6333;
+    const qdrantUrl = `http://localhost:${qdrantPort}/readyz`;
 
-    const mcpMode = resolveMcpMode(cfg);
-    let bridge = state && state.httpBridgeProcess ? `running:${state.httpBridgePort || ''}` : 'stopped';
+    // Probe health endpoints in parallel
+    const [backendHealth, mcpHealth, qdrantHealth] = await Promise.all([
+      backendUrl ? getCachedHealthStatus('backend', backendUrl) : { ok: false, error: 'Not configured' },
+      getCachedHealthStatus('mcp-indexer', mcpIndexerUrl),
+      getCachedHealthStatus('qdrant', qdrantUrl),
+    ]);
 
-    if (bridge === 'stopped') {
-      const configPort = Number(cfg.get('mcpBridgePort') || 30810);
-      if (await probeBridgeAlive(configPort)) {
-        bridge = `running (external):${configPort}`;
-      }
+    // Helper to get icon and description based on health
+    const getHealthIcon = (health) => {
+      if (health.ok) return new vscode.ThemeIcon('check', new vscode.ThemeColor('charts.green'));
+      return new vscode.ThemeIcon('error', new vscode.ThemeColor('charts.red'));
+    };
+    const getHealthDesc = (health, label) => {
+      if (health.ok) return `✓ ${label}`;
+      return `✗ ${health.error || 'Unavailable'}`;
+    };
+
+    // Check if all systems are operational
+    const allHealthy = backendHealth.ok && mcpHealth.ok && qdrantHealth.ok;
+
+    // Build status items
+    const items = [];
+
+    // Show "All Systems Operational" banner when healthy
+    if (allHealthy) {
+      items.push(makeTreeItem('All Systems Operational', {
+        description: '',
+        icon: new vscode.ThemeIcon('verified-filled', new vscode.ThemeColor('charts.green')),
+        tooltip: 'Backend, MCP Indexer, and Qdrant are all running.',
+        contextValue: 'ctxceStatusAllHealthy'
+      }));
     }
 
-    return [
-      makeTreeItem('Run State', { description: state && state.statusMode ? state.statusMode : 'unknown', icon: new vscode.ThemeIcon('pulse') }),
-      makeTreeItem('Endpoint', { description: endpoint || '(unset)', icon: new vscode.ThemeIcon('link') }),
-      makeTreeItem('Target Path', { description: targetDescription, tooltip: targetTooltip, icon: new vscode.ThemeIcon('folder') }),
-      makeTreeItem('MCP Mode', { description: mcpMode, icon: new vscode.ThemeIcon('plug') }),
-      makeTreeItem('HTTP Bridge', { description: bridge, icon: new vscode.ThemeIcon('server-process') }),
-    ];
+    // Backend health
+    items.push(makeTreeItem('Backend', {
+      description: getHealthDesc(backendHealth, 'Connected'),
+      icon: getHealthIcon(backendHealth),
+      tooltip: backendHealth.ok
+        ? `Backend is healthy (${backendHealth.latencyMs}ms)`
+        : `Backend unavailable: ${backendHealth.error}\nClick to configure endpoint.`,
+      command: backendHealth.ok ? undefined : {
+        command: 'workbench.action.openSettings',
+        title: 'Configure Endpoint',
+        arguments: ['contextEngineUploader.endpoint']
+      },
+      contextValue: 'ctxceStatusBackend'
+    }));
+
+    // MCP Indexer health
+    items.push(makeTreeItem('MCP Indexer', {
+      description: getHealthDesc(mcpHealth, 'Running'),
+      icon: getHealthIcon(mcpHealth),
+      tooltip: mcpHealth.ok
+        ? `MCP Indexer is healthy (port ${mcpIndexerPort})`
+        : `MCP Indexer unavailable: ${mcpHealth.error}\nEnsure MCP Indexer is running on port ${mcpIndexerPort}.`,
+      command: mcpHealth.ok ? undefined : {
+        command: 'contextEngineUploader.showUploadServiceLogs',
+        title: 'Show Logs'
+      },
+      contextValue: 'ctxceStatusMcpIndexer'
+    }));
+
+    // Qdrant health
+    items.push(makeTreeItem('Qdrant', {
+      description: getHealthDesc(qdrantHealth, 'Running'),
+      icon: getHealthIcon(qdrantHealth),
+      tooltip: qdrantHealth.ok
+        ? `Qdrant vector DB is healthy (port ${qdrantPort})`
+        : `Qdrant unavailable: ${qdrantHealth.error}\nStart Qdrant with: docker compose up -d qdrant`,
+      command: qdrantHealth.ok ? undefined : {
+        command: 'contextEngineUploader.startSavedStack',
+        title: 'Start Stack'
+      },
+      contextValue: 'ctxceStatusQdrant'
+    }));
+
+    // Last index timestamp (from state if available)
+    const lastIndex = state && state.lastIndexTime
+      ? new Date(state.lastIndexTime).toLocaleString()
+      : 'Never';
+    items.push(makeTreeItem('Last Index', {
+      description: lastIndex,
+      icon: new vscode.ThemeIcon('history'),
+      tooltip: 'Last time the codebase was indexed.',
+      contextValue: 'ctxceStatusLastIndex'
+    }));
+
+    return items;
   });
 
   const actionsProvider = createProvider(async (element) => {
@@ -543,13 +678,38 @@ function register(context, deps) {
       const missingAnyMcpConfig = !!(missingClaudeMcpConfig || missingWindsurfMcpConfig || missingAugmentMcpConfig || missingAntigravityMcpConfig || missingCursorMcpConfig);
       const missingCtxConfig = !ctxConfigPath;
 
-      const items = [
+      // Onboarding mode state
+      const onboardingMode = (() => {
+        try { return cfg.get('onboardingMode') || ''; } catch (_) { return ''; }
+      })();
+      const setupComplete = (() => {
+        try { return !!cfg.get('setupComplete', false); } catch (_) { return false; }
+      })();
+
+      const items = [];
+
+      // Show mode indicator if mode is selected
+      if (onboardingMode) {
+        const isLocal = onboardingMode === 'local';
+        const modeLabel = isLocal ? 'Local Mode (Docker)' : 'Remote Server';
+        const modeIcon = isLocal ? 'server-environment' : 'cloud-upload';
+        const modeDescription = setupComplete ? 'Ready' : 'Setting up...';
+        items.push(makeTreeItem(modeLabel, {
+          description: modeDescription,
+          icon: new vscode.ThemeIcon(modeIcon),
+          tooltip: isLocal
+            ? 'Using local Docker stack at localhost:8004'
+            : `Using remote endpoint: ${endpoint || '(not configured)'}`,
+        }));
+      }
+
+      items.push(
         makeTreeItem('Setup Workspace', {
           icon: new vscode.ThemeIcon('rocket'),
           command: { command: 'contextEngineUploader.setupWorkspace', title: 'Setup Workspace' },
           tooltip: 'Create and configure a profile for this workspace (recommended for first-time setup).',
         }),
-      ];
+      );
 
       const showCloneStack = !!(
         onboarding &&

@@ -57,6 +57,24 @@ class DashboardViewProvider {
           vscode.workspace.getConfiguration('contextEngineUploader').update('setupDismissed', true, vscode.ConfigurationTarget.Global);
           this.refresh();
           break;
+        case 'selectLocalMode':
+          await vscode.workspace.getConfiguration('contextEngineUploader').update('onboardingMode', 'local', vscode.ConfigurationTarget.Global);
+          await vscode.workspace.getConfiguration('contextEngineUploader').update('endpoint', 'http://localhost:8004', vscode.ConfigurationTarget.Global);
+          this.refresh();
+          break;
+        case 'selectCloudMode':
+          await vscode.workspace.getConfiguration('contextEngineUploader').update('onboardingMode', 'cloud', vscode.ConfigurationTarget.Global);
+          this.refresh();
+          // Prompt for cloud endpoint
+          vscode.commands.executeCommand('contextEngineUploader.configureCloudEndpoint');
+          break;
+        case 'resetMode':
+          await vscode.workspace.getConfiguration('contextEngineUploader').update('onboardingMode', '', vscode.ConfigurationTarget.Global);
+          this.refresh();
+          break;
+        case 'authLogin':
+          vscode.commands.executeCommand('contextEngineUploader.authLogin');
+          break;
       }
     });
   }
@@ -77,9 +95,12 @@ class DashboardViewProvider {
     const cfg = vscode.workspace.getConfiguration('contextEngineUploader');
     const getState = this._deps.getState;
     const state = typeof getState === 'function' ? getState() : {};
-    
+    const endpoint = cfg.get('endpoint') || 'http://localhost:8004';
+    const mcpIndexerPort = cfg.get('mcpIndexerPort') || 18003;
+    const qdrantPort = cfg.get('qdrantPort') || 6333;
+
     return {
-      endpoint: cfg.get('endpoint') || 'http://localhost:8004',
+      endpoint,
       targetPath: cfg.get('targetPath') || '',
       statusMode: state.statusMode || 'idle',
       bridgeRunning: !!(state.httpBridgeProcess),
@@ -89,6 +110,23 @@ class DashboardViewProvider {
       augmentEnabled: cfg.get('mcpAugmentEnabled', false),
       antigravityEnabled: cfg.get('mcpAntigravityEnabled', false),
       setupDismissed: cfg.get('setupDismissed', false),
+      lastIndexTime: state.lastIndexTime || null,
+      // Health endpoint URLs for client-side checking
+      healthEndpoints: {
+        backend: `${endpoint.replace(/\/+$/, '')}/health`,
+        mcpIndexer: `http://localhost:${mcpIndexerPort}/readyz`,
+        qdrant: `http://localhost:${qdrantPort}/readyz`,
+      },
+      // Onboarding mode state
+      modeSelected: cfg.get('onboardingMode') || '', // 'local' | 'cloud' | ''
+      setupComplete: cfg.get('setupComplete', false),
+      // Local mode progress
+      localDockerReady: state.localDockerReady || false,
+      localIndexed: state.statusMode === 'indexed' || state.statusMode === 'watching',
+      // Cloud mode progress
+      cloudAuthenticated: state.cloudAuthenticated || false,
+      cloudConnected: !!(cfg.get('endpoint') && cfg.get('endpoint') !== 'http://localhost:8004'),
+      cloudIndexed: state.cloudIndexed || false,
     };
   }
 
@@ -489,6 +527,31 @@ class DashboardViewProvider {
     .status-value.warning { color: var(--warning); }
     .status-value.error { color: var(--error); }
 
+    /* Health banner */
+    .health-banner {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      background: var(--success-subtle);
+      color: var(--success);
+      border-radius: var(--radius-md);
+      font-size: var(--font-size-sm);
+      font-weight: 500;
+      margin-bottom: var(--space-3);
+    }
+    .health-banner.hidden { display: none; }
+    .health-banner .codicon { font-size: 14px; }
+
+    /* Health status icons in labels */
+    .status-label .codicon {
+      margin-right: 4px;
+      font-size: 12px;
+    }
+    .status-label .codicon-check { color: var(--success); }
+    .status-label .codicon-error { color: var(--error); }
+    .status-label .codicon-warning { color: var(--warning); }
+
     /* Setup card special styling */
     .card.setup-card {
       background: linear-gradient(135deg,
@@ -509,6 +572,134 @@ class DashboardViewProvider {
       display: flex;
       gap: var(--space-2);
       flex-wrap: wrap;
+    }
+
+    /* Mode Selection */
+    .mode-selection {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .mode-card {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      text-align: left;
+      width: 100%;
+      font-family: inherit;
+    }
+
+    .mode-card:hover {
+      background: var(--bg-elevated);
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+
+    .mode-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      background: var(--accent-subtle);
+      border-radius: var(--radius-md);
+      flex-shrink: 0;
+    }
+
+    .mode-icon .codicon {
+      font-size: 20px;
+      color: var(--accent);
+    }
+
+    .mode-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .mode-title {
+      font-weight: 600;
+      font-size: var(--font-size-base);
+      color: var(--text-primary);
+    }
+
+    .mode-subtitle {
+      font-size: var(--font-size-xs);
+      color: var(--text-secondary);
+    }
+
+    .mode-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 6px;
+      border-radius: var(--radius-full);
+      margin-top: 4px;
+      width: fit-content;
+    }
+
+    .mode-badge.free {
+      background: var(--success-subtle);
+      color: var(--success);
+    }
+
+    .mode-badge.cloud {
+      background: var(--accent-subtle);
+      color: var(--accent);
+    }
+
+    /* Progress Steps */
+    .progress-steps {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      margin-bottom: var(--space-3);
+    }
+
+    .progress-step {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--font-size-sm);
+      padding: var(--space-2);
+      border-radius: var(--radius-sm);
+    }
+
+    .progress-step.pending {
+      color: var(--text-muted);
+    }
+
+    .progress-step.active {
+      background: var(--accent-subtle);
+      color: var(--text-primary);
+    }
+
+    .progress-step.done {
+      color: var(--success);
+    }
+
+    .progress-step .codicon {
+      font-size: 14px;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .codicon-loading~spin {
+      animation: spin 1s linear infinite;
     }
   `;
   }
@@ -531,18 +722,109 @@ class DashboardViewProvider {
 
   _getSetupCardHtml(state) {
     if (state.setupDismissed) return '';
+
+    // Determine which mode to show based on state
+    const showModeSelection = !state.modeSelected;
+    const showLocalProgress = state.modeSelected === 'local' && !state.setupComplete;
+    const showCloudProgress = state.modeSelected === 'cloud' && !state.setupComplete;
+
+    if (showModeSelection) {
+      return `
+      <div class="card setup-card">
+        <div class="card-header">
+          <span class="card-title"><i class="codicon codicon-rocket"></i> Get Started</span>
+          <button class="card-dismiss" onclick="dismissSetup()"><i class="codicon codicon-close"></i></button>
+        </div>
+        <p class="setup-description">
+          Index your codebase to give AI assistants deep understanding of your code structure, patterns, and conventions.
+        </p>
+        <div class="mode-selection">
+          <button class="mode-card" onclick="selectLocalMode()">
+            <div class="mode-icon"><i class="codicon codicon-server-environment"></i></div>
+            <div class="mode-content">
+              <span class="mode-title">Run Locally</span>
+              <span class="mode-subtitle">Docker stack at localhost:8004</span>
+              <span class="mode-badge free">Free • Self-hosted</span>
+            </div>
+          </button>
+          <button class="mode-card" onclick="selectCloudMode()">
+            <div class="mode-icon"><i class="codicon codicon-cloud-upload"></i></div>
+            <div class="mode-content">
+              <span class="mode-title">Remote Server</span>
+              <span class="mode-subtitle">Your own endpoint or SaaS</span>
+              <span class="mode-badge cloud">Custom URL</span>
+            </div>
+          </button>
+        </div>
+        <div class="setup-actions" style="margin-top:var(--space-3);">
+          <button class="btn btn-secondary" onclick="openDocs()"><i class="codicon codicon-book"></i> Documentation</button>
+        </div>
+      </div>`;
+    }
+
+    if (showLocalProgress) {
+      const steps = [
+        { id: 'docker', label: 'Start Docker Stack', done: state.localDockerReady, active: !state.localDockerReady },
+        { id: 'index', label: 'Index Codebase', done: state.localIndexed, active: state.localDockerReady && !state.localIndexed },
+        { id: 'ready', label: 'Ready to Use', done: state.setupComplete, active: state.localIndexed && !state.setupComplete },
+      ];
+      return this._renderProgressCard('Local Setup', steps, state, 'local');
+    }
+
+    if (showCloudProgress) {
+      const steps = [
+        { id: 'endpoint', label: 'Configure Endpoint', done: state.cloudConnected, active: !state.cloudConnected },
+        { id: 'auth', label: 'Sign In (if required)', done: state.cloudAuthenticated || state.cloudConnected, active: state.cloudConnected && !state.cloudAuthenticated },
+        { id: 'index', label: 'Index Codebase', done: state.cloudIndexed, active: (state.cloudAuthenticated || state.cloudConnected) && !state.cloudIndexed },
+        { id: 'ready', label: 'Ready to Use', done: state.setupComplete, active: state.cloudIndexed && !state.setupComplete },
+      ];
+      return this._renderProgressCard('Remote Setup', steps, state, 'cloud');
+    }
+
+    // Setup complete - show minimal card
     return `
     <div class="card setup-card">
       <div class="card-header">
-        <span class="card-title"><i class="codicon codicon-rocket"></i> Get Started</span>
+        <span class="card-title"><i class="codicon codicon-check"></i> Setup Complete</span>
         <button class="card-dismiss" onclick="dismissSetup()"><i class="codicon codicon-close"></i></button>
       </div>
       <p class="setup-description">
-        Index your codebase to give AI assistants deep understanding of your code structure, patterns, and conventions.
+        Your workspace is configured and ready. AI assistants now have access to your indexed codebase.
       </p>
+    </div>`;
+  }
+
+  _renderProgressCard(title, steps, state, mode) {
+    const stepsHtml = steps.map(step => {
+      const statusClass = step.done ? 'done' : (step.active ? 'active' : 'pending');
+      const icon = step.done ? 'check' : (step.active ? 'loading~spin' : 'circle-outline');
+      return `
+        <div class="progress-step ${statusClass}">
+          <i class="codicon codicon-${icon}"></i>
+          <span>${step.label}</span>
+        </div>`;
+    }).join('');
+
+    const actionButton = mode === 'local'
+      ? (state.localDockerReady
+          ? `<button class="btn btn-primary" onclick="startIndexing()"><i class="codicon codicon-play"></i> Start Indexing</button>`
+          : `<button class="btn btn-primary" onclick="cloneStack()"><i class="codicon codicon-cloud-download"></i> Clone & Start Docker</button>`)
+      : (state.cloudAuthenticated
+          ? `<button class="btn btn-primary" onclick="setupWorkspace()"><i class="codicon codicon-wand"></i> Configure Workspace</button>`
+          : `<button class="btn btn-primary" onclick="authLogin()"><i class="codicon codicon-account"></i> Sign In</button>`);
+
+    return `
+    <div class="card setup-card">
+      <div class="card-header">
+        <span class="card-title"><i class="codicon codicon-rocket"></i> ${title}</span>
+        <button class="card-dismiss" onclick="resetMode()"><i class="codicon codicon-arrow-left"></i></button>
+      </div>
+      <div class="progress-steps">
+        ${stepsHtml}
+      </div>
       <div class="setup-actions">
-        <button class="btn btn-primary" onclick="setupWorkspace()"><i class="codicon codicon-wand"></i> Setup Workspace</button>
-        <button class="btn btn-secondary" onclick="openDocs()"><i class="codicon codicon-book"></i> Documentation</button>
+        ${actionButton}
+        <button class="btn btn-secondary" onclick="openDocs()"><i class="codicon codicon-book"></i> Docs</button>
       </div>
     </div>`;
   }
@@ -587,28 +869,41 @@ class DashboardViewProvider {
   }
 
   _getStatusHtml(state) {
-    const bridgeStatus = state.bridgeRunning ? `Running :${state.bridgePort}` : 'Stopped';
-    const bridgeClass = state.bridgeRunning ? 'success' : '';
-    const shortEndpoint = state.endpoint.replace(/^https?:\/\//, '');
-    const shortPath = state.targetPath ? (state.targetPath.length > 30 ? '...' + state.targetPath.slice(-27) : state.targetPath) : 'Current workspace';
+    const lastIndex = state.lastIndexTime
+      ? new Date(state.lastIndexTime).toLocaleString()
+      : 'Never';
+
+    // Encode health endpoints as JSON for client-side checking
+    const healthEndpointsJson = JSON.stringify(state.healthEndpoints || {});
 
     return `
-    <div class="card">
-      <div class="card-title" style="margin-bottom:var(--space-3);"><i class="codicon codicon-pulse"></i> Status</div>
+    <div class="card" id="health-status-card">
+      <div class="card-header" style="margin-bottom:var(--space-3);">
+        <span class="card-title"><i class="codicon codicon-pulse"></i> System Health</span>
+        <button class="card-dismiss" onclick="refreshHealth()" title="Refresh health status"><i class="codicon codicon-refresh"></i></button>
+      </div>
+      <div id="health-banner" class="health-banner hidden">
+        <i class="codicon codicon-verified-filled"></i> All Systems Operational
+      </div>
       <div class="status-grid">
-        <div class="status-row">
-          <span class="status-label">Server</span>
-          <span class="status-value">${shortEndpoint}</span>
+        <div class="status-row" id="health-backend">
+          <span class="status-label"><i class="codicon codicon-loading codicon-modifier-spin"></i> Backend</span>
+          <span class="status-value">Checking...</span>
+        </div>
+        <div class="status-row" id="health-mcp">
+          <span class="status-label"><i class="codicon codicon-loading codicon-modifier-spin"></i> MCP Indexer</span>
+          <span class="status-value">Checking...</span>
+        </div>
+        <div class="status-row" id="health-qdrant">
+          <span class="status-label"><i class="codicon codicon-loading codicon-modifier-spin"></i> Qdrant</span>
+          <span class="status-value">Checking...</span>
         </div>
         <div class="status-row">
-          <span class="status-label">Path</span>
-          <span class="status-value" title="${state.targetPath || ''}">${shortPath}</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">MCP Bridge</span>
-          <span class="status-value ${bridgeClass}">${bridgeStatus}</span>
+          <span class="status-label"><i class="codicon codicon-history"></i> Last Index</span>
+          <span class="status-value">${lastIndex}</span>
         </div>
       </div>
+      <script data-health-endpoints='${healthEndpointsJson}'></script>
     </div>`;
   }
 
@@ -624,6 +919,72 @@ class DashboardViewProvider {
     function openDocs() { send('openDocs'); }
     function dismissSetup() { send('dismissSetup'); }
     function toggleIntegration(id, enabled) { send('toggleIntegration', { integration: id, enabled }); }
+    function refreshHealth() { checkAllHealth(); }
+    // Mode selection functions
+    function selectLocalMode() { send('selectLocalMode'); }
+    function selectCloudMode() { send('selectCloudMode'); }
+    function resetMode() { send('resetMode'); }
+    function cloneStack() { send('cloneStack'); }
+    function authLogin() { send('authLogin'); }
+
+    // Health checking functionality
+    async function checkHealth(url) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(url, { method: 'GET', signal: controller.signal });
+        clearTimeout(timeout);
+        return { ok: res.ok };
+      } catch (e) {
+        return { ok: false, error: e.name === 'AbortError' ? 'Timeout' : 'Unavailable' };
+      }
+    }
+
+    function updateHealthRow(id, name, result) {
+      const row = document.getElementById(id);
+      if (!row) return;
+      const label = row.querySelector('.status-label');
+      const value = row.querySelector('.status-value');
+      if (result.ok) {
+        label.innerHTML = '<i class="codicon codicon-check"></i> ' + name;
+        value.textContent = '✓ Running';
+        value.className = 'status-value success';
+      } else {
+        label.innerHTML = '<i class="codicon codicon-error"></i> ' + name;
+        value.textContent = '✗ ' + (result.error || 'Unavailable');
+        value.className = 'status-value error';
+      }
+    }
+
+    async function checkAllHealth() {
+      const script = document.querySelector('[data-health-endpoints]');
+      if (!script) return;
+      const endpoints = JSON.parse(script.dataset.healthEndpoints || '{}');
+
+      const [backend, mcp, qdrant] = await Promise.all([
+        endpoints.backend ? checkHealth(endpoints.backend) : { ok: false, error: 'Not configured' },
+        endpoints.mcpIndexer ? checkHealth(endpoints.mcpIndexer) : { ok: false, error: 'Not configured' },
+        endpoints.qdrant ? checkHealth(endpoints.qdrant) : { ok: false, error: 'Not configured' },
+      ]);
+
+      updateHealthRow('health-backend', 'Backend', backend);
+      updateHealthRow('health-mcp', 'MCP Indexer', mcp);
+      updateHealthRow('health-qdrant', 'Qdrant', qdrant);
+
+      // Show/hide "All Systems Operational" banner
+      const banner = document.getElementById('health-banner');
+      if (banner) {
+        if (backend.ok && mcp.ok && qdrant.ok) {
+          banner.classList.remove('hidden');
+        } else {
+          banner.classList.add('hidden');
+        }
+      }
+    }
+
+    // Check health on load and every 15 seconds
+    checkAllHealth();
+    setInterval(checkAllHealth, 15000);
     `;
   }
 }

@@ -316,6 +316,41 @@ function registerExtensionCommands(deps) {
         }
     }));
 
+    // Remote endpoint configuration for onboarding
+    disposables.push(vscode.commands.registerCommand('contextEngineUploader.configureCloudEndpoint', async () => {
+        try {
+            const endpoint = await vscode.window.showInputBox({
+                prompt: 'Enter your Context Engine server URL (your own server or SaaS)',
+                placeHolder: 'https://your-server.example.com or https://ce.context-engine.ai',
+                value: '',
+                ignoreFocusOut: true,
+                validateInput: (value) => {
+                    if (!value.trim()) {
+                        return 'Endpoint URL is required';
+                    }
+                    try {
+                        const url = new URL(value);
+                        if (!url.protocol.startsWith('http')) {
+                            return 'URL must use http:// or https://';
+                        }
+                        return null;
+                    } catch (_) {
+                        return 'Please enter a valid URL (e.g., https://your-server.example.com)';
+                    }
+                }
+            });
+            if (!endpoint) {
+                // User cancelled - reset to mode selection
+                await vscode.workspace.getConfiguration('contextEngineUploader').update('onboardingMode', '', vscode.ConfigurationTarget.Global);
+                return;
+            }
+            await vscode.workspace.getConfiguration('contextEngineUploader').update('endpoint', endpoint.trim(), vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage(`Endpoint set to ${endpoint}. You can now configure your workspace.`);
+        } catch (error) {
+            handleCatch(error, 'Endpoint configuration failed');
+        }
+    }));
+
     return disposables;
 }
 

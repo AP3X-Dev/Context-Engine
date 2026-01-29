@@ -312,11 +312,69 @@ function createOnboardingManager(deps) {
     }
   }
 
+  /**
+   * Check if the local Docker stack is running and healthy.
+   * Returns { healthy: boolean, endpoint: string }
+   */
+  async function checkLocalDockerHealth() {
+    const endpoint = 'http://localhost:8004';
+    try {
+      const fetchFn = typeof fetch === 'function' ? fetch : null;
+      if (!fetchFn) {
+        return { healthy: false, endpoint };
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetchFn(`${endpoint}/health`, {
+        method: 'GET',
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      return { healthy: !!res.ok, endpoint };
+    } catch (_) {
+      return { healthy: false, endpoint };
+    }
+  }
+
+  /**
+   * Poll for Docker stack health with progress indicator.
+   * Called after cloneAndStartStack to wait for services.
+   */
+  async function waitForDockerReady(maxWaitMs = 60000) {
+    const startTime = Date.now();
+    const pollInterval = 2000;
+
+    return vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Waiting for Docker services to start',
+      cancellable: true,
+    }, async (progress, token) => {
+      while (Date.now() - startTime < maxWaitMs) {
+        if (token.isCancellationRequested) {
+          return false;
+        }
+        const elapsed = Date.now() - startTime;
+        const pct = Math.min(90, (elapsed / maxWaitMs) * 100);
+        progress.report({ message: 'Checking health...', increment: pct / 10 });
+
+        const { healthy } = await checkLocalDockerHealth();
+        if (healthy) {
+          progress.report({ message: 'Services ready!', increment: 100 });
+          return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      }
+      return false;
+    });
+  }
+
   return {
     cloneAndStartStack,
     startSavedStack,
     getSavedStackPath,
     checkOnboarding,
+    checkLocalDockerHealth,
+    waitForDockerReady,
     dispose: () => { },
   };
 }

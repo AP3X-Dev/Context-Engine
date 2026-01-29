@@ -175,6 +175,36 @@ function isAuthRejectionError(error) {
   }
 }
 
+/**
+ * Format an auth rejection error with actionable information for users.
+ * Includes the backend URL and a hint to sign in via VS Code command palette.
+ */
+function formatAuthRejectionError(originalError, backendUrl) {
+  const originalMsg =
+    (originalError && typeof originalError.message === "string" && originalError.message) ||
+    (typeof originalError === "string" ? originalError : String(originalError || "Unknown auth error"));
+
+  const serverInfo = backendUrl ? ` (server: ${backendUrl})` : "";
+  const hint = "Run 'Context Engine: Sign In' from the VS Code command palette to authenticate.";
+
+  return `Authentication failed${serverInfo}: ${originalMsg}. ${hint}`;
+}
+
+/**
+ * Emit a special log line that the VS Code extension can detect to show a notification toast.
+ * Format: [ctxce:auth-error] JSON payload
+ */
+function emitAuthErrorNotification(backendUrl, originalError) {
+  const payload = {
+    type: "auth_rejection",
+    backend: backendUrl || "unknown",
+    message: String(originalError?.message || originalError || "Authentication failed"),
+    hint: "Run 'Context Engine: Sign In' from the VS Code command palette",
+  };
+  // This special prefix allows the VS Code extension to detect auth errors in stderr
+  debugLog(`[ctxce:auth-error] ${JSON.stringify(payload)}`);
+}
+
 function getBridgeRetryAttempts() {
   try {
     const raw = process.env.CTXCE_TOOL_RETRY_ATTEMPTS;
@@ -520,8 +550,21 @@ async function createBridgeServer(options) {
     sessionId = resolveSessionId();
   }
 
+  // Only fall back to deterministic session if auth is not configured
+  // If auth backend is configured but no session found, log warning instead of creating deterministic session
   if (!sessionId) {
-    sessionId = `ctxce-${Buffer.from(workspace).toString("hex").slice(0, 24)}`;
+    if (authBackendUrl) {
+      // Auth is configured but no valid session - don't use deterministic fallback
+      debugLog(`[ctxce] WARNING: Auth backend configured (${authBackendUrl}) but no valid session found.`);
+      debugLog("[ctxce] To authenticate, run 'Context Engine: Sign In' from the VS Code command palette, or run `ctxce auth login` from the terminal.");
+      debugLog("[ctxce] Continuing with deterministic session for backward compatibility, but this may fail if backend requires auth.");
+      // Emit notification for VS Code extension
+      emitAuthErrorNotification(authBackendUrl, { message: "No valid session found - authentication required" });
+      sessionId = `ctxce-${Buffer.from(workspace).toString("hex").slice(0, 24)}`;
+    } else {
+      // No auth configured - use deterministic session for local-only operation
+      sessionId = `ctxce-${Buffer.from(workspace).toString("hex").slice(0, 24)}`;
+    }
   }
 
   // Best-effort: inform the indexer of default collection and session.
@@ -529,6 +572,17 @@ async function createBridgeServer(options) {
   const defaultsPayload = { session: sessionId };
   if (defaultCollection) {
     defaultsPayload.collection = defaultCollection;
+  }
+
+  // Include org context from auth entry if available (for org-scoped collection isolation)
+  try {
+    const authEntry = backendHint ? loadAuthEntry(backendHint) : null;
+    if (authEntry && authEntry.org_id) {
+      defaultsPayload.org_id = authEntry.org_id;
+      defaultsPayload.org_slug = authEntry.org_slug;
+    }
+  } catch {
+    // ignore auth entry lookup failures
   }
 
   const repoName = detectRepoName(workspace, config);
@@ -782,10 +836,13 @@ async function createBridgeServer(options) {
 
         // Backend auth rejection (mcp_auth.py ValidationError) - expire local auth
         if (isAuthRejectionError(err)) {
+          const serverUrl = backendHint || uploadServiceUrl || "unknown server";
           debugLog(
-            "[ctxce] tools/call: backend auth rejection; marking local session as expired: " +
+            `[ctxce] tools/call: backend auth rejection from ${serverUrl}; marking local session as expired: ` +
             String(err),
           );
+          // Emit special notification for VS Code extension to detect and show toast
+          emitAuthErrorNotification(serverUrl, err);
           if (backendHint) {
             try {
               const entry = loadAuthEntry(backendHint);
@@ -795,6 +852,13 @@ async function createBridgeServer(options) {
             } catch {
               // ignore failures
             }
+          }
+          // Enhance error with actionable message before throwing
+          if (!isTransientToolError(err) || attempt === maxAttempts - 1) {
+            const enhancedMessage = formatAuthRejectionError(err, serverUrl);
+            const enhancedError = new Error(enhancedMessage);
+            enhancedError.cause = err;
+            throw enhancedError;
           }
         }
 
@@ -908,10 +972,42 @@ export async function runHttpMcpServer(options) {
       // Check Bearer token for MCP endpoint (accept /mcp and /mcp/ for compatibility)
       if (parsedUrl.pathname === "/mcp" || parsedUrl.pathname === "/mcp/") {
         const authHeader = req.headers["authorization"] || "";
-        const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+        const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-        // TODO: Validate token and inject session
-        // For now, allow unauthenticated (backward compatible)
+        // ----------------------------------------------------------------
+        // AUTHENTICATION DESIGN: Permissive by default for backward compatibility
+        // ----------------------------------------------------------------
+        // The condition `bearerToken && hasTokenStore()` is INTENTIONALLY permissive:
+        //
+        // 1. PRE-EXISTING USERS (v3.0.0, local/dev mode):
+        //    - No OAuth flow occurs → tokenStore remains empty
+        //    - hasTokenStore() returns false → auth check skipped entirely
+        //    - Requests proceed without authentication (local dev experience)
+        //
+        // 2. SAAS PLATFORM USERS (multi-tenant):
+        //    - User completes OAuth flow → token stored in tokenStore
+        //    - hasTokenStore() returns true → bearer token validation required
+        //    - Invalid/missing tokens are rejected with 401
+        //
+        // WHY NOT `hasTokenStore() && !bearerToken` (require token when store exists)?
+        //    - Mixed environments: Some clients may be local (no auth) while others
+        //      are authenticated. Requiring auth globally after first login would
+        //      break local dev workflows in hybrid setups.
+        //    - The current design: "validate if provided, but don't require"
+        //
+        // SECURITY NOTE: If strict authentication is required for all clients once
+        // any user authenticates, add an environment flag like CTXCE_REQUIRE_AUTH=1
+        // and check it here to enforce bearer tokens regardless of token store state.
+        // ----------------------------------------------------------------
+        if (bearerToken && oauthHandler.hasTokenStore()) {
+          const sessionId = oauthHandler.lookupToken(bearerToken);
+          if (!sessionId) {
+            // Token provided but invalid - reject
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid or expired bearer token" }, id: null }));
+            return;
+          }
+        }
 
         if (req.method !== "POST") {
           res.statusCode = 405;
