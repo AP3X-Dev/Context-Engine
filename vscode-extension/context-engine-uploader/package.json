@@ -2,7 +2,7 @@
   "name": "context-engine-uploader",
   "displayName": "Context-Engine.AI",
   "description": "Supercharge your AI coding assistants with rich codebase context. Integrates with Claude Code, Windsurf, Augment, and more via MCP.",
-  "version": "0.1.53",
+  "version": "0.1.54",
   "publisher": "context-engine",
   "engines": {
     "vscode": "^1.85.0"
