@@ -98,9 +98,15 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
 
   Tool Roles Cheat Sheet:
 
+  **Note:** All tools below have the `_context-engine` suffix when called (e.g., `repo_search_context-engine`).
+
   - repo_search / code_search:
     - Use for: finding relevant files/spans and inspecting raw code.
     - Think: "where is X implemented?", "show me usages of Y".
+  - cross_repo_search:
+    - Use for: searching across multiple repos in separate collections at once.
+    - Supports auto-discovery of collections, targeted repo lists, and boundary tracing.
+    - Think: "search both frontend and backend for auth flow", "trace API route across repos".
   - context_search:
     - Use for: combining code hits with memory/docs when both matter.
     - Good for: "give me related code plus any notes/docs I wrote".
@@ -136,11 +142,11 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
 
   - Goal: answer "when/why did behavior X change?" without flooding context.
   - Step 1 – Find current implementation (code):
-    - Use repo_search to locate the relevant file/symbol, e.g. `repo_search(query: "upload client timeout", language: "python", under: "scripts")`.
+    - Use repo_search to locate the relevant file/symbol, e.g. `repo_search_context-engine(query: "upload client timeout", language: "python", under: "scripts")`.
   - Step 2 – Summarize recent change activity for a file:
-    - Call change_history_for_path with `include_commits=true` to get churn stats and a small list of recent commits, e.g. `change_history_for_path(path: "scripts/remote_upload_client.py", include_commits: true)`.
+    - Call change_history_for_path with `include_commits=true` to get churn stats and a small list of recent commits, e.g. `change_history_for_path_context-engine(path: "scripts/remote_upload_client.py", include_commits: true)`.
   - Step 3 – Pull commit lineage for a specific behavior:
-    - Use search_commits_for with short behavior phrases plus an optional path filter, e.g. `search_commits_for(query: "remote upload timeout retry", path: "scripts/remote_upload_client.py")`.
+    - Use search_commits_for with short behavior phrases plus an optional path filter, e.g. `search_commits_for_context-engine(query: "remote upload timeout retry", path: "scripts/remote_upload_client.py")`.
     - Read lineage_goal / lineage_symbols / lineage_tags to understand intent and related concepts.
   - Step 4 – Optionally summarize current behavior:
     - After you have the right file/symbol from repo_search, use context_answer to explain what the module does now; treat commit lineage as background, not as primary code context.
@@ -175,11 +181,96 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
   - Memory tools:
     - memory.set_session_defaults, memory.memory_store, memory.memory_find
 
+  ## Multi-Repo Navigation (CRITICAL for multi-repo setups)
+
+  When multiple repositories are indexed, you MUST discover and explicitly target collections.
+
+  ### Discovery (Lazy — only when needed)
+  Don't discover at every session start. Trigger discovery when:
+  - Search returns no results or irrelevant results
+  - User asks a cross-repo question ("how does frontend call the API?")
+  - You're unsure which collection to target
+
+  ```
+  qdrant_list_context-engine()
+  collection_map_context-engine(include_samples: true)
+  ```
+
+  ### Context Switching (Session Defaults = `cd`)
+  Treat `set_session_defaults` like `cd` in a terminal. It scopes ALL subsequent searches:
+  ```
+  # "cd" into the backend repo
+  set_session_defaults_context-engine(collection: "backend-api-abc123")
+  # All searches now target backend — no need to pass collection= each time
+  repo_search_context-engine(query: "auth middleware")
+  ```
+  To peek at another repo without switching context:
+  ```
+  # One-off cross-reference (does NOT change your session default)
+  repo_search_context-engine(query: "login form", collection: "frontend-app-def456")
+  ```
+  To search all repos in a unified collection: `repo: "*"` or `repo: ["frontend", "backend"]`
+
+  ### Cross-Repo Flow Tracing (Boundary-Driven)
+  NEVER search both repos with the same vague query. Instead, find the **interface boundary** in Repo A, extract the **hard key**, then search Repo B with that specific key.
+
+  **Pattern 1 — Interface Handshake (API/RPC):**
+  ```
+  # 1. Find the client call in frontend
+  repo_search_context-engine(query: "login API call", collection: "frontend-col")
+  # → Found: axios.post('/auth/v1/login', ...)
+
+  # 2. Search backend for that exact route
+  repo_search_context-engine(query: "'/auth/v1/login'", collection: "backend-col")
+  # → Found: @PostMapping("/auth/v1/login") in AuthController
+  ```
+
+  **Pattern 2 — Shared Contract (Types/Schemas):**
+  ```
+  # 1. Find type usage in consumer repo
+  symbol_graph_context-engine(symbol: "UserProfile", query_type: "importers", collection: "frontend-col")
+  # → Imported from @shared/types
+
+  # 2. Find definition in source repo
+  repo_search_context-engine(query: "interface UserProfile", collection: "shared-lib-col")
+  ```
+
+  **Pattern 3 — Event Relay (Pub/Sub, Queues):**
+  ```
+  # 1. Find event producer
+  repo_search_context-engine(query: "publish event", collection: "service-a-col")
+  # → Found: bus.publish("USER_CREATED", payload)
+
+  # 2. Find event consumer with exact event name
+  repo_search_context-engine(query: "'USER_CREATED'", collection: "service-b-col")
+  ```
+
+  ### Automated Cross-Repo Search
+  For quick multi-collection searches, use `cross_repo_search` instead of manually switching collections:
+  ```
+  # Search across all repos at once (auto-discovers collections)
+  cross_repo_search_context-engine(query: "authentication flow")
+
+  # Target specific repos by name
+  cross_repo_search_context-engine(query: "login handler", target_repos: ["frontend", "backend"])
+
+  # Boundary tracing — auto-extracts routes/events/types from results
+  cross_repo_search_context-engine(query: "login submit", trace_boundary: true)
+  # → Returns boundary_keys: ["'/auth/v1/login'"] + trace_hint for next search
+  ```
+  Use `cross_repo_search` when you need breadth across repos. Use `repo_search` with explicit `collection=` when you need depth in one repo.
+
+  ### Multi-Repo Anti-Patterns
+  - **DON'T** search both repos with the same vague query (noisy, confusing results)
+  - **DON'T** assume the default collection is correct — verify with `collection_map`
+  - **DON'T** forget to "cd back" after cross-referencing another repo
+  - **DO** extract exact strings (route paths, event names, type names) as search anchors
+
   Additional behavioral tips:
 
   - Call set_session_defaults (indexer and memory) early in a session so subsequent
     calls inherit the right collection without repeating it in every request.
-  - Set defaults with: set_session_defaults(output_format="toon", compact=true, limit=5)
+  - Set defaults with: set_session_defaults_context-engine(output_format="toon", compact=true, limit=5)
   - Use context_search with include_memories and per_source_limits when you want
     blended code + memory results instead of calling repo_search and memory.memory_find
     separately.
@@ -195,7 +286,7 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
   Parallel Execution Pattern:
 
   - Fire independent tool calls in a single message block (3x faster)
-  - Example: repo_search + repo_search + symbol_graph all at once
+  - Example: repo_search_context-engine + symbol_graph_context-engine all at once
   - Do NOT wait for one search to complete before starting another
 
   Token Efficiency Defaults:
