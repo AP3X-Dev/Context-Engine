@@ -86,6 +86,24 @@ make reset      # Equivalent to: ctx reset --mcp
 
 Context-Engine includes agent skills that teach AI coding assistants how to use the MCP tools effectively.
 
+**For Claude Code:**
+
+Install the skill plugin via marketplace:
+```bash
+/plugin marketplace add m1rl0k/Context-Engine
+/plugin install context-engine
+```
+
+Or copy the CLAUDE.md file manually:
+```bash
+# Project-specific
+cp CLAUDE.md /path/to/your/project/
+
+# Or global
+cp CLAUDE.md ~/.claude/CLAUDE.md
+```
+
+
 **For Codex (OpenAI):**
 
 Install directly from GitHub using the `$skill-installer`:
