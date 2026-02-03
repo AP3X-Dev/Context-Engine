@@ -1,6 +1,5 @@
 import { error } from '@sveltejs/kit';
 import { marked } from 'marked';
-import hljs from 'highlight.js';
 import { base } from '$app/paths';
 
 export const prerender = true;
