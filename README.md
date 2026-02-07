@@ -1,3 +1,37 @@
+# IMPORTANT: VS Code Extension Temporarily Unavailable
+
+## We are migrating Context-Engine to the cloud
+
+We are currently in the middle of a major platform migration to new cloud-hosted infrastructure. During this transition, the Context-Engine VS Code extension is temporarily not working while we move services, endpoints, and authentication flows.
+
+## What this means for you
+
+- The extension may fail to connect, time out, or return no results
+- Behavior may be inconsistent during the cutover window
+- This is expected while the migration is in progress
+
+## Apologies
+
+We know this is disruptive, especially if Context-Engine is part of your daily workflow. We’re moving as quickly as possible while keeping the migration stable and secure.
+
+Thank you for your patience.
+
+## Join the Beta
+
+If you want early access to the updated cloud-backed experience (and the fastest path to getting unblocked), please sign up for the beta at:
+
+https://context-engine.ai
+
+Beta signups will receive:
+- Early access to cloud migration builds
+- Updates as milestones land
+- A smoother onboarding path once the extension is re-enabled
+
+## Status updates
+
+We will post restoration updates as the migration completes. If you are currently blocked, please sign up for the beta so we can keep you informed and prioritize issues.
+
+
 [![CI](https://github.com/m1rl0k/Context-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/m1rl0k/Context-Engine/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@context-engine-bridge/context-engine-mcp-bridge.svg)](https://www.npmjs.com/package/@context-engine-bridge/context-engine-mcp-bridge)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/i/context-engine.context-engine-uploader.svg?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=context-engine.context-engine-uploader)
