@@ -96,10 +96,55 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
   - Don't ignore per_path limits (duplicate results from same file)
   - Don't use context lines for pure discovery (unnecessary tokens)
 
+  Tool Selection Decision Tree:
+
+  ```
+  Need to search code?
+  ├── DEFAULT: Use search() — auto-routes to the best tool based on query intent
+  ├── Single repo, know collection → repo_search(collection="...")
+  ├── Single repo, need explanation → context_answer or info_request
+  ├── Multiple repos or unsure → cross_repo_search(discover="auto")
+  ├── Tracing frontend→backend flow → cross_repo_search(trace_boundary=true)
+  ├── Finding callers/definitions → symbol_graph
+  └── Exact literal string only → grep (last resort)
+  ```
+
+  ## Unified Search Tool (DEFAULT)
+
+  **Use `search` as your DEFAULT tool for any code search, exploration, or question.**
+  It automatically detects query intent and routes to the optimal specialized tool.
+
+  ```
+  search_context-engine(query: "authentication middleware")
+  # → Detects intent: "search", routes to repo_search
+  # → Returns: {ok, intent, confidence, tool, result, plan, execution_time_ms}
+
+  search_context-engine(query: "how does the caching layer work?")
+  # → Detects intent: "answer", routes to context_answer
+
+  search_context-engine(query: "who calls authenticate()")
+  # → Detects intent: "symbol_callers", routes to symbol_graph
+
+  search_context-engine(query: "tests for payment processing")
+  # → Detects intent: "search_tests", routes to search_tests_for
+  ```
+
+  **When to use `search` vs specialized tools:**
+  - Use `search` by DEFAULT — it picks the right tool for you
+  - Use specialized tools when you need specific parameters not exposed by search
+  - Use `cross_repo_search` for explicit multi-repo scenarios
+  - Use `memory_store`/`memory_find` for memory operations (not handled by search)
+
   Tool Roles Cheat Sheet:
 
   **Note:** All tools below have the `_context-engine` suffix when called (e.g., `repo_search_context-engine`).
 
+  - search (UNIFIED - DEFAULT):
+    - **Use this by DEFAULT for any code search, exploration, or question.**
+    - Automatically detects intent (search, answer, tests, config, callers, etc.) and routes to the optimal tool.
+    - Returns unified envelope: `{ok, intent, confidence, tool, result, plan, execution_time_ms}`.
+    - Think: "find auth middleware", "how does caching work?", "who calls authenticate()".
+    - Use specialized tools only when you need parameters not exposed by search.
   - repo_search / code_search:
     - Use for: finding relevant files/spans and inspecting raw code.
     - Think: "where is X implemented?", "show me usages of Y".
@@ -125,13 +170,13 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
     - Think: "who calls this function?", "where is this class defined?".
     - **Note**: Results are "hydrated" with ~500-char source snippets for immediate context.
     - Supports `depth` for multi-hop traversals (depth=2 = callers of callers).
-    - Use this FIRST for any graph query. Do NOT attempt neo4j_graph_query unless it's in your tool list.
-  - neo4j_graph_query (OPTIONAL — only when NEO4J_GRAPH=1):
-    - **Only available when NEO4J_GRAPH=1. If not in your tool list, use symbol_graph instead.**
+    - Use this FIRST for any graph query. Do NOT attempt graph_query unless it's in your tool list.
+  - graph_query (OPTIONAL — only when NEO4J_GRAPH=1 or MEMGRAPH_GRAPH=1):
+    - **Only available when NEO4J_GRAPH=1 or MEMGRAPH_GRAPH=1. If not in your tool list, use symbol_graph instead.**
     - Use for: advanced graph traversals that grep CANNOT do.
     - Query types: `callers`, `callees`, `transitive_callers`, `transitive_callees`, `impact`, `dependencies`, `cycles`.
     - Think: "what would break if I change X?" (impact), "callers of callers" (transitive_callers), "circular deps?" (cycles).
-    - Example: `neo4j_graph_query(symbol="normalize_path", query_type="impact", depth=2)` → finds all code that would break.
+    - Example: `graph_query(symbol="normalize_path", query_type="impact", depth=2)` → finds all code that would break.
     - **Never error or warn about Neo4j being unavailable — just use symbol_graph.**
   - info_request:
     - Use for: rapid broad discovery and architectural overviews.
@@ -147,6 +192,9 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
     - Call change_history_for_path with `include_commits=true` to get churn stats and a small list of recent commits, e.g. `change_history_for_path_context-engine(path: "scripts/remote_upload_client.py", include_commits: true)`.
   - Step 3 – Pull commit lineage for a specific behavior:
     - Use search_commits_for with short behavior phrases plus an optional path filter, e.g. `search_commits_for_context-engine(query: "remote upload timeout retry", path: "scripts/remote_upload_client.py")`.
+    - Read lineage_goal / lineage_symbols / lineage_tags to understand intent and related concepts.
+  - Step 3b – Predict co-changing files:
+    - Use `search_commits_for_context-engine(path: "scripts/remote_upload_client.py", predict_related: true)` to get ranked files that historically change alongside the target file, with commit messages explaining why.
     - Read lineage_goal / lineage_symbols / lineage_tags to understand intent and related concepts.
   - Step 4 – Optionally summarize current behavior:
     - After you have the right file/symbol from repo_search, use context_answer to explain what the module does now; treat commit lineage as background, not as primary code context.
@@ -170,10 +218,11 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
 
   - Indexer / Qdrant tools:
     - qdrant_index_root, qdrant_index, qdrant_prune
-    - qdrant_list, qdrant_status
+    - qdrant_status, qdrant_list
     - workspace_info, list_workspaces, collection_map
     - set_session_defaults
   - Search / QA tools:
+    - search (UNIFIED - DEFAULT entry point, auto-routes to specialized tools)
     - repo_search, code_search, context_search, context_answer
     - pattern_search (optional; structural code pattern matching, cross-language)
     - search_tests_for, search_config_for, search_callers_for, search_importers_for
@@ -192,7 +241,7 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
   - You're unsure which collection to target
 
   ```
-  qdrant_list_context-engine()
+  qdrant_status_context-engine(list_all: true)
   collection_map_context-engine(include_samples: true)
   ```
 
@@ -304,5 +353,5 @@ The ONLY acceptable use of grep/Read: confirming exact literal strings (e.g., `R
 
   - context_answer timeout → repo_search + info_request(include_explanation=true)
   - pattern_search unavailable → repo_search with structural query terms
-  - neo4j_graph_query unavailable → symbol_graph (Qdrant-backed, ALWAYS available — this is the DEFAULT)
+  - graph_query unavailable → symbol_graph (Qdrant-backed, ALWAYS available — this is the DEFAULT)
   - grep / Read File → repo_search, symbol_graph, info_request (ALWAYS use MCP instead)
