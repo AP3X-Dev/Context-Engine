@@ -77,6 +77,7 @@ try:
         ("swift", "tree_sitter_swift"),
         ("scala", "tree_sitter_scala"),
         ("php", "tree_sitter_php"),
+        ("pascal", "tree_sitter_pascal"),
     ]:
         try:
             mod = __import__(pkg_name)
