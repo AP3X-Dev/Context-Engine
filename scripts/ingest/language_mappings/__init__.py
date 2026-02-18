@@ -28,6 +28,8 @@ from .markdown import MarkdownMapping
 from .matlab import MatlabMapping
 from .objc import ObjCMapping
 
+from .pascal import PascalMapping
+from .dfm import DfmMapping
 from .php import PHPMapping
 from .python import PythonMapping
 from .rust import RustMapping
@@ -64,6 +66,9 @@ _MAPPINGS: Dict[str, Type[BaseMapping]] = {
     "matlab": MatlabMapping,
     "objc": ObjCMapping,
 
+    "pascal": PascalMapping,
+    "delphi": PascalMapping,   # Alias
+    "dfm": DfmMapping,
     "php": PHPMapping,
     "python": PythonMapping,
     "rust": RustMapping,
@@ -122,6 +127,8 @@ __all__ = [
     "MatlabMapping",
     "ObjCMapping",
 
+    "PascalMapping",
+    "DfmMapping",
     "PHPMapping",
     "PythonMapping",
     "RustMapping",
