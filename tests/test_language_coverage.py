@@ -228,6 +228,26 @@ include_once 'config.php';
         assert any("Illuminate" in imp for imp in imports)
         assert "vendor/autoload.php" in imports
         assert "config.php" in imports
+    def test_pascal_uses_imports(self, extract_imports):
+        """Test Pascal uses-clause import extraction."""
+        code = '''unit Test;
+interface
+uses
+  System.SysUtils,
+  System.Classes,
+  UAuth;
+implementation
+end.'''
+        imports = extract_imports("pascal", code)
+        assert "System.SysUtils" in imports
+        assert "System.Classes" in imports
+        assert "UAuth" in imports
+
+    def test_delphi_alias_uses_imports(self, extract_imports):
+        """Test 'delphi' language alias for Pascal uses-clause extraction."""
+        code = 'unit Test;\ninterface\nuses SysUtils;\nimplementation\nend.'
+        imports = extract_imports("delphi", code)
+        assert "SysUtils" in imports
 
 
 # ==============================================================================
@@ -975,3 +995,50 @@ class TestEnhancedImportSymbolExtraction:
             pytest.skip("Enhanced C# type name extraction not available in this env")
         assert "Qdrant.Client" in imports
         assert "Client" in imports
+
+
+# ==============================================================================
+# Integration Tests for Pascal Uses Clause
+# ==============================================================================
+
+class TestPascalSymbolCoverage:
+    """Integration tests for Pascal symbol extraction via _extract_symbols_pascal."""
+
+    @pytest.fixture
+    def extract_symbols(self):
+        """Return the Pascal symbol extraction function."""
+        from scripts.ingest.symbols import _extract_symbols_pascal
+        return _extract_symbols_pascal
+
+    def test_pascal_class_symbol(self, extract_symbols):
+        """Pascal class declaration is extracted with kind='class'."""
+        code = "type\n  TMyService = class(TInterfacedObject)\n  end;"
+        syms = extract_symbols(code)
+        names_kinds = {s["name"]: s["kind"] for s in syms}
+        assert "TMyService" in names_kinds
+        assert names_kinds["TMyService"] == "class"
+
+    def test_pascal_method_symbol(self, extract_symbols):
+        """Pascal class method is extracted with kind='method' and dotted path."""
+        code = "procedure TMyService.Execute;\nbegin\nend;"
+        syms = extract_symbols(code)
+        method = next((s for s in syms if s["name"] == "Execute"), None)
+        assert method is not None
+        assert method["kind"] == "method"
+        assert "TMyService.Execute" in method.get("path", "")
+
+    def test_pascal_enum_symbol(self, extract_symbols):
+        """Pascal enumeration is extracted with kind='enum'."""
+        code = "type\n  TStatus = (stNew, stActive, stClosed);"
+        syms = extract_symbols(code)
+        names_kinds = {s["name"]: s["kind"] for s in syms}
+        assert "TStatus" in names_kinds
+        assert names_kinds["TStatus"] == "enum"
+
+    def test_pascal_constant_symbol(self, extract_symbols):
+        """Pascal UPPERCASE constant is extracted with kind='constant'."""
+        code = "const\n  MAX_CONNECTIONS = 100;"
+        syms = extract_symbols(code)
+        names_kinds = {s["name"]: s["kind"] for s in syms}
+        assert "MAX_CONNECTIONS" in names_kinds
+        assert names_kinds["MAX_CONNECTIONS"] == "constant"
