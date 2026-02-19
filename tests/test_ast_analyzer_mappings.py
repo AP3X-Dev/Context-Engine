@@ -29,7 +29,7 @@ from scripts.ingest.language_mappings import _MAPPINGS, get_mapping, ConceptType
 # =============================================================================
 
 class TestLanguageMappingsComplete:
-    """Verify all 32 language mappings can be instantiated."""
+    """Verify all 35 language mappings can be instantiated."""
 
     def test_all_mappings_instantiate(self):
         """Every registered mapping class should instantiate without error."""
@@ -46,7 +46,7 @@ class TestLanguageMappingsComplete:
                 failed.append((lang, str(e)))
 
         assert len(failed) == 0, f"Failed mappings: {failed}"
-        assert len(passed) == 32, f"Expected 32 mappings, got {len(passed)}"
+        assert len(passed) == 35, f"Expected 35 mappings, got {len(passed)}"
 
     def test_all_mappings_have_definition_query(self):
         """All mappings should provide a DEFINITION query."""

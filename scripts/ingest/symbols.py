@@ -250,6 +250,101 @@ def _extract_symbols_php(text: str) -> List[_Sym]:
     return syms
 
 
+# ---------------------------------------------------------------------------
+# Pascal/Delphi symbol extraction (regex-based)
+# ---------------------------------------------------------------------------
+
+_PAS_CLASS_PATTERN = re.compile(
+    r"^\s*(T\w+)\s*=\s*(class|record)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PAS_INTF_PATTERN = re.compile(
+    r"^\s*(I\w+)\s*=\s*interface\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PAS_ENUM_PATTERN = re.compile(
+    r"^\s*(T\w+)\s*=\s*\(",
+    re.MULTILINE,
+)
+_PAS_METHOD_PATTERN = re.compile(
+    r"^\s*(?:class\s+)?(?:procedure|function|constructor|destructor)\s+"
+    r"(T\w+\.\w+)\s*(?:\(|;|:|\s)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PAS_STANDALONE_PROC_PATTERN = re.compile(
+    r"^\s*(?:procedure|function)\s+([A-Za-z_]\w+)\s*(?:\(|;)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PAS_CONST_PATTERN = re.compile(
+    r"^\s+([A-Z][A-Z0-9_]{2,})\s*=\s*",
+    re.MULTILINE,
+)
+
+
+def _extract_symbols_pascal(text: str) -> List[_Sym]:
+    """Extract symbols from Pascal/Delphi code using regex.
+
+    Handles the ``interface`` and ``implementation`` sections of .pas files.
+    Extracts classes, records, interfaces, methods, standalone functions,
+    enumerations and UPPER_SNAKE_CASE constants.
+    """
+    # Strip UTF-8 BOM (common in Delphi files)
+    clean = text.lstrip("\ufeff")
+    lines = clean.splitlines()
+    syms: List[_Sym] = []
+
+    def _line_of(m: "re.Match") -> int:  # type: ignore[type-arg]
+        """Return 1-based line number for a regex match."""
+        return clean[: m.start()].count("\n") + 1
+
+    # Classes and records
+    for m in _PAS_CLASS_PATTERN.finditer(clean):
+        syms.append(_Sym(kind="class", name=m.group(1), start=_line_of(m), end=_line_of(m)))
+
+    # Interfaces
+    for m in _PAS_INTF_PATTERN.finditer(clean):
+        syms.append(_Sym(kind="interface", name=m.group(1), start=_line_of(m), end=_line_of(m)))
+
+    # Enumerations (heuristic: TFoo = (...) — only if not already matched as class)
+    existing_names = {s["name"] for s in syms}
+    for m in _PAS_ENUM_PATTERN.finditer(clean):
+        name = m.group(1)
+        if name not in existing_names:
+            syms.append(_Sym(kind="enum", name=name, start=_line_of(m), end=_line_of(m)))
+            existing_names.add(name)
+
+    # Method implementations (TClass.Method)
+    for m in _PAS_METHOD_PATTERN.finditer(clean):
+        qualified = m.group(1)  # e.g. TMyClass.DoWork
+        short_name = qualified.rsplit(".", 1)[-1]
+        syms.append(_Sym(
+            kind="method",
+            name=short_name,
+            path=qualified,
+            start=_line_of(m),
+            end=_line_of(m),
+        ))
+
+    # Standalone procedures/functions (no class prefix)
+    for m in _PAS_STANDALONE_PROC_PATTERN.finditer(clean):
+        name = m.group(1)
+        if "." not in name:
+            syms.append(_Sym(kind="function", name=name, start=_line_of(m), end=_line_of(m)))
+
+    # UPPER_SNAKE_CASE constants
+    for m in _PAS_CONST_PATTERN.finditer(clean):
+        name = m.group(1)
+        syms.append(_Sym(kind="constant", name=name, start=_line_of(m), end=_line_of(m)))
+
+    # Sort by start line and approximate end lines
+    syms.sort(key=lambda s: s.start)
+    for i in range(len(syms)):
+        end_candidate = syms[i + 1].start - 1 if i + 1 < len(syms) else len(lines)
+        syms[i]["end"] = max(syms[i].start, end_candidate)
+
+    return syms
+
+
 def _extract_symbols_shell(text: str) -> List[_Sym]:
     """Extract symbols from shell scripts."""
     lines = text.splitlines()
@@ -1211,6 +1306,8 @@ def _extract_symbols(language: str, text: str) -> List[_Sym]:
         return _extract_symbols_csharp(text)
     if language == "php":
         return _extract_symbols_php(text)
+    if language in ("pascal", "delphi"):
+        return _extract_symbols_pascal(text)
     return []
 
 

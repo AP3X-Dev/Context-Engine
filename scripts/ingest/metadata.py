@@ -16,6 +16,7 @@ from typing import List, Tuple, Optional, Dict
 
 
 
+
 logger = logging.getLogger(__name__)
 def _git_metadata(file_path: Path) -> Tuple[int, int, int]:
     """Return (last_modified_at, churn_count, author_count) using git when available.
@@ -212,6 +213,32 @@ def _extract_imports(language: str, text: str) -> List[str]:
             if m:
                 imps.append(m.group(1))
                 continue
+    elif language in ("pascal", "delphi"):
+        # Pascal uses-clause can be single or multi-line, e.g.:
+        #   uses SysUtils, Classes, MyUnit;
+        #   uses
+        #     SysUtils,
+        #     Classes,
+        #     MyUnit;
+        _pascal_reserved = frozenset({
+            "uses", "in", "interface", "implementation", "unit", "program",
+            "package", "library", "initialization", "finalization", "end",
+        })
+        in_uses = False
+        for ln in lines:
+            stripped = ln.strip()
+            # Erkennt: "uses" am Zeilenanfang (mit optionalem Whitespace)
+            if re.match(r"^\s*uses\b", stripped, re.IGNORECASE):
+                in_uses = True
+            if in_uses:
+                # Extrahiere komma-getrennte Unit-Namen (qualifiziert ok: System.SysUtils)
+                for m in re.finditer(r"\b([A-Za-z_][\w\.]*)\b", stripped):
+                    unit = m.group(1)
+                    if unit.lower() not in _pascal_reserved:
+                        imps.append(unit)
+                # uses-Block endet mit Semikolon
+                if ";" in stripped:
+                    in_uses = False
     return imps[:200]
 
 

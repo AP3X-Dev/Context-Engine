@@ -177,6 +177,13 @@ CODE_EXTS: Dict[str, str] = {
     ".vhdl": "vhdl",
     ".asm": "assembly",
     ".s": "assembly",
+    # Delphi/Pascal
+    ".pas": "pascal",   # Delphi/Lazarus Unit
+    ".dpr": "pascal",   # Delphi Project
+    ".dpk": "pascal",   # Delphi Package
+    ".lpr": "pascal",   # Lazarus Project
+    ".dfm": "dfm",      # VCL Form (eigenes Mapping, da eigenes Format)
+    ".fmx": "dfm",      # FireMonkey Form
 }
 
 # Files matched by name (no extension or special names)
@@ -220,6 +227,8 @@ _DEFAULT_EXCLUDE_DIRS = [
     "obj",
     "TestResults",
     "/.git",
+    "/__history",       # Delphi IDE Backup
+    "/__recovery",      # Delphi IDE Recovery
 ]
 
 # Glob patterns for directories (matched against basename)
@@ -236,6 +245,9 @@ _DEFAULT_EXCLUDE_FILES = [
     "tokenizer.json",
     "*.whl",
     "*.tar.gz",
+    "*.dcu",            # Delphi Compiled Unit
+    "*.dcp",            # Delphi Compiled Package
+    "*.dcpil",          # IL-Datei
 ]
 
 _ANY_DEPTH_EXCLUDE_DIR_NAMES = {
