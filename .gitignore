@@ -37,3 +37,7 @@ CLAUDE.md
 !/dev-workspace/.gitkeep
 docs/AUGMENT_COMPATIBILITY.md
 .serena/project.yml
+
+# ONI Cortex
+.env.prod
+test_cortex*.db

@@ -1,0 +1,6 @@
+# ONI Cortex additional dependencies (on top of requirements.txt)
+asyncpg
+aiosqlite
+sqlalchemy[asyncio]>=2.0
+httpx
+stripe
