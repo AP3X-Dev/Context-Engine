@@ -956,6 +956,22 @@ def _detect_current_repo() -> str | None:
     return None
 
 
+# --- ONI Cortex tenant scoping ---
+def _resolve_collection(collection: Optional[str] = None, ctx=None) -> str:
+    """Resolve effective Qdrant collection name, with optional tenant scoping.
+
+    If CORTEX_COLLECTION_PREFIX env var is set (by the Cortex gateway proxy),
+    prefix the collection name for tenant isolation.
+
+    Falls back to COLLECTION_NAME env var for backwards compatibility.
+    """
+    base = (collection or "").strip() or os.environ.get("COLLECTION_NAME", "codebase")
+    prefix = os.environ.get("CORTEX_COLLECTION_PREFIX", "")
+    if prefix and not base.startswith(prefix):
+        return f"{prefix}{base}"
+    return base
+
+
 @mcp.tool()
 async def qdrant_index_root(
     recreate: Optional[bool] = None, collection: Optional[str] = None, session: Optional[str] = None
