@@ -6,51 +6,70 @@ import { Section } from "../shared/section";
 const features = [
   {
     title: "MCP-Native",
-    description: "Works with every major AI IDE out of the box. No custom SDK — just a URL and an API key.",
-    icon: "🔌",
+    description: "Works with every major AI IDE out of the box. No custom SDK \u2014 just a URL and an API key.",
+    icon: "\u{1F50C}",
   },
   {
     title: "Hybrid Search",
     description: "Dense vectors + lexical matching + reciprocal rank fusion for precise, relevant results.",
-    icon: "🔎",
+    icon: "\u{1F50E}",
   },
   {
     title: "AST-Aware Chunking",
     description: "Preserves function and class boundaries. 30% better retrieval precision than naive splitting.",
-    icon: "🌳",
+    icon: "\u{1F333}",
   },
   {
     title: "Multi-Tenant",
     description: "Isolated collections per team, per project. Full data separation with shared infrastructure.",
-    icon: "🏢",
+    icon: "\u{1F3E2}",
   },
   {
     title: "Usage Dashboard",
-    description: "Real-time query counts, vector usage, and cost tracking. Know exactly what you're using.",
-    icon: "📊",
+    description: "Real-time query counts, vector usage, and cost tracking. Know exactly what you\u2019re using.",
+    icon: "\u{1F4CA}",
   },
   {
     title: "Universal Upload",
     description: "Code, markdown, PDF, JSON, YAML, CSV, OpenAPI specs. If your agent needs it, Cortex indexes it.",
-    icon: "📁",
+    icon: "\u{1F4C1}",
   },
 ];
 
 export function Features() {
   return (
     <Section id="features">
+      <span
+        className="shimmer-label"
+        style={{ display: "block", marginBottom: 12, textAlign: "left" }}
+      >
+        Features
+      </span>
       <h2
-        className="text-center mb-16"
         style={{
           fontFamily: "'Inter Tight', sans-serif",
           fontSize: "clamp(28px, 4vw, 44px)",
           fontWeight: 800,
           letterSpacing: "-0.03em",
+          textAlign: "left",
+          marginBottom: 8,
         }}
       >
         Built for agents, not humans
       </h2>
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <p
+        style={{
+          color: "var(--text2)",
+          fontSize: 16,
+          lineHeight: 1.6,
+          textAlign: "left",
+          maxWidth: 480,
+          marginBottom: 48,
+        }}
+      >
+        Everything your AI agent needs to retrieve context, without the bloat.
+      </p>
+      <div className="grid md:grid-cols-2 lg:grid-cols-3" style={{ gap: 16 }}>
         {features.map((feature, i) => (
           <motion.div
             key={feature.title}
@@ -77,7 +96,7 @@ export function Features() {
               }}
             />
             <div
-              className="group-hover:border-[rgba(0,212,106,0.25)] group-hover:animate-[icon-glow-pulse_2s_ease-in-out_infinite]"
+              className="group-hover:border-[rgba(224,64,64,0.25)] group-hover:animate-[icon-glow-pulse_2s_ease-in-out_infinite]"
               style={{
                 width: 48,
                 height: 48,

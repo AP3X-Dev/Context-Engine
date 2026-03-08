@@ -1,0 +1,3 @@
+Contact: mailto:security@oni.bot
+Preferred-Languages: en
+Canonical: https://oni.bot/.well-known/security.txt

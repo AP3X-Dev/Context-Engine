@@ -8,37 +8,56 @@ const steps = [
     number: "01",
     title: "Upload",
     description: "Push your codebase, docs, or data via CLI, API, or drag-and-drop",
-    icon: "📤",
+    icon: "\u{1F4E4}",
   },
   {
     number: "02",
     title: "Connect",
     description: "Add your MCP endpoint URL to Claude Code, Cursor, or any agent",
-    icon: "🔗",
+    icon: "\u{1F517}",
   },
   {
     number: "03",
     title: "Query",
-    description: "Your agent searches with hybrid retrieval — vectors + lexical + reranking",
-    icon: "🔍",
+    description: "Your agent searches with hybrid retrieval \u2014 vectors + lexical + reranking",
+    icon: "\u{1F50D}",
   },
 ];
 
 export function HowItWorks() {
   return (
     <Section>
+      <span
+        className="shimmer-label"
+        style={{ display: "block", marginBottom: 12, textAlign: "left" }}
+      >
+        How It Works
+      </span>
       <h2
-        className="text-center mb-16"
         style={{
           fontFamily: "'Inter Tight', sans-serif",
           fontSize: "clamp(28px, 4vw, 44px)",
           fontWeight: 800,
           letterSpacing: "-0.03em",
+          textAlign: "left",
+          marginBottom: 8,
         }}
       >
-        How it works
+        Three steps to smarter agents
       </h2>
-      <div className="grid md:grid-cols-3 gap-4">
+      <p
+        style={{
+          color: "var(--text2)",
+          fontSize: 16,
+          lineHeight: 1.6,
+          textAlign: "left",
+          maxWidth: 480,
+          marginBottom: 48,
+        }}
+      >
+        Upload, connect, query. Your agent gets context in under five minutes.
+      </p>
+      <div className="grid md:grid-cols-3" style={{ gap: 16 }}>
         {steps.map((step, i) => (
           <motion.div
             key={step.number}
@@ -46,7 +65,6 @@ export function HowItWorks() {
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
             transition={{ duration: 0.4, delay: i * 0.1 }}
-            className="text-center"
             style={{
               background: "linear-gradient(180deg, #1a1a1c, #111113)",
               border: "1px solid var(--border)",
@@ -65,7 +83,7 @@ export function HowItWorks() {
                 borderRadius: 10,
                 border: "1px solid var(--border)",
                 fontSize: 26,
-                margin: "0 auto 16px",
+                marginBottom: 16,
               }}
             >
               {step.icon}

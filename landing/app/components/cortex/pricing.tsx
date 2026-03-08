@@ -90,10 +90,10 @@ export function Pricing() {
             className="flex flex-col"
             style={{
               background: "linear-gradient(180deg, #1a1a1c, #111113)",
-              border: `1px solid ${tier.highlight ? "rgba(0, 212, 106, 0.3)" : "var(--border)"}`,
+              border: `1px solid ${tier.highlight ? "rgba(224, 64, 64, 0.3)" : "var(--border)"}`,
               borderRadius: "var(--radius)",
               padding: 24,
-              boxShadow: tier.highlight ? "0 0 24px rgba(0, 212, 106, 0.08)" : "none",
+              boxShadow: tier.highlight ? "0 0 24px rgba(224, 64, 64, 0.08)" : "none",
             }}
           >
             <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>{tier.name}</span>

@@ -19,7 +19,7 @@ const variantStyles = {
     color: "#0a0a0a",
     border: "none",
     fontWeight: 700,
-    boxShadow: "0 4px 20px rgba(0, 212, 106, 0.15), var(--depth-shadow), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)",
+    boxShadow: "0 4px 20px rgba(224, 64, 64, 0.15), var(--depth-shadow), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)",
   },
   white: {
     background: "#fff",
@@ -40,7 +40,7 @@ const variantStyles = {
 const hoverStyles = {
   primary: {
     background: "var(--accent2)",
-    boxShadow: "0 12px 40px rgba(0, 212, 106, 0.4), var(--depth-shadow-hover), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)",
+    boxShadow: "0 12px 40px rgba(224, 64, 64, 0.4), var(--depth-shadow-hover), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)",
   },
   white: {
     background: "#fff",

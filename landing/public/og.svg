@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" fill="none">
+  <rect width="1200" height="630" fill="#0a0a0a"/>
+
+  <!-- Subtle grid pattern -->
+  <defs>
+    <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
+      <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#ffffff" stroke-opacity="0.03" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+
+  <!-- Accent line at top -->
+  <rect x="0" y="0" width="1200" height="3" fill="#6366f1"/>
+
+  <!-- Hexagonal mark -->
+  <path d="M120 280L152.785 261v38L120 318 87.215 299V261L120 280z" stroke="#6366f1" stroke-width="2" fill="none" transform="translate(-30, -5)"/>
+  <path d="M90 275c0 0 13-22 30-22s30 22 30 22-13 22-30 22-30-22-30-22z" transform="translate(-30, -5)" stroke="#6366f1" stroke-width="1.5" fill="none"/>
+  <circle cx="90" cy="270" r="8" fill="#6366f1"/>
+  <circle cx="90" cy="270" r="3" fill="#0a0a0a"/>
+
+  <!-- ONI wordmark -->
+  <text x="140" y="295" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace" font-size="72" font-weight="700" fill="#ffffff" letter-spacing="12">ONI</text>
+
+  <!-- Divider -->
+  <rect x="90" y="330" width="120" height="2" fill="#6366f1" rx="1"/>
+
+  <!-- Tagline -->
+  <text x="90" y="380" font-family="'Inter', 'SF Pro', -apple-system, 'Segoe UI', sans-serif" font-size="32" fill="#a1a1aa" font-weight="400">Agent Infrastructure</text>
+
+  <!-- Domain -->
+  <text x="90" y="430" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', monospace" font-size="22" fill="#6366f1" font-weight="500">oni.bot</text>
+
+  <!-- Bottom accent line -->
+  <rect x="0" y="627" width="1200" height="3" fill="#6366f1"/>
+</svg>

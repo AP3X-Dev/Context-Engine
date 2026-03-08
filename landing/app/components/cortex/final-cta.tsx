@@ -5,11 +5,29 @@ import { Button } from "../shared/button";
 
 export function FinalCta() {
   return (
-    <section id="signup" style={{ padding: "100px 32px", textAlign: "center" }}>
+    <section
+      id="signup"
+      style={{
+        padding: "100px 32px",
+        textAlign: "center",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {/* Radial gradient overlay */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "radial-gradient(ellipse at 50% 50%, rgba(224, 64, 64, 0.08) 0%, transparent 70%)",
+          pointerEvents: "none",
+        }}
+      />
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true }}
+        style={{ position: "relative", zIndex: 1 }}
       >
         <h2
           style={{

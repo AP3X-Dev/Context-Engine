@@ -27,10 +27,10 @@ html {
   --text2: #a0a0a0;
   --text3: #555555;
 
-  /* Accent — Green */
-  --accent: #00d46a;
-  --accent2: #33e880;
-  --accent-glow: rgba(0, 212, 106, 0.3);
+  /* Accent — Red (matches ONI logo) */
+  --accent: #e04040;
+  --accent2: #f06060;
+  --accent-glow: rgba(224, 64, 64, 0.3);
 
   /* Purple */
   --purple: #7c3aed;
@@ -61,8 +61,8 @@ html {
 }
 
 ::selection {
-  background: rgba(102, 234, 255, 0.1);
-  color: #66EAFF;
+  background: rgba(224, 64, 64, 0.15);
+  color: #f06060;
 }
 
 body {
@@ -76,13 +76,13 @@ body {
 
 /* Gradient text utility */
 .gradient-text {
-  background: linear-gradient(135deg, #00d46a 0%, #80fff9 25%, #a78bfa 50%, #33e880 75%, #00d46a 100%);
+  background: linear-gradient(135deg, #e04040 0%, #f06060 25%, #a78bfa 50%, #e04040 75%, #f06060 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
   background-size: 200% 200%;
   animation: animate-text 6s ease infinite;
-  filter: drop-shadow(0 0 30px rgba(0, 212, 106, 0.15));
+  filter: drop-shadow(0 0 30px rgba(224, 64, 64, 0.15));
 }
 
 @keyframes animate-text {
@@ -96,7 +96,7 @@ body {
   font-weight: 600;
   letter-spacing: 2px;
   text-transform: uppercase;
-  background: linear-gradient(90deg, var(--purple2), var(--cyan), var(--purple2));
+  background: linear-gradient(90deg, var(--accent2), var(--purple2), var(--accent2));
   background-size: 200% 100%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -117,7 +117,7 @@ body {
 
 /* Icon glow pulse */
 @keyframes icon-glow-pulse {
-  0%   { opacity: 0.8; box-shadow: 0 0 8px rgba(0, 212, 106, 0.1); }
-  50%  { opacity: 1;   box-shadow: 0 0 20px rgba(0, 212, 106, 0.2); }
-  100% { opacity: 0.8; box-shadow: 0 0 8px rgba(0, 212, 106, 0.1); }
+  0%   { opacity: 0.8; box-shadow: 0 0 8px rgba(224, 64, 64, 0.1); }
+  50%  { opacity: 1;   box-shadow: 0 0 20px rgba(224, 64, 64, 0.2); }
+  100% { opacity: 0.8; box-shadow: 0 0 8px rgba(224, 64, 64, 0.1); }
 }

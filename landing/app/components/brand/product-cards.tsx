@@ -55,7 +55,7 @@ export function ProductCards() {
             }}
             whileHover={product.status === "live" ? {
               y: -4,
-              borderColor: "rgba(0, 212, 106, 0.2)",
+              borderColor: "rgba(224, 64, 64, 0.2)",
             } : undefined}
           >
             {/* Shimmer sweep */}

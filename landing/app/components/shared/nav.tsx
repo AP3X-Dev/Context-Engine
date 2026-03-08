@@ -60,18 +60,18 @@ export function Nav({ brand, links, cta }: NavProps) {
                 background: "var(--accent)",
                 color: "#0a0a0a",
                 padding: "8px 18px",
-                boxShadow: "0 4px 20px rgba(0, 212, 106, 0.15), var(--depth-shadow), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)",
+                boxShadow: "0 4px 20px rgba(224, 64, 64, 0.15), var(--depth-shadow), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)",
                 transition: "all 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = "var(--accent2)";
                 e.currentTarget.style.transform = "translateY(-3px)";
-                e.currentTarget.style.boxShadow = "0 12px 40px rgba(0, 212, 106, 0.4), var(--depth-shadow-hover), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)";
+                e.currentTarget.style.boxShadow = "0 12px 40px rgba(224, 64, 64, 0.4), var(--depth-shadow-hover), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)";
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = "var(--accent)";
                 e.currentTarget.style.transform = "translateY(0)";
-                e.currentTarget.style.boxShadow = "0 4px 20px rgba(0, 212, 106, 0.15), var(--depth-shadow), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)";
+                e.currentTarget.style.boxShadow = "0 4px 20px rgba(224, 64, 64, 0.15), var(--depth-shadow), inset 0px 2px 3px rgba(255,255,255,0.35), inset 0px -1.5px 0px rgba(0,0,0,0.2)";
               }}
             >
               {cta.label}
