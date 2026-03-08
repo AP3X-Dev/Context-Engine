@@ -1,7 +1,17 @@
 {$CORTEX_DOMAIN:cortex.oni.bot} {
-    reverse_proxy gateway:8080 {
-        transport http {
-            read_timeout 0
+    handle /api/* {
+        reverse_proxy gateway:8080 {
+            transport http {
+                read_timeout 0
+            }
+        }
+    }
+
+    handle /t/* {
+        reverse_proxy gateway:8080 {
+            transport http {
+                read_timeout 0
+            }
         }
     }
 
@@ -9,6 +19,17 @@
         respond "OK" 200
     }
 
+    handle {
+        reverse_proxy host.docker.internal:3100
+    }
+
+    log {
+        output stdout
+    }
+}
+
+oni.bot {
+    reverse_proxy host.docker.internal:3100
     log {
         output stdout
     }
