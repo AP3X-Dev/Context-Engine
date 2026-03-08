@@ -32,11 +32,6 @@ html {
   --accent2: #f06060;
   --accent-glow: rgba(224, 64, 64, 0.3);
 
-  /* Purple */
-  --purple: #7c3aed;
-  --purple2: #a78bfa;
-  --purple-glow: rgba(124, 58, 237, 0.3);
-
   /* Gold */
   --gold: #ea9a6a;
   --gold2: #fddfa9;
@@ -76,7 +71,7 @@ body {
 
 /* Gradient text utility */
 .gradient-text {
-  background: linear-gradient(135deg, #e04040 0%, #f06060 25%, #a78bfa 50%, #e04040 75%, #f06060 100%);
+  background: linear-gradient(135deg, #e04040 0%, #f06060 25%, #ff8080 50%, #e04040 75%, #f06060 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -96,7 +91,7 @@ body {
   font-weight: 600;
   letter-spacing: 2px;
   text-transform: uppercase;
-  background: linear-gradient(90deg, var(--accent2), var(--purple2), var(--accent2));
+  background: linear-gradient(90deg, var(--accent2), #ff8080, var(--accent2));
   background-size: 200% 100%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;

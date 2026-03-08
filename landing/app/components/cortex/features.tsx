@@ -41,7 +41,7 @@ export function Features() {
     <Section id="features">
       <span
         className="shimmer-label"
-        style={{ display: "block", marginBottom: 12, textAlign: "left" }}
+        style={{ display: "block", marginBottom: 12, textAlign: "center" }}
       >
         Features
       </span>
@@ -51,7 +51,7 @@ export function Features() {
           fontSize: "clamp(28px, 4vw, 44px)",
           fontWeight: 800,
           letterSpacing: "-0.03em",
-          textAlign: "left",
+          textAlign: "center",
           marginBottom: 8,
         }}
       >
@@ -62,14 +62,15 @@ export function Features() {
           color: "var(--text2)",
           fontSize: 16,
           lineHeight: 1.6,
-          textAlign: "left",
-          maxWidth: 480,
+          textAlign: "center",
+          maxWidth: 540,
+          margin: "0 auto",
           marginBottom: 48,
         }}
       >
         Everything your AI agent needs to retrieve context, without the bloat.
       </p>
-      <div className="grid md:grid-cols-2 lg:grid-cols-3" style={{ gap: 16 }}>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3" style={{ gap: 16 }}>
         {features.map((feature, i) => (
           <motion.div
             key={feature.title}

@@ -20,34 +20,12 @@ const tiers = [
     name: "Pro",
     price: "$49",
     period: "/mo",
-    collections: "5",
-    vectors: "250K",
-    queries: "10K/day",
-    cta: "Get Started",
-    href: "#signup",
-    highlight: false,
-  },
-  {
-    name: "Team",
-    price: "$149",
-    period: "/mo",
-    collections: "25",
-    vectors: "1M",
-    queries: "50K/day",
+    collections: "10",
+    vectors: "500K",
+    queries: "25K/day",
     cta: "Get Started",
     href: "#signup",
     highlight: true,
-  },
-  {
-    name: "Business",
-    price: "$499",
-    period: "/mo",
-    collections: "100",
-    vectors: "5M",
-    queries: "200K/day",
-    cta: "Get Started",
-    href: "#signup",
-    highlight: false,
   },
   {
     name: "Enterprise",
@@ -79,7 +57,7 @@ export function Pricing() {
       <p className="text-center mb-16" style={{ color: "var(--text2)", fontSize: 16 }}>
         Start free. Scale as your agents grow.
       </p>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-[900px] mx-auto">
         {tiers.map((tier, i) => (
           <motion.div
             key={tier.name}
