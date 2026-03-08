@@ -1,4 +1,4 @@
-{$CORTEX_DOMAIN:cortex.oni.dev} {
+{$CORTEX_DOMAIN:cortex.oni.bot} {
     reverse_proxy gateway:8080 {
         transport http {
             read_timeout 0

@@ -9,7 +9,7 @@ DATABASE_URL = os.environ.get(
 )
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-CORTEX_DOMAIN = os.environ.get("CORTEX_DOMAIN", "cortex.oni.dev")
+CORTEX_DOMAIN = os.environ.get("CORTEX_DOMAIN", "cortex.oni.bot")
 JWT_SECRET = os.environ.get("CORTEX_JWT_SECRET", secrets.token_hex(32))
 API_KEY_PREFIX_LIVE = "oni_live_"
 API_KEY_PREFIX_TEST = "oni_test_"

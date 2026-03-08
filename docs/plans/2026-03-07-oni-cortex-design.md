@@ -96,7 +96,7 @@ MCP is the universal agent protocol in 2026. Every major AI IDE and agent framew
 #### Caddy Reverse Proxy
 - TLS termination with auto-HTTPS (Let's Encrypt)
 - Rate limiting at edge
-- Routes: `cortex.oni.dev/{tenant_id}/mcp` → API Gateway
+- Routes: `cortex.oni.bot/{tenant_id}/mcp` → API Gateway
 - WebSocket/SSE passthrough for MCP connections
 
 #### API Gateway (FastAPI) — NEW
@@ -201,7 +201,7 @@ MCP clients connect with API key in the URL or header:
 {
   "mcpServers": {
     "oni-cortex": {
-      "url": "https://cortex.oni.dev/t/{tenant_id}/sse",
+      "url": "https://cortex.oni.bot/t/{tenant_id}/sse",
       "headers": {
         "Authorization": "Bearer oni_live_abc123..."
       }
@@ -212,7 +212,7 @@ MCP clients connect with API key in the URL or header:
 
 Alternative: API key as URL parameter for clients that don't support custom headers:
 ```
-https://cortex.oni.dev/t/{tenant_id}/sse?key=oni_live_abc123...
+https://cortex.oni.bot/t/{tenant_id}/sse?key=oni_live_abc123...
 ```
 
 ---
@@ -228,7 +228,7 @@ https://cortex.oni.dev/t/{tenant_id}/sse?key=oni_live_abc123...
    → Return: { tenant_id, api_key_live, api_key_test, mcp_url }
 
 2. Connect MCP client:
-   URL: https://cortex.oni.dev/t/{tenant_id}/sse
+   URL: https://cortex.oni.bot/t/{tenant_id}/sse
    Auth: Bearer {api_key_live}
 
 3. Upload data:
@@ -335,11 +335,11 @@ Fits within 4 OCPU / 24GB. Scale to larger instance as tenants grow.
 ## 8. Domain & Branding
 
 - **Product:** ONI Cortex
-- **Domain:** cortex.oni.dev (or onicortex.com)
-- **API Base:** https://cortex.oni.dev
-- **MCP URL pattern:** https://cortex.oni.dev/t/{tenant_id}/sse
-- **Dashboard:** https://cortex.oni.dev/dashboard
-- **Docs:** https://cortex.oni.dev/docs
+- **Domain:** cortex.oni.bot (or onicortex.com)
+- **API Base:** https://cortex.oni.bot
+- **MCP URL pattern:** https://cortex.oni.bot/t/{tenant_id}/sse
+- **Dashboard:** https://cortex.oni.bot/dashboard
+- **Docs:** https://cortex.oni.bot/docs
 
 ---
 

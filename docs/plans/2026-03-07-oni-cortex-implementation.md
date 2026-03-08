@@ -45,7 +45,7 @@ DATABASE_URL = os.environ.get(
 )
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-CORTEX_DOMAIN = os.environ.get("CORTEX_DOMAIN", "cortex.oni.dev")
+CORTEX_DOMAIN = os.environ.get("CORTEX_DOMAIN", "cortex.oni.bot")
 JWT_SECRET = os.environ.get("CORTEX_JWT_SECRET", secrets.token_hex(32))
 API_KEY_PREFIX_LIVE = "oni_live_"
 API_KEY_PREFIX_TEST = "oni_test_"
@@ -1632,7 +1632,7 @@ Plan-to-price-ID mapping via environment variables."
 **Step 1: Write `Caddyfile`**
 
 ```
-{$CORTEX_DOMAIN:cortex.oni.dev} {
+{$CORTEX_DOMAIN:cortex.oni.bot} {
     # API Gateway — all traffic goes here
     reverse_proxy gateway:8080 {
         # SSE keepalive
@@ -1713,7 +1713,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.dev}
+      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.bot}
     depends_on:
       - gateway
     restart: unless-stopped
@@ -1732,7 +1732,7 @@ services:
       - CORTEX_DATABASE_URL=postgresql+asyncpg://${PG_USER:-cortex}:${PG_PASS:-cortex}@postgres:5432/${PG_DB:-cortex}
       - CORTEX_UPSTREAM_MCP_SSE=http://mcp_indexer:8001
       - CORTEX_UPSTREAM_MCP_HTTP=http://mcp_indexer_http:8001
-      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.dev}
+      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.bot}
     ports:
       - "8080:8080"
     restart: unless-stopped
@@ -1849,7 +1849,7 @@ volumes:
 
 ```bash
 # ONI Cortex Production Environment
-CORTEX_DOMAIN=cortex.oni.dev
+CORTEX_DOMAIN=cortex.oni.bot
 CORTEX_JWT_SECRET=CHANGE_ME_TO_RANDOM_SECRET
 
 # PostgreSQL

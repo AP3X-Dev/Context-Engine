@@ -20,7 +20,7 @@ services:
     depends_on:
       - gateway
     environment:
-      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.dev}
+      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.bot}
 
   # ── Cortex API gateway ─────────────────────────────────────────────
   gateway:
@@ -37,7 +37,7 @@ services:
       - CORTEX_DATABASE_URL=postgresql+asyncpg://${PG_USER:-cortex}:${PG_PASS:-cortex}@postgres:5432/${PG_DB:-cortex}
       - CORTEX_UPSTREAM_MCP_SSE=http://mcp_indexer:8001
       - CORTEX_UPSTREAM_MCP_HTTP=http://mcp_indexer_http:8001
-      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.dev}
+      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.bot}
     expose:
       - "8080"
 
