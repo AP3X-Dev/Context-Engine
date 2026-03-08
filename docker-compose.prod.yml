@@ -1,0 +1,153 @@
+# ONI Cortex — Production Docker Compose for Oracle ARM64 VPS
+#
+# Usage:
+#   cp .env.prod.example .env.prod
+#   # Edit .env.prod with real secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+services:
+  # ── TLS reverse proxy ──────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - gateway
+    environment:
+      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.dev}
+
+  # ── Cortex API gateway ─────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - qdrant
+    env_file:
+      - .env.prod
+    environment:
+      - CORTEX_DATABASE_URL=postgresql+asyncpg://${PG_USER:-cortex}:${PG_PASS:-cortex}@postgres:5432/${PG_DB:-cortex}
+      - CORTEX_UPSTREAM_MCP_SSE=http://mcp_indexer:8001
+      - CORTEX_UPSTREAM_MCP_HTTP=http://mcp_indexer_http:8001
+      - CORTEX_DOMAIN=${CORTEX_DOMAIN:-cortex.oni.dev}
+    expose:
+      - "8080"
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-cortex}
+      POSTGRES_PASSWORD: ${PG_PASS:-cortex}
+      POSTGRES_DB: ${PG_DB:-cortex}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+
+  # ── Qdrant vector database ─────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  # ── MCP Indexer (SSE transport) ────────────────────────────────────
+  mcp_indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-indexer
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    env_file:
+      - .env.prod
+    environment:
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_INDEXER_PORT=8001
+      - QDRANT_URL=http://qdrant:6333
+    expose:
+      - "8001"
+    volumes:
+      - workspace_data:/work:rw
+      - codebase_data:/work/.codebase:rw
+
+  # ── MCP Indexer (Streamable HTTP transport) ────────────────────────
+  mcp_indexer_http:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-indexer
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    env_file:
+      - .env.prod
+    environment:
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_INDEXER_PORT=8001
+      - FASTMCP_TRANSPORT=streamable-http
+      - QDRANT_URL=http://qdrant:6333
+    expose:
+      - "8001"
+    volumes:
+      - workspace_data:/work:rw
+      - codebase_data:/work/.codebase:rw
+
+  # ── MCP Memory / Search (SSE transport) ────────────────────────────
+  mcp_memory:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    env_file:
+      - .env.prod
+    environment:
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=8000
+      - QDRANT_URL=http://qdrant:6333
+    expose:
+      - "8000"
+
+  # ── Upload service ─────────────────────────────────────────────────
+  upload_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.upload-service
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+      - gateway
+    env_file:
+      - .env.prod
+    environment:
+      - UPLOAD_SERVICE_HOST=0.0.0.0
+      - UPLOAD_SERVICE_PORT=8002
+      - QDRANT_URL=http://qdrant:6333
+      - WORK_DIR=/work
+    expose:
+      - "8002"
+    volumes:
+      - workspace_data:/work:rw
+      - codebase_data:/work/.codebase:rw
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pg_data:
+  qdrant_storage:
+  workspace_data:
+  codebase_data:

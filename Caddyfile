@@ -1,0 +1,15 @@
+{$CORTEX_DOMAIN:cortex.oni.dev} {
+    reverse_proxy gateway:8080 {
+        transport http {
+            read_timeout 0
+        }
+    }
+
+    handle /caddy-health {
+        respond "OK" 200
+    }
+
+    log {
+        output stdout
+    }
+}
