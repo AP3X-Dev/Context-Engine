@@ -5,19 +5,39 @@ import { Button } from "../shared/button";
 
 export function CortexHero() {
   return (
-    <section className="px-6 pt-32 pb-24 text-center">
+    <section style={{ padding: "100px 24px 60px", textAlign: "center" }}>
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        <span className="inline-block px-3 py-1 text-xs font-medium rounded-full border border-[var(--border)] text-[var(--accent)] mb-6">
+        <span className="shimmer-label" style={{ marginBottom: 24, display: "inline-block" }}>
           MCP-Native Retrieval Service
         </span>
-        <h1 className="text-5xl md:text-7xl font-bold tracking-tight max-w-4xl mx-auto leading-[1.1]">
-          Plug your agent into everything it needs to know
+        <h1
+          style={{
+            fontFamily: "'Inter Tight', sans-serif",
+            fontSize: "clamp(40px, 7vw, 78px)",
+            fontWeight: 800,
+            letterSpacing: "-0.04em",
+            lineHeight: 1.06,
+            maxWidth: 900,
+            margin: "0 auto",
+          }}
+        >
+          Plug your agent into everything it{" "}
+          <span className="gradient-text">needs to know</span>
         </h1>
-        <p className="mt-6 text-xl text-[var(--text-secondary)] max-w-2xl mx-auto">
+        <p
+          style={{
+            marginTop: 24,
+            fontSize: "clamp(16px, 2vw, 20px)",
+            color: "var(--text2)",
+            maxWidth: 520,
+            margin: "24px auto 0",
+            lineHeight: 1.6,
+          }}
+        >
           Managed MCP retrieval for AI agents. Upload your code, docs, and data — query it from any MCP-compatible IDE.
         </p>
         <div className="mt-10 flex items-center justify-center gap-4">

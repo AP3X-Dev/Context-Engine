@@ -65,36 +65,60 @@ const tiers = [
 export function Pricing() {
   return (
     <Section id="pricing">
-      <h2 className="text-3xl font-bold text-center mb-4">Simple, transparent pricing</h2>
-      <p className="text-center text-[var(--text-secondary)] mb-16">Start free. Scale as your agents grow.</p>
+      <h2
+        className="text-center mb-2"
+        style={{
+          fontFamily: "'Inter Tight', sans-serif",
+          fontSize: "clamp(28px, 4vw, 44px)",
+          fontWeight: 800,
+          letterSpacing: "-0.03em",
+        }}
+      >
+        Simple, transparent pricing
+      </h2>
+      <p className="text-center mb-16" style={{ color: "var(--text2)", fontSize: 16 }}>
+        Start free. Scale as your agents grow.
+      </p>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {tiers.map((tier, i) => (
           <motion.div
             key={tier.name}
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 16 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            transition={{ duration: 0.4, delay: i * 0.08 }}
-            className={`rounded-xl border p-6 flex flex-col ${
-              tier.highlight
-                ? "border-[var(--accent)] bg-[var(--bg-card)]"
-                : "border-[var(--border)] bg-[var(--bg-card)]"
-            }`}
+            transition={{ duration: 0.4, delay: i * 0.07 }}
+            className="flex flex-col"
+            style={{
+              background: "linear-gradient(180deg, #1a1a1c, #111113)",
+              border: `1px solid ${tier.highlight ? "rgba(0, 212, 106, 0.3)" : "var(--border)"}`,
+              borderRadius: "var(--radius)",
+              padding: 24,
+              boxShadow: tier.highlight ? "0 0 24px rgba(0, 212, 106, 0.08)" : "none",
+            }}
           >
-            <span className="text-sm font-medium text-[var(--text-secondary)]">{tier.name}</span>
-            <div className="mt-3">
-              <span className="text-3xl font-bold">{tier.price}</span>
-              {tier.period && <span className="text-[var(--text-secondary)]">{tier.period}</span>}
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>{tier.name}</span>
+            <div style={{ marginTop: 12 }}>
+              <span
+                style={{
+                  fontFamily: "'Inter Tight', sans-serif",
+                  fontSize: 32,
+                  fontWeight: 800,
+                  letterSpacing: "-0.03em",
+                }}
+              >
+                {tier.price}
+              </span>
+              {tier.period && <span style={{ color: "var(--text3)", fontSize: 14 }}>{tier.period}</span>}
             </div>
-            <div className="mt-6 space-y-3 text-sm text-[var(--text-secondary)] flex-1">
-              <div><span className="text-[var(--text-primary)]">{tier.collections}</span> collections</div>
-              <div><span className="text-[var(--text-primary)]">{tier.vectors}</span> vectors</div>
-              <div><span className="text-[var(--text-primary)]">{tier.queries}</span> queries</div>
+            <div className="flex-1" style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 13, color: "var(--text2)" }}><span style={{ color: "var(--text)" }}>{tier.collections}</span> collections</div>
+              <div style={{ fontSize: 13, color: "var(--text2)" }}><span style={{ color: "var(--text)" }}>{tier.vectors}</span> vectors</div>
+              <div style={{ fontSize: 13, color: "var(--text2)" }}><span style={{ color: "var(--text)" }}>{tier.queries}</span> queries</div>
             </div>
-            <div className="mt-6">
+            <div style={{ marginTop: 20 }}>
               <Button
                 href={tier.href}
-                variant={tier.highlight ? "primary" : "secondary"}
+                variant={tier.highlight ? "primary" : "ghost"}
                 size="sm"
               >
                 {tier.cta}

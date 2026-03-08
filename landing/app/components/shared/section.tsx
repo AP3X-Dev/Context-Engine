@@ -6,7 +6,7 @@ interface SectionProps {
 
 export function Section({ children, className = "", id }: SectionProps) {
   return (
-    <section id={id} className={`px-6 py-24 max-w-6xl mx-auto ${className}`}>
+    <section id={id} className={`px-8 max-w-[1100px] mx-auto ${className}`} style={{ padding: "80px 32px" }}>
       {children}
     </section>
   );

@@ -10,6 +10,7 @@ const products = [
     href: "https://cortex.oni.bot",
     status: "live" as const,
     cta: "Get Started →",
+    icon: "🧠",
   },
   {
     name: "AG3NT",
@@ -18,6 +19,7 @@ const products = [
     href: "#",
     status: "soon" as const,
     cta: "Coming Soon",
+    icon: "⚡",
   },
   {
     name: "ONI Swarm",
@@ -26,40 +28,104 @@ const products = [
     href: "#",
     status: "soon" as const,
     cta: "Coming Soon",
+    icon: "🕸️",
   },
 ];
 
 export function ProductCards() {
   return (
-    <section id="products" className="px-6 pb-32 max-w-6xl mx-auto">
-      <div className="grid md:grid-cols-3 gap-6">
+    <section id="products" className="max-w-[1100px] mx-auto" style={{ padding: "0 32px 100px" }}>
+      <div className="grid md:grid-cols-3 gap-4">
         {products.map((product, i) => (
           <motion.a
             key={product.name}
             href={product.status === "live" ? product.href : undefined}
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.3 + i * 0.1 }}
-            className={`group relative rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-8 transition-all duration-300 ${
-              product.status === "live" ? "hover:border-[var(--accent)] cursor-pointer" : "opacity-70"
-            }`}
+            transition={{ duration: 0.4, delay: 0.05 + i * 0.07 }}
+            className="group relative overflow-hidden"
+            style={{
+              background: "linear-gradient(180deg, #1a1a1c, #111113)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: 28,
+              cursor: product.status === "live" ? "pointer" : "default",
+              opacity: product.status === "soon" ? 0.7 : 1,
+              transition: "border-color 0.3s, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.4s",
+            }}
+            whileHover={product.status === "live" ? {
+              y: -4,
+              borderColor: "rgba(0, 212, 106, 0.2)",
+            } : undefined}
           >
-            <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-secondary)]">
+            {/* Shimmer sweep */}
+            <div
+              className="absolute top-0 left-[-100%] w-1/2 h-full pointer-events-none transition-[left] duration-600 ease-in-out group-hover:left-[150%]"
+              style={{
+                background: "linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.03), transparent)",
+              }}
+            />
+            <div
+              style={{
+                width: 48,
+                height: 48,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "var(--surface2)",
+                borderRadius: 10,
+                border: "1px solid var(--border)",
+                fontSize: 26,
+                marginBottom: 16,
+                transition: "all 0.3s",
+              }}
+            >
+              {product.icon}
+            </div>
+            <span
+              className="shimmer-label"
+              style={{ fontSize: 11, letterSpacing: 2 }}
+            >
               {product.category}
             </span>
-            <h3 className="mt-3 text-2xl font-semibold">{product.name}</h3>
-            <p className="mt-3 text-[var(--text-secondary)] leading-relaxed">
+            <h3
+              style={{
+                fontFamily: "'Inter Tight', sans-serif",
+                fontSize: 22,
+                fontWeight: 700,
+                marginTop: 8,
+                letterSpacing: "-0.02em",
+              }}
+            >
+              {product.name}
+            </h3>
+            <p style={{ color: "var(--text2)", marginTop: 8, fontSize: 15, lineHeight: 1.6 }}>
               {product.description}
             </p>
-            <span className={`mt-6 inline-block text-sm font-medium ${
-              product.status === "live"
-                ? "text-[var(--accent)] group-hover:text-[var(--accent-hover)]"
-                : "text-[var(--text-secondary)]"
-            }`}>
+            <span
+              style={{
+                marginTop: 16,
+                display: "inline-block",
+                fontSize: 14,
+                fontWeight: 600,
+                color: product.status === "live" ? "var(--accent)" : "var(--text3)",
+              }}
+            >
               {product.cta}
             </span>
             {product.status === "soon" && (
-              <span className="absolute top-4 right-4 px-2 py-1 text-xs rounded-full border border-[var(--border)] text-[var(--text-secondary)]">
+              <span
+                style={{
+                  position: "absolute",
+                  top: 16,
+                  right: 16,
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  borderRadius: 30,
+                  border: "1px solid var(--border)",
+                  color: "var(--text3)",
+                }}
+              >
                 Soon
               </span>
             )}

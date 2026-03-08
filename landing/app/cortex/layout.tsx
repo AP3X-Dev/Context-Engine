@@ -11,6 +11,7 @@ export const metadata: Metadata = {
     description:
       "Scalable retrieval infrastructure for AI agents. Ingest, embed, and query documents via the Model Context Protocol.",
     url: "https://cortex.oni.bot",
+    images: [{ url: "https://oni.bot/api/og?variant=cortex", width: 1200, height: 630 }],
   },
 };
 
