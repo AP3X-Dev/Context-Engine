@@ -71,6 +71,7 @@ export function HowItWorks() {
               border: "1px solid var(--border)",
               borderRadius: "var(--radius)",
               padding: 28,
+              textAlign: "center",
             }}
           >
             <div
@@ -85,6 +86,7 @@ export function HowItWorks() {
                 border: "1px solid var(--border)",
                 fontSize: 26,
                 marginBottom: 16,
+                margin: "0 auto 16px",
               }}
             >
               {step.icon}

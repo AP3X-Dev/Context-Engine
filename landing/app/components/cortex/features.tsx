@@ -84,6 +84,7 @@ export function Features() {
               border: "1px solid var(--border)",
               borderRadius: "var(--radius)",
               padding: 28,
+              textAlign: "center",
               transition: "border-color 0.3s, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.4s",
               animation: `card-enter 0.4s cubic-bezier(0.25, 0.1, 0.25, 1) both`,
               animationDelay: `${0.05 + i * 0.07}s`,
@@ -108,7 +109,7 @@ export function Features() {
                 borderRadius: 10,
                 border: "1px solid var(--border)",
                 fontSize: 26,
-                marginBottom: 16,
+                margin: "0 auto 16px",
                 transition: "all 0.3s",
               }}
             >

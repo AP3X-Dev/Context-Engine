@@ -28,14 +28,14 @@ const tiers = [
     highlight: true,
   },
   {
-    name: "Enterprise",
-    price: "Custom",
-    period: "",
-    collections: "Unlimited",
-    vectors: "Unlimited",
-    queries: "Unlimited",
-    cta: "Contact Us",
-    href: "mailto:hello@oni.bot",
+    name: "Team",
+    price: "$149",
+    period: "/mo",
+    collections: "25",
+    vectors: "1M",
+    queries: "50K/day",
+    cta: "Get Started",
+    href: "#signup",
     highlight: false,
   },
 ];
@@ -71,6 +71,7 @@ export function Pricing() {
               border: `1px solid ${tier.highlight ? "rgba(224, 64, 64, 0.3)" : "var(--border)"}`,
               borderRadius: "var(--radius)",
               padding: 24,
+              textAlign: "center",
               boxShadow: tier.highlight ? "0 0 24px rgba(224, 64, 64, 0.08)" : "none",
             }}
           >
